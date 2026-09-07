@@ -25,14 +25,14 @@ import json, sys
 with open('$manifest') as f:
     data = json.load(f)
 assert data['name'] == 'skill-architect', 'name mismatch'
-assert data['version'] == '0.1.0', 'version mismatch'
+assert data['version'] == '0.2.0', 'version mismatch'
 assert 'skills' in data, 'missing skills'
 PY
   assert "$manifest is valid plugin.json" true
 done
 
 # Each skill has a valid SKILL.md with frontmatter and name matching directory.
-for skill in skill-audit; do
+for skill in skill-audit skill-rewrite; do
   dir="skills/$skill"
   [[ -d "$dir" ]]
   assert "skills/$skill directory exists" true
@@ -68,6 +68,16 @@ skills/skill-audit/scripts/check-frontmatter.sh skills/skill-audit >/dev/null
 assert "skill-audit passes its own frontmatter check" true
 skills/skill-audit/scripts/check-structure.sh skills/skill-audit >/dev/null
 assert "skill-audit passes its own structure check" true
+
+# skill-rewrite carries its script and can draft a rewrite for itself.
+[[ -x skills/skill-rewrite/scripts/draft-rewrite.sh ]]
+assert "skill-rewrite draft-rewrite.sh is executable" true
+tmp_skill="$(mktemp -d)"
+cp -R skills/skill-rewrite "$tmp_skill/skill-rewrite-test"
+skills/skill-rewrite/scripts/draft-rewrite.sh -t "$tmp_skill/skill-rewrite-test" >/dev/null
+[[ -f "$tmp_skill/skill-rewrite-test/REWRITE-DRAFT.md" ]]
+assert "skill-rewrite draft-rewrite.sh produces REWRITE-DRAFT.md" true
+rm -rf "$tmp_skill"
 
 echo
 echo "$pass passed, $fail failed"

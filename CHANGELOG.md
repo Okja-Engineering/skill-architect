@@ -4,6 +4,12 @@ All notable changes to `skill-architect`.
 
 ## Unreleased
 
+## 0.2.0 — 2026-09-07
+
+- Added `skill-rewrite` skill for drafting rewrites from audit reports.
+- Added `draft-rewrite.sh` helper that runs the audit and generates a `REWRITE-DRAFT.md` with templates for missing sections.
+- Updated README and tests to cover both skills.
+
 ## 0.1.0 — 2026-09-07
 
 **Initial release.**

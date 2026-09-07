@@ -1,5 +1,13 @@
 # Release notes
 
+## v0.2.0
+
+**Two-skill workflow: audit, then draft a rewrite.**
+
+- `skill-audit` evaluates a skill directory and reports pass/fail on 10 dimensions.
+- `skill-rewrite` consumes an audit report and drafts a `REWRITE-DRAFT.md` with section templates and action items. It does not apply changes without approval.
+- Tests now cover both skills and an end-to-end rewrite draft run.
+
 ## v0.1.0
 
 **First release: a spec-aware auditor for Agent Skills.**

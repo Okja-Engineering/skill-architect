@@ -1,7 +1,7 @@
 {
   "name": "skill-architect",
   "displayName": "Skill Architect",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Agent skills for auditing and improving Agent Skills against the spec, Anthropic best practices, and ICM context-management criteria.",
   "license": "MIT",
   "skills": "./skills/"
