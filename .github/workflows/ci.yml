@@ -1,0 +1,17 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run skill layout tests
+        run: tests/test_skill.sh
+      - name: Run end-to-end walk tests
+        run: tests/test_walk.sh
