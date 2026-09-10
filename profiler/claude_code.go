@@ -518,6 +518,19 @@ func getString(m map[string]any, key string) string {
 	return ""
 }
 
+func getBool(m map[string]any, key string) bool {
+	if v, ok := m[key].(bool); ok {
+		return v
+	}
+	if s, ok := m[key].(string); ok {
+		return s == "true" || s == "1"
+	}
+	if n, ok := m[key].(float64); ok {
+		return n != 0
+	}
+	return false
+}
+
 func parseTime(s string) time.Time {
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {

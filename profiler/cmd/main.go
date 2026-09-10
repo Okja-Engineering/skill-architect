@@ -34,14 +34,14 @@ func main() {
 
 func cmdProbe(args []string) {
 	fs := flag.NewFlagSet("probe", flag.ExitOnError)
-	harness := fs.String("harness", "", "harness name (claude_code)")
+	harness := fs.String("harness", "", "harness name (claude_code, cursor, codex, devin)")
 	otelFile := fs.String("otel-file", "", "path to OTel export file")
 	exportFile := fs.String("export-file", "", "path to JSONL session transcript")
 	fs.Parse(args)
 
 	adapter := getAdapter(*harness, *otelFile, *exportFile)
 	if adapter == nil {
-		fmt.Fprintf(os.Stderr, "unknown harness: %s (supported: claude_code)\n", *harness)
+		fmt.Fprintf(os.Stderr, "unknown harness: %s (supported: claude_code, cursor, codex, devin)\n", *harness)
 		os.Exit(1)
 	}
 
@@ -56,7 +56,7 @@ func cmdProbe(args []string) {
 
 func cmdCapture(args []string) {
 	fs := flag.NewFlagSet("capture", flag.ExitOnError)
-	harness := fs.String("harness", "", "harness name (claude_code)")
+	harness := fs.String("harness", "", "harness name (claude_code, cursor, codex, devin)")
 	sessionID := fs.String("session", "", "session ID")
 	snapshotHash := fs.String("snapshot", "", "snapshot hash (git SHA or content hash)")
 	skillDir := fs.String("skill-dir", "", "path to the skill being profiled")
@@ -71,7 +71,7 @@ func cmdCapture(args []string) {
 
 	adapter := getAdapter(*harness, *otelFile, *exportFile)
 	if adapter == nil {
-		fmt.Fprintf(os.Stderr, "unknown harness: %s (supported: claude_code)\n", *harness)
+		fmt.Fprintf(os.Stderr, "unknown harness: %s (supported: claude_code, cursor, codex, devin)\n", *harness)
 		os.Exit(1)
 	}
 
@@ -104,6 +104,12 @@ func getAdapter(harness, otelFile, exportFile string) profiler.ProfilerAdapter {
 	switch harness {
 	case "claude_code":
 		return profiler.ClaudeCodeAdapter{OtelExportFile: otelFile, ExportFile: exportFile}
+	case "cursor":
+		return profiler.CursorAdapter{OtelExportFile: otelFile, ExportFile: exportFile}
+	case "codex":
+		return profiler.CodexAdapter{OtelExportFile: otelFile}
+	case "devin":
+		return profiler.DevinAdapter{ExportFile: exportFile}
 	}
 	return nil
 }
@@ -118,5 +124,6 @@ commands:
 
 examples:
   profiler probe --harness claude_code --otel-file ./otel-export.json
+  profiler probe --harness cursor --otel-file ./otel-export.json --export-file ./state.vscdb
   profiler capture --harness claude_code --session abc123 --snapshot sha123 --skill-dir ./skills/my-skill --otel-file ./otel-export.json`)
 }

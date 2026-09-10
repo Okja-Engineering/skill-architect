@@ -547,3 +547,273 @@ func TestCapture_ClaudeCode_SessionDataToolError(t *testing.T) {
 		t.Errorf("tool_calls[0] success = %v, want false for is_error=true", profile.ToolCalls.Value[0].Success)
 	}
 }
+
+// --- Cursor adapter tests ---
+
+func TestCapabilityReport_Cursor_WithOtel(t *testing.T) {
+	tmp := t.TempDir()
+	otelFile := filepath.Join(tmp, "otel.json")
+	otelData := `{
+		"metrics": [
+			{"name": "cursor.token.usage", "attributes": {"token_type": "input"}, "value": 100}
+		],
+		"logs": [
+			{"event_name": "cursor.api.request", "timestamp": "2026-09-10T22:00:00Z"},
+			{"event_name": "cursor.hook.execution_complete", "attributes": {"tool_name": "Bash", "is_error": false}, "timestamp": "2026-09-10T22:00:05Z"},
+			{"event_name": "cursor.skill.activated", "attributes": {"skill_name": "audit"}, "timestamp": "2026-09-10T22:00:06Z"}
+		]
+	}`
+	os.WriteFile(otelFile, []byte(otelData), 0644)
+
+	adapter := CursorAdapter{OtelExportFile: otelFile}
+	cap := adapter.Probe()
+
+	if cap.Harness != "cursor" {
+		t.Errorf("harness = %q, want cursor", cap.Harness)
+	}
+	if cap.Capabilities[MetricTokens] != SourceOtel {
+		t.Errorf("tokens = %q, want otel", cap.Capabilities[MetricTokens])
+	}
+	if cap.Capabilities[MetricToolCalls] != SourceOtel {
+		t.Errorf("tool_calls = %q, want otel", cap.Capabilities[MetricToolCalls])
+	}
+	if cap.Capabilities[MetricTiming] != SourceOtel {
+		t.Errorf("timing = %q, want otel", cap.Capabilities[MetricTiming])
+	}
+	if cap.Capabilities[MetricSkillActivation] != SourceOtel {
+		t.Errorf("skill_activation = %q, want otel", cap.Capabilities[MetricSkillActivation])
+	}
+	if cap.Capabilities[MetricAttribution] != SourceNone {
+		t.Errorf("attribution = %q, want none", cap.Capabilities[MetricAttribution])
+	}
+}
+
+func TestCapture_Cursor_WithOtelData(t *testing.T) {
+	tmp := t.TempDir()
+	otelFile := filepath.Join(tmp, "otel.json")
+	otelData := `{
+		"metrics": [
+			{"name": "cursor.token.usage", "attributes": {"token_type": "input"}, "value": 1000},
+			{"name": "cursor.token.usage", "attributes": {"token_type": "output"}, "value": 500},
+			{"name": "cursor.token.usage", "attributes": {"token_type": "reasoning"}, "value": 150}
+		],
+		"logs": [
+			{"event_name": "cursor.api.request", "timestamp": "2026-09-10T22:00:00Z"},
+			{"event_name": "cursor.hook.execution_complete", "attributes": {"tool_name": "Bash", "is_error": false}, "timestamp": "2026-09-10T22:00:05Z"},
+			{"event_name": "cursor.skill.activated", "attributes": {"skill_name": "audit", "trigger": "keyword"}, "timestamp": "2026-09-10T22:00:06Z"},
+			{"event_name": "cursor.api.request", "timestamp": "2026-09-10T22:00:10Z"}
+		]
+	}`
+	os.WriteFile(otelFile, []byte(otelData), 0644)
+
+	adapter := CursorAdapter{OtelExportFile: otelFile}
+	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "sha123", SkillDir: "/skills/my-skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if profile.Tokens.State != MetricPresent {
+		t.Fatalf("tokens state = %q, want present", profile.Tokens.State)
+	}
+	if profile.Tokens.Value.Input != 1000 {
+		t.Errorf("tokens input = %d, want 1000", profile.Tokens.Value.Input)
+	}
+	if profile.Tokens.Value.Output != 500 {
+		t.Errorf("tokens output = %d, want 500", profile.Tokens.Value.Output)
+	}
+	if profile.Tokens.Value.Reasoning != 150 {
+		t.Errorf("tokens reasoning = %d, want 150", profile.Tokens.Value.Reasoning)
+	}
+	if profile.Tokens.Source != "otel" {
+		t.Errorf("tokens source = %q, want otel", profile.Tokens.Source)
+	}
+	if profile.ToolCalls.State != MetricPresent {
+		t.Fatalf("tool_calls state = %q, want present", profile.ToolCalls.State)
+	}
+	if len(profile.ToolCalls.Value) != 1 {
+		t.Fatalf("tool_calls count = %d, want 1", len(profile.ToolCalls.Value))
+	}
+	if !profile.ToolCalls.Value[0].Success {
+		t.Errorf("tool_calls[0] success = %v, want true", profile.ToolCalls.Value[0].Success)
+	}
+	if profile.Timing.State != MetricPresent {
+		t.Fatalf("timing state = %q, want present", profile.Timing.State)
+	}
+	if profile.SkillActivation.State != MetricPresent {
+		t.Fatalf("skill_activation state = %q, want present", profile.SkillActivation.State)
+	}
+	if len(profile.SkillActivation.Value) != 1 {
+		t.Fatalf("skill_activation count = %d, want 1", len(profile.SkillActivation.Value))
+	}
+	if profile.SkillActivation.Value[0].SkillName != "audit" {
+		t.Errorf("skill_activation skill = %q, want audit", profile.SkillActivation.Value[0].SkillName)
+	}
+	if profile.Attribution.State != MetricUnknown {
+		t.Errorf("attribution state = %q, want unknown", profile.Attribution.State)
+	}
+}
+
+func TestCapture_Cursor_SqliteUnknownSchema(t *testing.T) {
+	tmp := t.TempDir()
+	sqliteFile := filepath.Join(tmp, "state.vscdb")
+	os.WriteFile(sqliteFile, []byte("fake sqlite bytes"), 0644)
+
+	adapter := CursorAdapter{ExportFile: sqliteFile}
+	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "sha123", SkillDir: "/skills/my-skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if profile.Tokens.State != MetricUnknown {
+		t.Errorf("tokens state = %q, want unknown", profile.Tokens.State)
+	}
+	if profile.ToolCalls.State != MetricUnknown {
+		t.Errorf("tool_calls state = %q, want unknown", profile.ToolCalls.State)
+	}
+	if profile.Timing.State != MetricUnknown {
+		t.Errorf("timing state = %q, want unknown", profile.Timing.State)
+	}
+	if profile.SkillActivation.State != MetricUnknown {
+		t.Errorf("skill_activation state = %q, want unknown", profile.SkillActivation.State)
+	}
+}
+
+// --- Codex adapter tests ---
+
+func TestCapabilityReport_Codex_WithOtel(t *testing.T) {
+	tmp := t.TempDir()
+	otelFile := filepath.Join(tmp, "otel.json")
+	otelData := `{
+		"logs": [
+			{"event_name": "codex.sse_event", "attributes": {"input_token_count": 10}, "timestamp": "2026-09-10T22:00:00Z"},
+			{"event_name": "codex.tool_decision", "attributes": {"tool_name": "Bash", "decision": "approved"}, "timestamp": "2026-09-10T22:00:05Z"},
+			{"event_name": "codex.api.request", "timestamp": "2026-09-10T22:00:10Z"}
+		]
+	}`
+	os.WriteFile(otelFile, []byte(otelData), 0644)
+
+	adapter := CodexAdapter{OtelExportFile: otelFile}
+	cap := adapter.Probe()
+
+	if cap.Harness != "codex" {
+		t.Errorf("harness = %q, want codex", cap.Harness)
+	}
+	if cap.Capabilities[MetricTokens] != SourceOtel {
+		t.Errorf("tokens = %q, want otel", cap.Capabilities[MetricTokens])
+	}
+	if cap.Capabilities[MetricToolCalls] != SourceOtel {
+		t.Errorf("tool_calls = %q, want otel", cap.Capabilities[MetricToolCalls])
+	}
+	if cap.Capabilities[MetricTiming] != SourceOtel {
+		t.Errorf("timing = %q, want otel", cap.Capabilities[MetricTiming])
+	}
+	if cap.Capabilities[MetricSkillActivation] != SourceNone {
+		t.Errorf("skill_activation = %q, want none", cap.Capabilities[MetricSkillActivation])
+	}
+}
+
+func TestCapture_Codex_WithOtelData(t *testing.T) {
+	tmp := t.TempDir()
+	otelFile := filepath.Join(tmp, "otel.json")
+	otelData := `{
+		"logs": [
+			{"event_name": "codex.sse_event", "attributes": {"input_token_count": 1000, "output_token_count": 500, "reasoning_tokens": 50}, "timestamp": "2026-09-10T22:00:00Z"},
+			{"event_name": "codex.tool_decision", "attributes": {"tool_name": "Bash", "decision": "approved"}, "timestamp": "2026-09-10T22:00:05Z"},
+			{"event_name": "codex.sse_event", "attributes": {"input_token_count": 10}, "timestamp": "2026-09-10T22:00:07Z"},
+			{"event_name": "codex.api.request", "timestamp": "2026-09-10T22:00:00Z"},
+			{"event_name": "codex.api.request", "timestamp": "2026-09-10T22:00:10Z"}
+		]
+	}`
+	os.WriteFile(otelFile, []byte(otelData), 0644)
+
+	adapter := CodexAdapter{OtelExportFile: otelFile}
+	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "sha123", SkillDir: "/skills/my-skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if profile.Tokens.State != MetricPresent {
+		t.Fatalf("tokens state = %q, want present", profile.Tokens.State)
+	}
+	if profile.Tokens.Value.Input != 1010 {
+		t.Errorf("tokens input = %d, want 1010", profile.Tokens.Value.Input)
+	}
+	if profile.Tokens.Value.Output != 500 {
+		t.Errorf("tokens output = %d, want 500", profile.Tokens.Value.Output)
+	}
+	if profile.Tokens.Value.Reasoning != 50 {
+		t.Errorf("tokens reasoning = %d, want 50", profile.Tokens.Value.Reasoning)
+	}
+	if profile.Tokens.Source != "otel" {
+		t.Errorf("tokens source = %q, want otel", profile.Tokens.Source)
+	}
+	if profile.ToolCalls.State != MetricPresent {
+		t.Fatalf("tool_calls state = %q, want present", profile.ToolCalls.State)
+	}
+	if len(profile.ToolCalls.Value) != 1 {
+		t.Fatalf("tool_calls count = %d, want 1", len(profile.ToolCalls.Value))
+	}
+	if !profile.ToolCalls.Value[0].Success {
+		t.Errorf("tool_calls[0] success = %v, want true", profile.ToolCalls.Value[0].Success)
+	}
+	if profile.Timing.State != MetricPresent {
+		t.Fatalf("timing state = %q, want present", profile.Timing.State)
+	}
+	if profile.SkillActivation.State != MetricUnknown {
+		t.Errorf("skill_activation state = %q, want unknown", profile.SkillActivation.State)
+	}
+}
+
+// --- Devin adapter tests ---
+
+func TestCapabilityReport_Devin_WithExport(t *testing.T) {
+	tmp := t.TempDir()
+	exportFile := filepath.Join(tmp, "atif.json")
+	exportData := `{"steps": [{"type": "message"}], "messages": []}`
+	os.WriteFile(exportFile, []byte(exportData), 0644)
+
+	adapter := DevinAdapter{ExportFile: exportFile}
+	cap := adapter.Probe()
+
+	if cap.Harness != "devin" {
+		t.Errorf("harness = %q, want devin", cap.Harness)
+	}
+	if cap.Capabilities[MetricTokens] != SourceSessionData {
+		t.Errorf("tokens = %q, want session_data", cap.Capabilities[MetricTokens])
+	}
+	if cap.Capabilities[MetricToolCalls] != SourceSessionData {
+		t.Errorf("tool_calls = %q, want session_data", cap.Capabilities[MetricToolCalls])
+	}
+	if cap.Capabilities[MetricTiming] != SourceSessionData {
+		t.Errorf("timing = %q, want session_data", cap.Capabilities[MetricTiming])
+	}
+}
+
+func TestCapture_Devin_WithExport(t *testing.T) {
+	tmp := t.TempDir()
+	exportFile := filepath.Join(tmp, "atif.json")
+	exportData := `{"steps": [{"type": "message"}], "messages": []}`
+	os.WriteFile(exportFile, []byte(exportData), 0644)
+
+	adapter := DevinAdapter{ExportFile: exportFile}
+	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "sha123", SkillDir: "/skills/my-skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if profile.Tokens.State != MetricUnknown {
+		t.Errorf("tokens state = %q, want unknown", profile.Tokens.State)
+	}
+	if profile.ToolCalls.State != MetricUnknown {
+		t.Errorf("tool_calls state = %q, want unknown", profile.ToolCalls.State)
+	}
+	if profile.Timing.State != MetricUnknown {
+		t.Errorf("timing state = %q, want unknown", profile.Timing.State)
+	}
+	if profile.SkillActivation.State != MetricUnknown {
+		t.Errorf("skill_activation state = %q, want unknown", profile.SkillActivation.State)
+	}
+	if profile.Attribution.State != MetricUnknown {
+		t.Errorf("attribution state = %q, want unknown", profile.Attribution.State)
+	}
+}
