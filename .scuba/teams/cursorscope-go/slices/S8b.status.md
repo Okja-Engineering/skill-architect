@@ -31,3 +31,5 @@ R-SA-11, R-SA-17, R-RL-16 (**documented and handed off to F04**, not implemented
 **Partly gated on User Question 8** — `.out-of-scope.md` and `README.md` currently promise the plugin does *not* run live comparisons; amending them is the user's call, not the implementer's.
 
 Ships last in whichever MVE runs: wave 4 in the primary MVE (after S3), wave 3 in the fallback (S3 withdrawn, deps reduce to {SC, S1b, S4}). It is the slice that makes the epic legible to someone who did not read this roadmap.
+
+**CI wiring (V4-#7).** Whichever file this slice ships — the appended case in `tests/test_guardrails.sh` or the standalone `tests/test_doc_labels.sh` — is discovered by the `tests/test_*.sh` glob **S1a DoD 7** installs in `.github/workflows/ci.yml`. This slice edits no workflow file, and the fallback path needs no extra wiring, which round 3 left unstated: under the pre-S1a workflow a new `test_doc_labels.sh` would never have run at all.
