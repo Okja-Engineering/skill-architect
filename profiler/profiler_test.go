@@ -2,6 +2,7 @@ package profiler
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1057,5 +1058,117 @@ func TestLoadExperimentDesign(t *testing.T) {
 	}
 	if loaded.Name != d.Name {
 		t.Errorf("name = %q, want %q", loaded.Name, d.Name)
+	}
+}
+
+// --- F04 experiment run tests ---
+
+func TestRunPlan(t *testing.T) {
+	tmp := t.TempDir()
+	baseFixture := filepath.Join(tmp, "base-fixture.json")
+	candFixture := filepath.Join(tmp, "cand-fixture.json")
+
+	baseline := Profile{
+		Schema:       ProfileSchema,
+		Harness:      "claude_code",
+		SessionID:    "base-001",
+		SnapshotHash: "sha-base",
+		SkillDir:     "skills/skill-audit",
+		Tokens:       PresentTokenResult(TokenCounts{Input: 100, Output: 50}, "otel"),
+	}
+	candidate := Profile{
+		Schema:       ProfileSchema,
+		Harness:      "claude_code",
+		SessionID:    "cand-001",
+		SnapshotHash: "sha-cand",
+		SkillDir:     "skills/skill-audit",
+		Tokens:       PresentTokenResult(TokenCounts{Input: 120, Output: 60}, "otel"),
+	}
+	bJSON, _ := json.Marshal(baseline)
+	cJSON, _ := json.Marshal(candidate)
+	os.WriteFile(baseFixture, bJSON, 0644)
+	os.WriteFile(candFixture, cJSON, 0644)
+
+	design := ExperimentDesign{
+		Schema:       ExperimentSchema,
+		Name:         "run-test",
+		TaskFamilies: []string{"audit"},
+		Repetitions:  1,
+		OutputDir:    tmp,
+		Baseline: Condition{
+			Name:         "no-skill",
+			Command:      fmt.Sprintf("cp %s $PROFILE", baseFixture),
+			SnapshotHash: "sha-base",
+			SkillDir:     "skills/skill-audit",
+			Harness:      "claude_code",
+		},
+		Candidate: Condition{
+			Name:         "with-skill",
+			Command:      fmt.Sprintf("cp %s $PROFILE", candFixture),
+			SnapshotHash: "sha-cand",
+			SkillDir:     "skills/skill-audit",
+			Harness:      "claude_code",
+		},
+	}
+	plan, err := GeneratePlan(design)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reports, err := RunPlan(plan, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("reports = %d, want 1", len(reports))
+	}
+	if !reports[0].Comparable {
+		t.Fatal("report should be comparable")
+	}
+	delta := reports[0].Metrics["tokens"].Delta.(TokenCounts)
+	if delta.Input != 20 {
+		t.Errorf("token input delta = %d, want 20", delta.Input)
+	}
+
+	outFile := filepath.Join(tmp, "audit-r1-comparison.json")
+	if _, err := os.Stat(outFile); err != nil {
+		t.Fatalf("comparison file not written: %v", err)
+	}
+}
+
+func TestLoadPlan(t *testing.T) {
+	tmp := t.TempDir()
+	d := ExperimentDesign{
+		Schema:       ExperimentSchema,
+		Name:         "load-plan",
+		TaskFamilies: []string{"audit"},
+		Baseline: Condition{
+			Command:      "cmd",
+			SnapshotHash: "sha-base",
+			SkillDir:     "skills/skill-audit",
+		},
+		Candidate: Condition{
+			Command:      "cmd",
+			SnapshotHash: "sha-cand",
+			SkillDir:     "skills/skill-audit",
+		},
+	}
+	plan, err := GeneratePlan(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planFile := filepath.Join(tmp, "plan.json")
+	planJSON, _ := json.Marshal(plan)
+	os.WriteFile(planFile, planJSON, 0644)
+
+	loaded, err := LoadPlan(planFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Schema != ExperimentPlanSchema {
+		t.Errorf("schema = %q, want %q", loaded.Schema, ExperimentPlanSchema)
+	}
+	if len(loaded.Runs) != 1 {
+		t.Errorf("runs = %d, want 1", len(loaded.Runs))
 	}
 }

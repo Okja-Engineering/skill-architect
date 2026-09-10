@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -220,4 +222,80 @@ func safeName(s string) string {
 	s = strings.ReplaceAll(s, " ", "-")
 	s = strings.ReplaceAll(s, "/", "-")
 	return s
+}
+
+// LoadPlan reads a materialized experiment plan file.
+func LoadPlan(path string) (ExperimentPlan, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ExperimentPlan{}, err
+	}
+	var p ExperimentPlan
+	if err := json.Unmarshal(data, &p); err != nil {
+		return ExperimentPlan{}, err
+	}
+	if p.Schema != ExperimentPlanSchema {
+		return ExperimentPlan{}, fmt.Errorf("unknown experiment plan schema %q, want %q", p.Schema, ExperimentPlanSchema)
+	}
+	return p, nil
+}
+
+// RunPlan executes every run in the plan, loads the resulting profiles, and
+// compares the baseline to the candidate for each run.
+// If outputDir is non-empty, each comparison report is written to the path
+// specified in the run.
+func RunPlan(plan ExperimentPlan, outputDir string) ([]ComparisonReport, error) {
+	var reports []ComparisonReport
+	for _, run := range plan.Runs {
+		if len(run.Steps) < 2 {
+			return nil, fmt.Errorf("run %s r%d has fewer than 2 steps", run.TaskFamily, run.Repetition)
+		}
+		baseStep, candStep := run.Steps[0], run.Steps[1]
+		if err := executeStep(baseStep); err != nil {
+			return nil, err
+		}
+		if err := executeStep(candStep); err != nil {
+			return nil, err
+		}
+		baseProfile, err := LoadProfile(baseStep.ProfilePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load baseline profile %q: %w", baseStep.ProfilePath, err)
+		}
+		candProfile, err := LoadProfile(candStep.ProfilePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load candidate profile %q: %w", candStep.ProfilePath, err)
+		}
+		report := CompareProfiles(baseProfile, candProfile)
+		reports = append(reports, report)
+		if outputDir != "" {
+			outPath := run.Comparison
+			if !filepath.IsAbs(outPath) {
+				outPath = filepath.Join(outputDir, outPath)
+			}
+			if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+				return nil, err
+			}
+			data, err := json.MarshalIndent(report, "", "  ")
+			if err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(outPath, data, 0644); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return reports, nil
+}
+
+func executeStep(step ExperimentStep) error {
+	if step.Command == "" {
+		return fmt.Errorf("step has no command")
+	}
+	cmd := exec.Command("sh", "-c", step.Command)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("step %s %s r%d failed: %w", step.Condition, step.TaskFamily, step.Repetition, err)
+	}
+	return nil
 }

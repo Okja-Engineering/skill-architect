@@ -148,7 +148,7 @@ func cmdCompare(args []string) {
 
 func cmdExperiment(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: experiment plan --file <design.json>")
+		fmt.Fprintln(os.Stderr, "usage: experiment {plan,run} --file <design.json> | --plan <plan.json>")
 		os.Exit(1)
 	}
 	switch args[0] {
@@ -183,6 +183,47 @@ func cmdExperiment(args []string) {
 			}
 			fmt.Printf("plan written to: %s\n", *output)
 			return
+		}
+		fmt.Println(string(out))
+	case "run":
+		fs := flag.NewFlagSet("experiment run", flag.ExitOnError)
+		planFile := fs.String("plan", "", "path to experiment plan JSON")
+		designFile := fs.String("design", "", "path to experiment design JSON (generates plan before running)")
+		outputDir := fs.String("output-dir", "", "optional output directory for comparison reports")
+		fs.Parse(args[1:])
+		if *planFile == "" && *designFile == "" {
+			fmt.Fprintln(os.Stderr, "required: --plan or --design")
+			os.Exit(1)
+		}
+		var plan profiler.ExperimentPlan
+		var err error
+		if *planFile != "" {
+			plan, err = profiler.LoadPlan(*planFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failed to load plan: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			design, err := profiler.LoadExperimentDesign(*designFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failed to load design: %v\n", err)
+				os.Exit(1)
+			}
+			plan, err = profiler.GeneratePlan(design)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failed to generate plan: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		reports, err := profiler.RunPlan(plan, *outputDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "experiment run failed: %v\n", err)
+			os.Exit(1)
+		}
+		out, err := json.MarshalIndent(reports, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "marshal error: %v\n", err)
+			os.Exit(1)
 		}
 		fmt.Println(string(out))
 	default:
@@ -220,5 +261,6 @@ examples:
   profiler probe --harness cursor --otel-file ./otel-export.json --export-file ./state.vscdb
   profiler capture --harness claude_code --session abc123 --snapshot sha123 --skill-dir ./skills/my-skill --otel-file ./otel-export.json
   profiler compare --baseline profile-baseline.json --candidate profile-candidate.json
-  profiler experiment plan --file design.json`)
+  profiler experiment plan --file design.json
+  profiler experiment run --plan plan.json --output-dir ./results`)
 }
