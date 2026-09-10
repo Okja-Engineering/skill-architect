@@ -1,15 +1,17 @@
 # skill-architect — roadmap
-**Updated** 2026-09-10 00:47 · `scribe` · mirror `scuba-state/imagineux-gmail-com@c56e45b`
+**Updated** 2026-09-10 01:12 · `scribe` · mirror `scuba-state/imagineux-gmail-com@e240f1e`
 
 ## Now active
 _One or two lines per currently-moving thread — what's happening right now._
-- 🟡 **E-CS · Cursor hook telemetry** — mandate drafted; awaiting research fold-in and the user's fork calls before grooming into slices. → [status](teams/cursorscope-go/status.md)
-- 🟢 **research-profiling** — researcher running on skill profiling + token-efficiency evidence; ledger not yet written. → [status](teams/research-profiling/ledger.md)
+- 🟡 **E-CS · Cursor hook telemetry** — groomed into S0–S11; two hunters running the spec gate (conformance, verifiability); awaiting user fork calls. → [status](teams/cursorscope-go/status.md)
+- ✅ **research-profiling** — ledger landed at `teams/research-profiling/ledger.md`; folded into the E-CS grooming. → [status](teams/research-profiling/ledger.md)
 - ✅ **F04 · paired comparisons** — slices 1–3 are on `main` (`0a83615`, `236152c`, `e0e2a52`); its status file `tmp/teams/architect/F04.status.md` still reads "parked" and is **stale** — trust git, not that file.
 
 ## Decisions waiting on me
 _(Empty when none; never bury a decision.)_
-1. **E-CS mandate forks** — ingest model, OTLP, location, naming, deps, token honesty → [context](teams/cursorscope-go/mandate-draft.md) §7 and §10
+1. **E-CS forks and the top-3 user questions** — ingest model, OTLP sequencing, code location, naming, deps, token honesty → [context](teams/cursorscope-go/roadmap.md) §D and §E
+2. **Cursor availability** — `~/.cursor/` is **absent on this machine**; will the user install Cursor and the hook? If not, the hooks half (S1–S5, S7, S9–S11) is unbuildable-as-verified and the epic collapses to **S0 + T1** → [context](teams/cursorscope-go/roadmap.md) §E Q1
+3. **Dispatch S0 now?** — bug fix to the already-merged `profiler/cursor.go`; independent of the epic once the spec gate is CLEAN → [context](teams/cursorscope-go/slices/S0.status.md)
 
 ## Roadmap
 
@@ -18,7 +20,10 @@ flowchart TD
   L([skill-architect]):::root
 
   L --> CS[🟡 E-CS · Cursor hook telemetry for the profiler]:::spec
-  L --> RP[🟢 Skill profiling + token efficiency research]:::exec
+  L --> RP[✅ Skill profiling + token efficiency research]:::done
+  L --> T1[💤 T1 · static BPE token cost in skill-audit]:::parked
+
+  CS --> S0[🟡 S0 · fix Cursor OTel adapter vs wire reference]:::spec
 
   subgraph PRIOR["Prior epics (superseded control plane in tmp/teams/architect/)"]
     F01[✅ F01 · format/policy split]:::done
@@ -38,8 +43,10 @@ flowchart TD
   F03 --> CS
   F04 --> CS
 
-  click CS "teams/cursorscope-go/mandate-draft.md" "Mandate draft — spec → plan → brief"
+  click CS "teams/cursorscope-go/roadmap.md" "Groomed roadmap — 12 slices S0-S11"
   click RP "teams/research-profiling/ledger.md" "Research ledger"
+  click T1 "teams/cursorscope-go/slices/T1.status.md" "Parked — separate parallel thread"
+  click S0 "teams/cursorscope-go/slices/S0.status.md" "Slice status — dispatchable independently"
   click F01 "../tmp/teams/architect/F01.status.md" "Done — status"
   click F02 "../tmp/teams/architect/F02.status.md" "Done — status"
   click F03 "../tmp/teams/architect/profiler-design-space.md" "Done — design space (no status file)"
