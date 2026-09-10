@@ -1,9 +1,9 @@
 # skill-architect — roadmap
-**Updated** 2026-09-10 01:28 · `scribe` · mirror `scuba-state/imagineux-gmail-com@c6d8e19`
+**Updated** 2026-09-10 01:39 · `scribe` · mirror `scuba-state/imagineux-gmail-com@b7df49a`
 
 ## Now active
 _One or two lines per currently-moving thread — what's happening right now._
-- 🟡 **E-CS · Cursor hook telemetry** — revision round 1 done (contract slice SC added, S1 split, SP1 gating spike; 16 slices); round-2 confirming hunters running (conformance, verifiability). → [status](teams/cursorscope-go/status.md)
+- 🟡 **E-CS · Cursor hook telemetry** — spec gate round 2 **NOT-CLEAN but converging** (conformance 12 REAL incl. one invented enum value; verifiability 9 REAL, root: contract slice not swept downstream); round-2 revision running with proof-of-sweep tables required. → [status](teams/cursorscope-go/status.md)
 - ✅ **E-CS · deep research** — ✅ deep-research done: no existing tool attributes cost per skill run in Cursor; report in `../cursor-profiler/docs/research/existing-per-skill-cost-tools.md`. → [status](teams/cursorscope-go/status.md)
 - ✅ **E-CS · research collection** — ✅ six research files + deep-research report collected into `../cursor-profiler/docs/research/`. → [status](teams/cursorscope-go/status.md)
 - ✅ **research-profiling** — ledger landed at `teams/research-profiling/ledger.md`; folded into the E-CS grooming. → [status](teams/research-profiling/ledger.md)
