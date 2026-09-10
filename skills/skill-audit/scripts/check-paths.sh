@@ -76,7 +76,7 @@ while IFS= read -r path; do
     findings+=("fail|PT001|script/reference path not found: $path")
     fail=1
   fi
-done < <(echo "$code_body" | grep -oE '(?:\./|\$)\S*(?:scripts|references|assets)/\S+' 2>/dev/null || true)
+done < <(echo "$code_body" | grep -oE '(\./|\$)\S*(scripts|references|assets)/\S+' 2>/dev/null || true)
 
 # --- Output ---
 if $json_output; then
