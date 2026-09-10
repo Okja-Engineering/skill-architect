@@ -1,9 +1,11 @@
 # skill-architect — roadmap
-**Updated** 2026-09-10 01:12 · `scribe` · mirror `scuba-state/imagineux-gmail-com@42b8a21`
+**Updated** 2026-09-10 01:13 · `scribe` · mirror `scuba-state/imagineux-gmail-com@42b8a21`
 
 ## Now active
 _One or two lines per currently-moving thread — what's happening right now._
-- 🟡 **E-CS · Cursor hook telemetry** — groomed into S0–S11; two hunters running the spec gate (conformance, verifiability); awaiting user fork calls. → [status](teams/cursorscope-go/status.md)
+- 🟡 **E-CS · Cursor hook telemetry** — spec gate round 1 NOT-CLEAN (conformance 15 REAL + verifiability 18 REAL; reports in `teams/cursorscope-go/review/`); groomer revising at the root; re-review next. → [status](teams/cursorscope-go/status.md)
+- 🟡 **E-CS · deep research** — deep-research workflow running: other per-skill cost tracking tools for Cursor. → [status](teams/cursorscope-go/status.md)
+- 🟡 **E-CS · research collection** — research collector writing findings into `../cursor-profiler/docs/research/` (sibling repo, add-only). → [status](teams/cursorscope-go/status.md)
 - ✅ **research-profiling** — ledger landed at `teams/research-profiling/ledger.md`; folded into the E-CS grooming. → [status](teams/research-profiling/ledger.md)
 - ✅ **F04 · paired comparisons** — slices 1–3 are on `main` (`0a83615`, `236152c`, `e0e2a52`); its status file `tmp/teams/architect/F04.status.md` still reads "parked" and is **stale** — trust git, not that file.
 
