@@ -90,7 +90,16 @@ func TestCapabilityReport_ClaudeCode_WithOtel(t *testing.T) {
 	// Create a temp OTel export file so the adapter detects it as available.
 	tmp := t.TempDir()
 	otelFile := filepath.Join(tmp, "otel.json")
-	os.WriteFile(otelFile, []byte(`{}`), 0644)
+	otelData := `{
+		"metrics": [
+			{"name": "claude_code.token.usage", "attributes": {"token_type": "input"}, "value": 100}
+		],
+		"logs": [
+			{"event_name": "claude_code.api_request", "timestamp": "2026-09-10T22:00:00Z"},
+			{"event_name": "claude_code.tool_decision", "attributes": {"tool_name": "Bash", "decision": "approved"}, "timestamp": "2026-09-10T22:00:05Z"}
+		]
+	}`
+	os.WriteFile(otelFile, []byte(otelData), 0644)
 
 	adapter := ClaudeCodeAdapter{OtelExportFile: otelFile}
 	cap := adapter.Probe()
@@ -123,6 +132,24 @@ func TestCapabilityReport_ClaudeCode_WithoutOtel(t *testing.T) {
 	for metric, source := range cap.Capabilities {
 		if source != SourceNone {
 			t.Errorf("%s = %q, want none", metric, source)
+		}
+	}
+}
+
+func TestCapabilityReport_ClaudeCode_EmptyOtelFile(t *testing.T) {
+	tmp := t.TempDir()
+	otelFile := filepath.Join(tmp, "otel.json")
+	os.WriteFile(otelFile, []byte(`{}`), 0644)
+
+	adapter := ClaudeCodeAdapter{OtelExportFile: otelFile}
+	cap := adapter.Probe()
+
+	for metric, source := range cap.Capabilities {
+		if metric == MetricSkillActivation || metric == MetricAttribution {
+			continue
+		}
+		if source != SourceNone {
+			t.Errorf("%s = %q, want none for empty file", metric, source)
 		}
 	}
 }

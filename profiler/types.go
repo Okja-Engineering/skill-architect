@@ -89,7 +89,6 @@ type TokenCounts struct {
 type ToolCallEntry struct {
 	Name      string `json:"name"`
 	Timestamp string `json:"timestamp"`
-	Duration  int64  `json:"duration_ms,omitempty"`
 	Success   bool   `json:"success"`
 }
 

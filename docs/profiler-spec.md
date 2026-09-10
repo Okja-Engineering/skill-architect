@@ -129,7 +129,6 @@ type TokenCounts struct {
 type ToolCallEntry struct {
     Name      string `json:"name"`
     Timestamp string `json:"timestamp"`
-    Duration  int64  `json:"duration_ms,omitempty"`
     Success   bool   `json:"success"`
 }
 
@@ -171,9 +170,12 @@ type Attribution struct {
 **Telemetry surface:** OTel export via `CLAUDE_CODE_ENABLE_TELEMETRY=1` + `OTEL_*` env vars.
 
 **Probe logic:**
-1. Check `CLAUDE_CODE_ENABLE_TELEMETRY` env var. If not set, capabilities are all `none`.
-2. Check `OTEL_METRICS_EXPORTER` and `OTEL_LOGS_EXPORTER`. If `otlp`, capabilities are `otel` for tokens, tool_calls, timing.
-3. Skill activation is always `none` for Claude Code (no skill-level events in OTel).
+1. If `OtelExportFile` is set and the file exists, parse it. For each metric category, set `otel` only if the file contains the corresponding signal:
+   - `claude_code.token.usage` metric → `tokens: otel`
+   - `claude_code.tool_decision` log events → `tool_calls: otel`
+   - `claude_code.api_request` log events → `timing: otel`
+   If the file is empty, malformed, or missing the relevant signal, that capability stays `none`.
+2. Skill activation and attribution are always `none` for Claude Code (no skill-level events in OTel).
 
 **Capture logic:**
 1. Read OTel metrics from the configured endpoint (or a file the collector writes).

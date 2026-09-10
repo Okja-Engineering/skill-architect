@@ -26,8 +26,8 @@ type ClaudeCodeAdapter struct {
 func (a ClaudeCodeAdapter) Name() string { return "claude_code" }
 
 // Probe inspects the environment and returns what metrics this adapter can produce.
-// OTel is reported as available only when an export file exists — the env var
-// alone indicates intent but Capture cannot deliver without a file to read.
+// OTel is reported as available only when an export file exists and contains
+// the relevant signals; empty or malformed files report "none".
 func (a ClaudeCodeAdapter) Probe() CapabilityReport {
 	caps := map[MetricName]MetricSource{
 		MetricTokens:          SourceNone,
@@ -37,17 +37,20 @@ func (a ClaudeCodeAdapter) Probe() CapabilityReport {
 		MetricAttribution:     SourceNone,
 	}
 
-	otelAvailable := false
 	if a.OtelExportFile != "" {
 		if _, err := os.Stat(a.OtelExportFile); err == nil {
-			otelAvailable = true
+			if tokens, toolCalls, timing := hasOtelSignals(a.OtelExportFile); tokens || toolCalls || timing {
+				if tokens {
+					caps[MetricTokens] = SourceOtel
+				}
+				if toolCalls {
+					caps[MetricToolCalls] = SourceOtel
+				}
+				if timing {
+					caps[MetricTiming] = SourceOtel
+				}
+			}
 		}
-	}
-
-	if otelAvailable {
-		caps[MetricTokens] = SourceOtel
-		caps[MetricToolCalls] = SourceOtel
-		caps[MetricTiming] = SourceOtel
 	}
 
 	// Claude Code has no skill-level activation or attribution events.
@@ -217,6 +220,32 @@ func extractTiming(data claudeCodeOtelExport) TimingResult {
 		td.TotalMs = e1.Sub(t1).Milliseconds()
 	}
 	return PresentTimingResult(td, string(SourceOtel))
+}
+
+func hasOtelSignals(file string) (tokens, toolCalls, timing bool) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return false, false, false
+	}
+	var otelData claudeCodeOtelExport
+	if err := json.Unmarshal(data, &otelData); err != nil {
+		return false, false, false
+	}
+	for _, m := range otelData.Metrics {
+		if m.Name == "claude_code.token.usage" {
+			tokens = true
+			break
+		}
+	}
+	for _, log := range otelData.Logs {
+		switch log.EventName {
+		case "claude_code.tool_decision":
+			toolCalls = true
+		case "claude_code.api_request":
+			timing = true
+		}
+	}
+	return tokens, toolCalls, timing
 }
 
 func toInt(v any) int {
