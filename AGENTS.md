@@ -12,6 +12,9 @@ Before building a custom solution, check whether an existing, maintained tool al
 - **`grep`** — absence checks (missing headings, missing code blocks). Semgrep is for pattern finding, not absence detection.
 - Custom bash only for filesystem path resolution of script references in code blocks, which no standard tool covers.
 
+## Git
+- Do not add Co-Authored-By or "Generated with" trailers to commits.
+
 ## Evidence labels
 - Specification — from the Agent Skills spec or official docs
 - External evidence — from third-party tools or benchmarks

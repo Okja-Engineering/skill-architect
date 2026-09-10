@@ -1,5 +1,13 @@
 # Release notes
 
+## v0.3.0
+
+**Unified machine-readable audit reports.**
+
+- `audit-report.sh` composes `skill-validator`, `skillscore`, and house-policy checks into a single JSON document with a top-level summary for quick pass/fail checks.
+- `check-paths.sh` and `check-structure.sh` now support `--json` for structured output; text mode is unchanged.
+- 131 tests pass across layout, end-to-end walk, F01 format/policy separation, and F02 unified report.
+
 ## v0.2.0
 
 **Two-skill workflow: audit, then draft a rewrite.**

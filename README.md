@@ -86,7 +86,7 @@ This produces `~/.claude/skills/my-skill/REWRITE-DRAFT.md` for review before any
 
 1. **Orient** — identify the target skill directory.
 2. **Inspect** — read `SKILL.md`, `scripts/`, `references/`, `assets/`.
-3. **Validate** — run `check-frontmatter.sh` and `check-structure.sh`.
+3. **Validate** — run `check-frontmatter.sh`, `check-structure.sh`, and `check-quality.sh`, or produce a unified machine-readable report with `audit-report.sh`.
 4. **Score** — evaluate 10 dimensions on a 0–2 scale.
 5. **Report** — produce a pass/fail report with ordered fixes.
 
@@ -99,12 +99,14 @@ Run the tests:
 ```bash
 tests/test_skill.sh
 tests/test_walk.sh
+tests/test_f01.sh
+tests/test_f02.sh
 ```
 
 ## What this plugin does not do
 
 - It does not automatically rewrite the audited skill.
-- It does not run live agent evaluations (with-skill vs without-skill) in v0.2.0.
+- It does not run live agent evaluations (with-skill vs without-skill) in v0.3.0.
 - It does not judge subjective writing quality or correctness of domain advice.
 
 See [`.out-of-scope.md`](.out-of-scope.md) for deliberate boundaries.

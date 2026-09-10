@@ -24,3 +24,5 @@ jobs:
         run: tests/test_walk.sh
       - name: Run F01 format/policy separation tests
         run: tests/test_f01.sh
+      - name: Run F02 unified audit report tests
+        run: tests/test_f02.sh
