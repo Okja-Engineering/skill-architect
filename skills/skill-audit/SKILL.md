@@ -45,7 +45,26 @@ Resolve `skill_root` to the directory containing this `SKILL.md` and run the bun
 ```bash
 "$skill_root/scripts/check-frontmatter.sh" "$target_skill"
 "$skill_root/scripts/check-structure.sh" "$target_skill"
+"$skill_root/scripts/check-quality.sh" "$target_skill"
 ```
+
+The checks use established tools, each for what it does best:
+
+- **`skill-validator`** (from `agent-ecosystem/skill-validator`, Go binary) — spec validation: frontmatter format, name, description, YAML validity, code fence integrity, internal link resolution, token counts, content analysis, contamination detection. Install with `brew install agent-ecosystem/tap/skill-validator`.
+- **`skillscore`** (npm package) — quality scoring across 7 Anthropic-aligned dimensions (identity, conciseness, clarity, routing, robustness, safety, portability). Install with `npm install -g skillscore`.
+- **`grep`** — house-policy absence checks (missing headings, no code blocks, no lists, line count).
+- **`check-paths.sh`** — resolves local script references in code blocks against the filesystem.
+
+For direct access to individual checks:
+
+```bash
+skill-validator validate structure -o json "$target_skill"   # spec + structure (JSON)
+skill-validator check -o json "$target_skill"                 # everything except LLM scoring (JSON)
+"$skill_root/scripts/check-paths.sh" "$target_skill"          # script path resolution only
+"$skill_root/scripts/check-quality.sh" "$target_skill"        # quality scoring (JSON)
+```
+
+Exit codes: 0=pass, 1=spec/path failure, 2=policy failure, 3=execution error. House-policy findings include rule IDs: PL001 for license, PL002 for headings, PL003 for line count, PL004 for code blocks, PL005 for lists, PT001 for missing scripts, PT002 for missing markdown links.
 
 List bundled resources:
 

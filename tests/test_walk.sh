@@ -55,12 +55,12 @@ EOF
   skills/skill-audit/scripts/check-structure.sh "$bad" >> "$out" 2>&1 || true
 
   assert "bad skill frontmatter passes" grep -q "frontmatter OK" "$out"
-  assert "bad skill missing When to use" grep -q "FAIL: missing heading matching '.*When to use" "$out"
-  assert "bad skill missing Examples" grep -q "FAIL: missing heading matching '.*Examples" "$out"
-  assert "bad skill missing Deterministic" grep -q "FAIL: missing heading matching '.*Deterministic'" "$out"
-  assert "bad skill missing Orchestration" grep -q "FAIL: missing heading matching '.*Orchestration'" "$out"
-  assert "bad skill missing Constraints" grep -q "FAIL: missing heading matching '.*Constraints'" "$out"
-  assert "bad skill has no code blocks" grep -q "FAIL: no code blocks found" "$out"
+  assert "bad skill missing When to use" grep -q "POLICY FAIL.*When to use" "$out"
+  assert "bad skill missing Examples" grep -q "POLICY FAIL.*Examples" "$out"
+  assert "bad skill missing Deterministic" grep -q "POLICY FAIL.*Deterministic" "$out"
+  assert "bad skill missing Orchestration" grep -q "POLICY FAIL.*Orchestration" "$out"
+  assert "bad skill missing Constraints" grep -q "POLICY FAIL.*Constraints" "$out"
+  assert "bad skill has no code blocks" grep -q "POLICY FAIL.*no code blocks" "$out"
 }
 
 # Rewrite drafts a plan for the broken skill.

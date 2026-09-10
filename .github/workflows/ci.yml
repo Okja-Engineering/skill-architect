@@ -11,7 +11,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install skill-validator
+        run: brew install agent-ecosystem/tap/skill-validator
+      - name: Install skillscore
+        run: npm install -g skillscore
       - name: Run skill layout tests
         run: tests/test_skill.sh
       - name: Run end-to-end walk tests
         run: tests/test_walk.sh
+      - name: Run F01 format/policy separation tests
+        run: tests/test_f01.sh
