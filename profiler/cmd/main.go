@@ -26,6 +26,8 @@ func main() {
 		cmdCapture(os.Args[2:])
 	case "compare":
 		cmdCompare(os.Args[2:])
+	case "experiment":
+		cmdExperiment(os.Args[2:])
 	case "version":
 		fmt.Println("profiler " + profiler.AdapterVersion)
 	default:
@@ -144,6 +146,51 @@ func cmdCompare(args []string) {
 	fmt.Println(string(out))
 }
 
+func cmdExperiment(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: experiment plan --file <design.json>")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "plan":
+		fs := flag.NewFlagSet("experiment plan", flag.ExitOnError)
+		file := fs.String("file", "", "path to experiment design JSON")
+		output := fs.String("output", "", "optional path to write plan JSON")
+		fs.Parse(args[1:])
+		if *file == "" {
+			fmt.Fprintln(os.Stderr, "required: --file")
+			os.Exit(1)
+		}
+		design, err := profiler.LoadExperimentDesign(*file)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to load design: %v\n", err)
+			os.Exit(1)
+		}
+		plan, err := profiler.GeneratePlan(design)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to generate plan: %v\n", err)
+			os.Exit(1)
+		}
+		out, err := json.MarshalIndent(plan, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "marshal error: %v\n", err)
+			os.Exit(1)
+		}
+		if *output != "" {
+			if err := os.WriteFile(*output, out, 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to write plan: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("plan written to: %s\n", *output)
+			return
+		}
+		fmt.Println(string(out))
+	default:
+		fmt.Fprintf(os.Stderr, "unknown experiment command: %s\n", args[0])
+		os.Exit(1)
+	}
+}
+
 func getAdapter(harness, otelFile, exportFile string) profiler.ProfilerAdapter {
 	switch harness {
 	case "claude_code":
@@ -162,14 +209,16 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage: profiler <command> [flags]
 
 commands:
-  probe     Probe environment and report capabilities
-  capture   Capture a session profile
-  compare   Compare two captured profiles
-  version   Print version
+  probe       Probe environment and report capabilities
+  capture     Capture a session profile
+  compare     Compare two captured profiles
+  experiment  Plan or run a paired experiment
+  version     Print version
 
 examples:
   profiler probe --harness claude_code --otel-file ./otel-export.json
   profiler probe --harness cursor --otel-file ./otel-export.json --export-file ./state.vscdb
   profiler capture --harness claude_code --session abc123 --snapshot sha123 --skill-dir ./skills/my-skill --otel-file ./otel-export.json
-  profiler compare --baseline profile-baseline.json --candidate profile-candidate.json`)
+  profiler compare --baseline profile-baseline.json --candidate profile-candidate.json
+  profiler experiment plan --file design.json`)
 }

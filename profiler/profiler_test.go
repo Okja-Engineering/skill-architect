@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -932,5 +933,129 @@ func TestCompareProfiles_UnknownMetric(t *testing.T) {
 	}
 	if report.Comparable {
 		t.Error("report should not be comparable when no metric is present in both")
+	}
+}
+
+// --- F04 experiment plan tests ---
+
+func TestNormalizeDesign_AppliesDefaults(t *testing.T) {
+	d := ExperimentDesign{
+		Schema:       ExperimentSchema,
+		Name:         "skill-rewrite-efficiency",
+		TaskFamilies: []string{"refactor-audit", "refactor-rewrite"},
+		Repetitions:  3,
+		Baseline: Condition{
+			Name:         "no-skill",
+			Command:      "./capture-baseline $TASK $REP $PROFILE",
+			SnapshotHash: "sha-base",
+			SkillDir:     "skills/skill-audit",
+		},
+		Candidate: Condition{
+			Name:         "with-skill",
+			Command:      "./capture-candidate $TASK $REP $PROFILE",
+			SnapshotHash: "sha-cand",
+			SkillDir:     "skills/skill-audit",
+		},
+	}
+	n, err := NormalizeDesign(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Ordering != "blocked" {
+		t.Errorf("ordering = %q, want blocked", n.Ordering)
+	}
+	if n.AnalysisMethod != "difference" {
+		t.Errorf("analysis_method = %q, want difference", n.AnalysisMethod)
+	}
+	if n.StoppingRule != "fixed" {
+		t.Errorf("stopping_rule = %q, want fixed", n.StoppingRule)
+	}
+	if n.Baseline.Harness != "claude_code" {
+		t.Errorf("baseline harness = %q, want claude_code", n.Baseline.Harness)
+	}
+	if n.Candidate.Harness != "claude_code" {
+		t.Errorf("candidate harness = %q, want claude_code", n.Candidate.Harness)
+	}
+}
+
+func TestGeneratePlan(t *testing.T) {
+	d := ExperimentDesign{
+		Schema:       ExperimentSchema,
+		Name:         "skill-rewrite-efficiency",
+		TaskFamilies: []string{"refactor-audit", "refactor-rewrite"},
+		Repetitions:  2,
+		Ordering:     "blocked",
+		Baseline: Condition{
+			Name:         "no-skill",
+			Command:      "./capture-baseline $TASK $REP $PROFILE",
+			SnapshotHash: "sha-base",
+			SkillDir:     "skills/skill-audit",
+			Harness:      "claude_code",
+		},
+		Candidate: Condition{
+			Name:         "with-skill",
+			Command:      "./capture-candidate $TASK $REP $PROFILE",
+			SnapshotHash: "sha-cand",
+			SkillDir:     "skills/skill-audit",
+			Harness:      "claude_code",
+		},
+	}
+	plan, err := GeneratePlan(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Schema != ExperimentPlanSchema {
+		t.Errorf("schema = %q, want %q", plan.Schema, ExperimentPlanSchema)
+	}
+	wantRuns := len(d.TaskFamilies) * d.Repetitions
+	if len(plan.Runs) != wantRuns {
+		t.Fatalf("runs = %d, want %d", len(plan.Runs), wantRuns)
+	}
+	for i, run := range plan.Runs {
+		if len(run.Steps) != 2 {
+			t.Errorf("run %d steps = %d, want 2", i, len(run.Steps))
+		}
+		if run.Steps[0].Condition != "baseline" {
+			t.Errorf("run %d first step condition = %q, want baseline", i, run.Steps[0].Condition)
+		}
+		if run.Steps[1].Condition != "candidate" {
+			t.Errorf("run %d second step condition = %q, want candidate", i, run.Steps[1].Condition)
+		}
+		if !strings.Contains(run.Steps[0].Command, "capture-baseline") {
+			t.Errorf("run %d baseline command = %q, want capture-baseline", i, run.Steps[0].Command)
+		}
+		if !strings.HasSuffix(run.Comparison, "-comparison.json") {
+			t.Errorf("run %d comparison output = %q, want -comparison.json suffix", i, run.Comparison)
+		}
+	}
+}
+
+func TestLoadExperimentDesign(t *testing.T) {
+	tmp := t.TempDir()
+	file := filepath.Join(tmp, "design.json")
+	d := ExperimentDesign{
+		Schema:       ExperimentSchema,
+		Name:         "skill-rewrite-efficiency",
+		TaskFamilies: []string{"refactor-audit"},
+		Baseline: Condition{
+			Command:      "cmd",
+			SnapshotHash: "sha-base",
+			SkillDir:     "skills/skill-audit",
+		},
+		Candidate: Condition{
+			Command:      "cmd",
+			SnapshotHash: "sha-cand",
+			SkillDir:     "skills/skill-audit",
+		},
+	}
+	data, _ := json.Marshal(d)
+	os.WriteFile(file, data, 0644)
+
+	loaded, err := LoadExperimentDesign(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Name != d.Name {
+		t.Errorf("name = %q, want %q", loaded.Name, d.Name)
 	}
 }
