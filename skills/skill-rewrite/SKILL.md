@@ -116,7 +116,7 @@ When in doubt, keep the draft conservative and flag the uncertainty for the main
 ### Generate a rewrite draft
 
 ```bash
-scripts/draft-rewrite.sh -t skills/release-check -a /tmp/release-check-audit.md
+scripts/draft-rewrite.sh -t skills/release-check -a ./release-check-audit.md
 ```
 
 Output: `skills/release-check/REWRITE-DRAFT.md`.

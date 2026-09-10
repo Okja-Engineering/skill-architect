@@ -4,7 +4,7 @@ description: Evaluate an Agent Skill directory against the Agent Skills spec, An
 license: MIT
 compatibility: POSIX shell (bash 3.2+ or zsh), git.
 metadata:
-  version: "0.1.0"
+  version: "0.2.0"
 ---
 
 # skill-audit
@@ -43,6 +43,9 @@ Read these in order:
 Resolve `skill_root` to the directory containing this `SKILL.md` and run the bundled scripts:
 
 ```bash
+command -v skill-validator >/dev/null 2>&1 || { echo "skill-validator not found. Install with: brew install agent-ecosystem/tap/skill-validator" >&2; exit 1; }
+command -v skillscore >/dev/null 2>&1 || { echo "skillscore not found. Install with: npm install -g skillscore" >&2; exit 1; }
+
 "$skill_root/scripts/check-frontmatter.sh" "$target_skill"
 "$skill_root/scripts/check-structure.sh" "$target_skill"
 "$skill_root/scripts/check-quality.sh" "$target_skill"
@@ -93,26 +96,130 @@ ls -la "$target_skill/assets" 2>/dev/null || echo "no assets/"
 
 Treat a nonzero script exit as a deterministic failure. Preserve individual findings in the report rather than replacing them with a generic failure.
 
+### Evaluation checklists
+
+Use these inline checklists for criteria that the scripts do not cover mechanically. Consult [best practices](references/best-practices.md) for criteria requiring interpretation.
+
+**Agent Skills spec checklist**
+
+- Directory name matches `name` in frontmatter.
+- `name` is lowercase, hyphenated, 1-64 chars.
+- `description` ≤1024 chars, describes what + when to use.
+- `license` present.
+- `SKILL.md` is at the skill root.
+
+**Trigger-quality checklist**
+
+- Imperative phrasing: "Use when..."
+- User intent, not implementation details.
+- Specific contexts and trigger phrases.
+- Synonym coverage for key terms.
+- Negative scope boundaries if the edge is unclear.
+- Third person; no "you" or "I".
+
+**Body checklist**
+
+- Imperative voice throughout.
+- Under ~500 lines.
+- Clear purpose / what this does.
+- "When to use" with specific scenarios.
+- Structured process or workflow.
+- At least one concrete example with real paths or commands.
+- Constraints or guardrails.
+
+**Determinism checklist**
+
+- Mechanical work is in scripts, not prose.
+- Scripts have error handling (`set -euo pipefail` or equivalent).
+- No hardcoded absolute paths.
+- Exact commands and file references.
+- Checklists instead of vague "review this" instructions.
+
+**ICM context-management checklist**
+
+- Progressive disclosure: frontmatter → body → references/assets.
+- No "load everything" instructions.
+- Multi-step skills use stage contracts: Inputs, Process, Outputs.
+- Working artifacts (per-run) separated from stable reference material.
+- L0–L2 catalog files stay small; L3 reference payloads are pointed at, not inlined.
+
+**Validation checklist**
+
+- Skill includes a checklist, evals, tests, or pass/fail criteria.
+- Criteria are concrete enough to verify.
+- Evals are specific and realistic if present.
+
+**Self-contained checklist**
+
+- All needed resources are in the skill directory or explicitly sourced.
+- Templates are blank and reusable, not filled-in deployments.
+- No hidden external dependencies.
+
 ### Stage 3: Evaluate the 10 dimensions
 
-Score each dimension 0–2 using the matrix in `references/evaluation-matrix.md`:
+Score each dimension 0–2:
 
 - 0 = missing or broken
 - 1 = present but weak
 - 2 = strong
 
-Dimensions: Spec compliance, Trigger, Scope, Body structure, Determinism, Context management, Token discipline, Validation, Self-contained, Examples.
+| Dimension | Strong signal |
+|---|---|
+| **Spec compliance** | Directory name, frontmatter, file layout all correct |
+| **Trigger** | Imperative, intent-focused, specific contexts, synonyms, negative scope, ≤1024 chars |
+| **Scope** | One job; does not straddle categories |
+| **Body structure** | Imperative, <500 lines, purpose, when-to-use, workflow, examples, constraints |
+| **Determinism** | Scripts for mechanical work, exact paths, error handling, checklists |
+| **Context mgmt** | Progressive disclosure, scoped loading, stage contracts, L3/L4 separation |
+| **Token discipline** | L0–L2 small, no inlined L3 payloads, stage context ~2k–8k tokens |
+| **Validation** | Checklist, evals, tests, or pass/fail criteria |
+| **Self-contained** | All resources in directory or explicitly sourced |
+| **Examples** | Concrete input/output examples, not only abstract descriptions |
+
+See [evaluation matrix](references/evaluation-matrix.md) for the three-tier evaluation model and suggested output format.
 
 ### Stage 4: Produce the report
 
-Use the format in `references/evaluation-matrix.md`. Include:
+Use the format below. See [evaluation matrix](references/evaluation-matrix.md) for the full template with tier annotations. Include:
 
 - Every scoring dimension and its 0–2 score.
 - Deterministic command results.
 - The 60/30/10 ratio.
 - Ordered, concrete fixes tied to failed or weak criteria.
 
+```markdown
+# Skill audit: <skill-name>
+
+| Dimension | Score | Notes |
+|---|---|---|
+| Spec compliance | 0/1/2 | ... |
+| Trigger | 0/1/2 | ... |
+| Scope | 0/1/2 | ... |
+| Body structure | 0/1/2 | ... |
+| Determinism | 0/1/2 | ... |
+| Context mgmt | 0/1/2 | ... |
+| Token discipline | 0/1/2 | ... |
+| Validation | 0/1/2 | ... |
+| Self-contained | 0/1/2 | ... |
+| Examples | 0/1/2 | ... |
+
+## Ratio
+
+- Deterministic: X%
+- Orchestration: Y%
+- AI judgment: Z%
+
+## Fixes
+
+1. ...
+```
+
 ## Orchestration (30%)
+
+### Inputs
+
+- `target_skill`: one skill directory containing `SKILL.md`.
+- `skill_root`: the directory containing this auditor's `SKILL.md` and scripts.
 
 ### Audit process
 
@@ -124,6 +231,15 @@ Use the format in `references/evaluation-matrix.md`. Include:
 6. Estimate the deterministic / orchestration / AI-judgment ratio from the body text.
 7. Produce the required report.
 8. Modify the audited skill only after explicit approval.
+
+### Outputs
+
+One report containing:
+
+- Every scoring dimension and its 0–2 score.
+- Deterministic command results.
+- A ratio totaling 100%.
+- Ordered, concrete fixes tied to failed or weak criteria.
 
 ## AI judgment (10%)
 
