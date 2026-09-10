@@ -817,3 +817,120 @@ func TestCapture_Devin_WithExport(t *testing.T) {
 		t.Errorf("attribution state = %q, want unknown", profile.Attribution.State)
 	}
 }
+
+// --- F04 comparison tests ---
+
+func TestCompareProfiles_TokensAndToolCalls(t *testing.T) {
+	tmp := t.TempDir()
+	baseFile := filepath.Join(tmp, "base.json")
+	candFile := filepath.Join(tmp, "cand.json")
+
+	baseline := Profile{
+		Schema:       ProfileSchema,
+		Harness:      "claude_code",
+		SessionID:    "base-001",
+		SnapshotHash: "sha-base",
+		SkillDir:     "skills/skill-audit",
+		Tokens:       PresentTokenResult(TokenCounts{Input: 100, Output: 50, CacheRead: 10}, "otel"),
+		ToolCalls:    PresentToolCallResult([]ToolCallEntry{{Name: "Bash", Success: true}}, "otel"),
+		Timing:       PresentTimingResult(TimingData{TotalMs: 1000}, "otel"),
+	}
+	candidate := Profile{
+		Schema:       ProfileSchema,
+		Harness:      "claude_code",
+		SessionID:    "cand-001",
+		SnapshotHash: "sha-base",
+		SkillDir:     "skills/skill-audit",
+		Tokens:       PresentTokenResult(TokenCounts{Input: 120, Output: 60, CacheRead: 5}, "otel"),
+		ToolCalls:    PresentToolCallResult([]ToolCallEntry{{Name: "Bash", Success: true}, {Name: "Read", Success: false}}, "otel"),
+		Timing:       PresentTimingResult(TimingData{TotalMs: 1500}, "otel"),
+	}
+
+	baseJSON, _ := json.Marshal(baseline)
+	candJSON, _ := json.Marshal(candidate)
+	os.WriteFile(baseFile, baseJSON, 0644)
+	os.WriteFile(candFile, candJSON, 0644)
+
+	base, err := LoadProfile(baseFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cand, err := LoadProfile(candFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report := CompareProfiles(base, cand)
+	if report.Schema != ComparisonSchema {
+		t.Errorf("schema = %q, want %q", report.Schema, ComparisonSchema)
+	}
+	if !report.Comparable {
+		t.Fatal("report should be comparable")
+	}
+	if report.Metrics["tokens"].Comparable != true {
+		t.Fatalf("tokens not comparable")
+	}
+	delta := report.Metrics["tokens"].Delta.(TokenCounts)
+	if delta.Input != 20 {
+		t.Errorf("token input delta = %d, want 20", delta.Input)
+	}
+	if delta.Output != 10 {
+		t.Errorf("token output delta = %d, want 10", delta.Output)
+	}
+
+	toolDelta := report.Metrics["tool_calls"].Delta.(map[string]any)
+	if toolDelta["count"].(int) != 1 {
+		t.Errorf("tool call count delta = %v, want 1", toolDelta["count"])
+	}
+
+	timingDelta := report.Metrics["timing"].Delta.(map[string]int64)
+	if timingDelta["total_ms"] != 500 {
+		t.Errorf("timing total_ms delta = %d, want 500", timingDelta["total_ms"])
+	}
+}
+
+func TestCompareProfiles_HarnessMismatch(t *testing.T) {
+	baseline := Profile{
+		Schema:    ProfileSchema,
+		Harness:   "claude_code",
+		SessionID: "base-001",
+		Tokens:    PresentTokenResult(TokenCounts{Input: 100}, "otel"),
+	}
+	candidate := Profile{
+		Schema:    ProfileSchema,
+		Harness:   "cursor",
+		SessionID: "cand-001",
+		Tokens:    PresentTokenResult(TokenCounts{Input: 120}, "otel"),
+	}
+
+	report := CompareProfiles(baseline, candidate)
+	if len(report.Notes) == 0 {
+		t.Error("expected harness mismatch note")
+	}
+	if !report.Comparable {
+		t.Error("metrics should still be comparable despite harness mismatch")
+	}
+}
+
+func TestCompareProfiles_UnknownMetric(t *testing.T) {
+	baseline := Profile{
+		Schema:    ProfileSchema,
+		Harness:   "claude_code",
+		SessionID: "base-001",
+		Tokens:    UnknownTokenResult("no data"),
+	}
+	candidate := Profile{
+		Schema:    ProfileSchema,
+		Harness:   "claude_code",
+		SessionID: "cand-001",
+		Tokens:    PresentTokenResult(TokenCounts{Input: 120}, "otel"),
+	}
+
+	report := CompareProfiles(baseline, candidate)
+	if report.Metrics["tokens"].Comparable {
+		t.Error("expected tokens to not be comparable when one is unknown")
+	}
+	if report.Comparable {
+		t.Error("report should not be comparable when no metric is present in both")
+	}
+}

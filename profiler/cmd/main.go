@@ -24,6 +24,8 @@ func main() {
 		cmdProbe(os.Args[2:])
 	case "capture":
 		cmdCapture(os.Args[2:])
+	case "compare":
+		cmdCompare(os.Args[2:])
 	case "version":
 		fmt.Println("profiler " + profiler.AdapterVersion)
 	default:
@@ -100,6 +102,48 @@ func cmdCapture(args []string) {
 	fmt.Println(string(out))
 }
 
+func cmdCompare(args []string) {
+	fs := flag.NewFlagSet("compare", flag.ExitOnError)
+	baseline := fs.String("baseline", "", "path to baseline profile JSON")
+	candidate := fs.String("candidate", "", "path to candidate profile JSON")
+	output := fs.String("output", "", "optional path to write comparison JSON (default: stdout)")
+	fs.Parse(args)
+
+	if *baseline == "" || *candidate == "" {
+		fmt.Fprintln(os.Stderr, "required: --baseline and --candidate")
+		os.Exit(1)
+	}
+
+	baseProfile, err := profiler.LoadProfile(*baseline)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load baseline profile: %v\n", err)
+		os.Exit(1)
+	}
+
+	candProfile, err := profiler.LoadProfile(*candidate)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load candidate profile: %v\n", err)
+		os.Exit(1)
+	}
+
+	report := profiler.CompareProfiles(baseProfile, candProfile)
+	out, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "marshal error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *output != "" {
+		if err := os.WriteFile(*output, out, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to write output: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("comparison written to: %s\n", *output)
+		return
+	}
+	fmt.Println(string(out))
+}
+
 func getAdapter(harness, otelFile, exportFile string) profiler.ProfilerAdapter {
 	switch harness {
 	case "claude_code":
@@ -120,10 +164,12 @@ func usage() {
 commands:
   probe     Probe environment and report capabilities
   capture   Capture a session profile
+  compare   Compare two captured profiles
   version   Print version
 
 examples:
   profiler probe --harness claude_code --otel-file ./otel-export.json
   profiler probe --harness cursor --otel-file ./otel-export.json --export-file ./state.vscdb
-  profiler capture --harness claude_code --session abc123 --snapshot sha123 --skill-dir ./skills/my-skill --otel-file ./otel-export.json`)
+  profiler capture --harness claude_code --session abc123 --snapshot sha123 --skill-dir ./skills/my-skill --otel-file ./otel-export.json
+  profiler compare --baseline profile-baseline.json --candidate profile-candidate.json`)
 }
