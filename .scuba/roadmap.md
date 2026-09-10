@@ -1,9 +1,9 @@
 # skill-architect — roadmap
-**Updated** 2026-09-10 02:14 · `scribe` · mirror `scuba-state/imagineux-gmail-com@3d3de7d`
+**Updated** 2026-09-10 02:44 · `scribe` · mirror `scuba-state/imagineux-gmail-com@f3d9c60`
 
 ## Now active
 _One or two lines per currently-moving thread — what's happening right now._
-- 🟡 **E-CS · Cursor hook telemetry** — spec gate round 3 NOT-CLEAN: conformance confirmed all 12 round-2 fixes at root, 12 new mostly LOW; verifiability 5 HIGH — hooks carry no timestamp, no success signal on `afterShellExecution`, no `tool_use_id` on `beforeReadFile`, one `Source` per `TokenResult`. Revision round 3 running with a source-supply table (event.field per asserted value). → [status](teams/cursorscope-go/status.md)
+- 🟡 **E-CS · Cursor hook telemetry** — revision round 3 done (source-supply table; D11 timing at hook receipt, D12 status from `postToolUse`/`postToolUseFailure`, D13 `context_window` split from `tokens`; tokens-from-hooks downgraded to unknown); round-4 confirming hunters running. → [status](teams/cursorscope-go/status.md)
 - ✅ **E-CS · deep research** — ✅ deep-research done: no existing tool attributes cost per skill run in Cursor; report in `../cursor-profiler/docs/research/existing-per-skill-cost-tools.md`. → [status](teams/cursorscope-go/status.md)
 - ✅ **E-CS · research collection** — ✅ six research files + deep-research report collected into `../cursor-profiler/docs/research/`. → [status](teams/cursorscope-go/status.md)
 - ✅ **research-profiling** — ledger landed at `teams/research-profiling/ledger.md`; folded into the E-CS grooming. → [status](teams/research-profiling/ledger.md)
@@ -48,7 +48,7 @@ flowchart TD
   F03 --> CS
   F04 --> CS
 
-  click CS "teams/cursorscope-go/roadmap.md" "Groomed roadmap — 17 slices after round-2 revision"
+  click CS "teams/cursorscope-go/roadmap.md" "Groomed roadmap — 17 slices, revised round 3"
   click RP "teams/research-profiling/ledger.md" "Research ledger"
   click T1 "teams/cursorscope-go/slices/T1.status.md" "Parked — separate parallel thread"
   click SC "teams/cursorscope-go/slices/SC.status.md" "Contract slice — ships first"

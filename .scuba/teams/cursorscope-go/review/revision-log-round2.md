@@ -93,7 +93,7 @@ Wire Reference = <https://cursor.com/docs/enterprise/opentelemetry-export/wire>,
 | `gen_ai.usage.*` | `input_tokens, output_tokens, cache_read.input_tokens, cache_write.input_tokens, reasoning.output_tokens` | ledger §A6:210 | correct |
 | `MetricState` | `present \| unknown \| error` | `profiler/types.go:11-15` | correct |
 | `MetricSource` (existing 6) | `otel \| hooks \| session_data \| server_api \| sqlite \| none` | `profiler/types.go:40-47` | correct — but `none` was unmapped by D3 (C2-#2); now class `none` |
-| `MetricSource` (new 3) | `estimated \| otel_aggregate \| mcp_reported` | **Design decision** — ledger §A5.1:145 and §A4:300 *recommend* `SourceEstimated`; the other two are ours (D3) | label now stated as Design decision |
+| `MetricSource` (new 3) | `estimated \| otel_aggregate \| mcp_reported` | **Design decision** — ledger §A5.1:145 and Q1:300 *recommend* `SourceEstimated`; the other two are ours (D3) | label now stated as Design decision |
 | Honesty classes | `measured_billed \| harness_reported \| self_reported \| estimated \| none \| unrecognized` | **Design decision** D3 | totalised + fail-closed (C2-#2, V2-#5) |
 | Inferred triggers | `inferred_file_read \| inferred_shell_command \| inferred_subagent` | **Design decision** D6 | correct; label restated in S3 DoD 4 |
 
