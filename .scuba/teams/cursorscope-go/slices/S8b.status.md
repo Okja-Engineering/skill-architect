@@ -3,13 +3,13 @@
 - **Stage:** parked — partly gated on User Question 8
 - **Owner:** unassigned
 - **Branch:** none (target: `epic/skill-scope`)
-- **Depends on:** **SC, S1b, S4** · **+ S3 iff S3 ships** (documentation follows the code; if SP1 answers no there is no attribution to document)
+- **Depends on:** **SC-a, S1b, S4** · **+ S3 iff S3 ships** (documentation follows the code; if SP1 answers no there is no attribution to document)
 - **Blocks:** none
 
 ## Goal
 Say what the plugin now actually does, with an evidence label on every claim, and amend the two files that currently promise it does not do it.
 
-**Why this is a separate slice.** Round 1's single S8 bundled the docs with the CI guardrails and therefore inherited a dependency on S3. The fallback MVE (SP1 = no) withdraws S3, so that MVE did not close. The guardrails are now `S8a` with deps {SC, S0, S4}; this slice keeps the S3-shaped dependency, and keeps it **conditional** — it documents whatever has merged.
+**Why this is a separate slice.** Round 1's single S8 bundled the docs with the CI guardrails and therefore inherited a dependency on S3. The fallback MVE (SP1 = no) withdraws S3, so that MVE did not close. The guardrails are now `S8a` with deps {SC-a, S0, S4}; this slice keeps the S3-shaped dependency, and keeps it **conditional** — it documents whatever has merged.
 
 ## Definition of done
 1. `docs/cursor-hooks-spec.md` exists and carries an evidence label on **every claim line**, drawn from `AGENTS.md:18-23` (`Specification` / `External evidence` / `Repository fact` / `Design decision` / `Local hypothesis`). **"Claim line" is defined here so the grep is writable (V3-#13):** a claim line is any line that is not blank, not a heading (`^#`), not a fence delimiter or a line inside a fenced block, not a table separator (`^\|[-: |]*\|$`), and not a bare list-continuation line. Every remaining line — including each table row — must contain one of the five label strings, or inherit one from a `**Label:**`-prefixed paragraph or table column it sits in, which the grep resolves by column, not by prose. State the definition in the doc's own header so a later reader can re-run the check.
@@ -30,6 +30,6 @@ R-SA-11, R-SA-17, R-RL-16 (**documented and handed off to F04**, not implemented
 ## Next
 **Partly gated on User Question 8** — `.out-of-scope.md` and `README.md` currently promise the plugin does *not* run live comparisons; amending them is the user's call, not the implementer's.
 
-Ships last in whichever MVE runs: wave 4 in the primary MVE (after S3), wave 3 in the fallback (S3 withdrawn, deps reduce to {SC, S1b, S4}). It is the slice that makes the epic legible to someone who did not read this roadmap.
+Ships last in whichever MVE runs: **wave 5** in the primary MVE (after S3, and one wave after S8a so the two never contend for `tests/test_guardrails.sh`), wave 3 in the fallback (S3 withdrawn, deps reduce to {SC-a, S1b, S4}, and S8a is not yet merged — which is exactly when the named fallback file applies). It is the slice that makes the epic legible to someone who did not read this roadmap.
 
 **CI wiring (V4-#7).** Whichever file this slice ships — the appended case in `tests/test_guardrails.sh` or the standalone `tests/test_doc_labels.sh` — is discovered by the `tests/test_*.sh` glob **S1a DoD 7** installs in `.github/workflows/ci.yml`. This slice edits no workflow file, and the fallback path needs no extra wiring, which round 3 left unstated: under the pre-S1a workflow a new `test_doc_labels.sh` would never have run at all.
