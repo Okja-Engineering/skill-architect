@@ -1,11 +1,11 @@
 # skill-architect — roadmap
-**Updated** 2026-09-10 01:13 · `scribe` · mirror `scuba-state/imagineux-gmail-com@42b8a21`
+**Updated** 2026-09-10 01:28 · `scribe` · mirror `scuba-state/imagineux-gmail-com@b63bcb3`
 
 ## Now active
 _One or two lines per currently-moving thread — what's happening right now._
-- 🟡 **E-CS · Cursor hook telemetry** — spec gate round 1 NOT-CLEAN (conformance 15 REAL + verifiability 18 REAL; reports in `teams/cursorscope-go/review/`); groomer revising at the root; re-review next. → [status](teams/cursorscope-go/status.md)
-- 🟡 **E-CS · deep research** — deep-research workflow running: other per-skill cost tracking tools for Cursor. → [status](teams/cursorscope-go/status.md)
-- 🟡 **E-CS · research collection** — research collector writing findings into `../cursor-profiler/docs/research/` (sibling repo, add-only). → [status](teams/cursorscope-go/status.md)
+- 🟡 **E-CS · Cursor hook telemetry** — revision round 1 done (contract slice SC added, S1 split, SP1 gating spike; 16 slices); round-2 confirming hunters running (conformance, verifiability). → [status](teams/cursorscope-go/status.md)
+- ✅ **E-CS · deep research** — ✅ deep-research done: no existing tool attributes cost per skill run in Cursor; report in `../cursor-profiler/docs/research/existing-per-skill-cost-tools.md`. → [status](teams/cursorscope-go/status.md)
+- ✅ **E-CS · research collection** — ✅ six research files + deep-research report collected into `../cursor-profiler/docs/research/`. → [status](teams/cursorscope-go/status.md)
 - ✅ **research-profiling** — ledger landed at `teams/research-profiling/ledger.md`; folded into the E-CS grooming. → [status](teams/research-profiling/ledger.md)
 - ✅ **F04 · paired comparisons** — slices 1–3 are on `main` (`0a83615`, `236152c`, `e0e2a52`); its status file `tmp/teams/architect/F04.status.md` still reads "parked" and is **stale** — trust git, not that file.
 
@@ -14,6 +14,7 @@ _(Empty when none; never bury a decision.)_
 1. **E-CS forks and the top-3 user questions** — ingest model, OTLP sequencing, code location, naming, deps, token honesty → [context](teams/cursorscope-go/roadmap.md) §D and §E
 2. **Cursor availability** — `~/.cursor/` is **absent on this machine**; will the user install Cursor and the hook? If not, the hooks half (S1–S5, S7, S9–S11) is unbuildable-as-verified and the epic collapses to **S0 + T1** → [context](teams/cursorscope-go/roadmap.md) §E Q1
 3. **Dispatch S0 now?** — bug fix to the already-merged `profiler/cursor.go`; independent of the epic once the spec gate is CLEAN → [context](teams/cursorscope-go/slices/S0.status.md)
+4. **Concurrent writer in `../cursor-profiler/docs/research/`** — its `research-contradictions.md` claims the `cursor.*` names are unverified; the conformance hunter verified all 21 against Cursor's wire reference (keys wrong, names real). Reconcile which session owns that directory. → [context](teams/cursorscope-go/review/hunter-conformance.md)
 
 ## Roadmap
 
@@ -25,6 +26,8 @@ flowchart TD
   L --> RP[✅ Skill profiling + token efficiency research]:::done
   L --> T1[💤 T1 · static BPE token cost in skill-audit]:::parked
 
+  CS --> SC[🟡 SC · profile contract v1.1]:::spec
+  CS --> SP1[🟡 SP1 · beforeReadFile gating spike]:::spec
   CS --> S0[🟡 S0 · fix Cursor OTel adapter vs wire reference]:::spec
 
   subgraph PRIOR["Prior epics (superseded control plane in tmp/teams/architect/)"]
@@ -45,9 +48,11 @@ flowchart TD
   F03 --> CS
   F04 --> CS
 
-  click CS "teams/cursorscope-go/roadmap.md" "Groomed roadmap — 12 slices S0-S11"
+  click CS "teams/cursorscope-go/roadmap.md" "Groomed roadmap — 16 slices after round-1 revision"
   click RP "teams/research-profiling/ledger.md" "Research ledger"
   click T1 "teams/cursorscope-go/slices/T1.status.md" "Parked — separate parallel thread"
+  click SC "teams/cursorscope-go/slices/SC.status.md" "Contract slice — ships first"
+  click SP1 "teams/cursorscope-go/slices/SP1.status.md" "Gating spike — hard gate ahead of S3"
   click S0 "teams/cursorscope-go/slices/S0.status.md" "Slice status — dispatchable independently"
   click F01 "../tmp/teams/architect/F01.status.md" "Done — status"
   click F02 "../tmp/teams/architect/F02.status.md" "Done — status"
