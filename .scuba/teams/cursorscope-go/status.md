@@ -1,7 +1,7 @@
 # E-CS — Cursor hook telemetry for the profiler (skill-scope)
 
 ## Status
-- **Stage:** spec (**round-3 revision complete** — round-4 confirming hunters running)
+- **Stage:** spec (**round-4 confirming pass complete** — final revision round 4 running)
 - **Owner:** chief of staff (manager hat)
 - **Branch:** none yet (target integration branch: `epic/skill-scope`)
 - **Worktree:** none yet
@@ -20,6 +20,8 @@
 - `review/hunter-conformance-round3.md` — round 3: confirmed all 12 round-2 fixes landed **at root**; 12 new findings + 1 SUSPECTED, mostly LOW
 - `review/hunter-verifiability-round3.md` — round 3: NOT-CLEAN, **5 HIGH** — hooks carry no timestamp, no success signal on `afterShellExecution`, no `tool_use_id` on `beforeReadFile`, one `Source` per `TokenResult`
 - `review/revision-log-round3.md` — **29 dispositions plus the source-supply table**: for every value asserted `present` from hooks, the `event.field` that supplies it (cited to a ledger line) or **NONE** with the consequence applied; plus the token-source decision and a re-derived citation register
+- `review/hunter-conformance-round4.md` — round 4: NOT-CLEAN, **3 MED + 6 LOW, no HIGH**; all C3-1…12 + SUSPECTED confirmed fixed at root
+- `review/hunter-verifiability-round4.md` — round 4: NOT-CLEAN, **1 HIGH + 8 MED** — the HIGH is S0 bypassing the single token writer (`selectTokenSource`), the fourth writer D12's sweep missed
 
 ## Round 3 revision summary
 Both hunters named the same remaining root: round 2 proved every DoD assertion had a contract **field**, never that a hook event **supplies the value**. Round 3 answers with a source-supply table over all 29 hook-sourced assertions — **4 removed or downgraded, 5 derived under a named decision, 1 requirement half marked not-consumed.**
@@ -38,4 +40,4 @@ Both hunters named the same remaining root: round 2 proved every DoD assertion h
 `.scuba/teams/research-profiling/ledger.md:111` claims cursorscope's registered hook list "matches exactly" Cursor's — it registers **19**, missing `beforeTabFileRead` and `workspaceOpen`. R-CS-01 is already correct; the ledger line is not. Recorded as unowned note (c) in the roadmap's §F.
 
 ## Next
-Round-4 confirming pass running. Next: **if round 4 is CLEAN or LOW-only → present forks + questions to user.**
+**Round-5 confirming pass (final) → present forks + questions to user.**

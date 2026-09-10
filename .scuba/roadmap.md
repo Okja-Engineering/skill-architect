@@ -1,9 +1,9 @@
 # skill-architect — roadmap
-**Updated** 2026-09-10 02:44 · `scribe` · mirror `scuba-state/imagineux-gmail-com@59d7dbf`
+**Updated** 2026-09-10 02:55 · `scribe` · mirror `scuba-state/imagineux-gmail-com@59d7dbf`
 
 ## Now active
 _One or two lines per currently-moving thread — what's happening right now._
-- 🟡 **E-CS · Cursor hook telemetry** — revision round 3 done (source-supply table; D11 timing at hook receipt, D12 status from `postToolUse`/`postToolUseFailure`, D13 `context_window` split from `tokens`; tokens-from-hooks downgraded to unknown); round-4 confirming hunters running. → [status](teams/cursorscope-go/status.md)
+- 🟡 **E-CS · Cursor hook telemetry** — spec gate round 4: conformance 3 MED + 6 LOW (no HIGH); verifiability 1 HIGH (S0 bypasses the single token writer) + 8 MED. Final revision round 4 running; will present to user after with a Known-residue section. → [status](teams/cursorscope-go/status.md)
 - ✅ **E-CS · deep research** — ✅ deep-research done: no existing tool attributes cost per skill run in Cursor; report in `../cursor-profiler/docs/research/existing-per-skill-cost-tools.md`. → [status](teams/cursorscope-go/status.md)
 - ✅ **E-CS · research collection** — ✅ six research files + deep-research report collected into `../cursor-profiler/docs/research/`. → [status](teams/cursorscope-go/status.md)
 - ✅ **research-profiling** — ledger landed at `teams/research-profiling/ledger.md`; folded into the E-CS grooming. → [status](teams/research-profiling/ledger.md)
