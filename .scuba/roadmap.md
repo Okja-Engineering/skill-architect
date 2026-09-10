@@ -3,7 +3,7 @@
 
 ## Now active
 _One or two lines per currently-moving thread — what's happening right now._
-- 🟡 **E-CS · Cursor hook telemetry** — spec gate round 2 **NOT-CLEAN but converging** (conformance 12 REAL incl. one invented enum value; verifiability 9 REAL, root: contract slice not swept downstream); round-2 revision running with proof-of-sweep tables required. → [status](teams/cursorscope-go/status.md)
+- 🟡 **E-CS · Cursor hook telemetry** — revision round 2 done (SC widened to 8 channels, S8 split into S8a guardrails + S8b docs, 17 slices, D10 build-over-fork vs Dash0 recorded, proof tables in `review/revision-log-round2.md`); round-3 confirming hunters running. → [status](teams/cursorscope-go/status.md)
 - ✅ **E-CS · deep research** — ✅ deep-research done: no existing tool attributes cost per skill run in Cursor; report in `../cursor-profiler/docs/research/existing-per-skill-cost-tools.md`. → [status](teams/cursorscope-go/status.md)
 - ✅ **E-CS · research collection** — ✅ six research files + deep-research report collected into `../cursor-profiler/docs/research/`. → [status](teams/cursorscope-go/status.md)
 - ✅ **research-profiling** — ledger landed at `teams/research-profiling/ledger.md`; folded into the E-CS grooming. → [status](teams/research-profiling/ledger.md)
@@ -48,7 +48,7 @@ flowchart TD
   F03 --> CS
   F04 --> CS
 
-  click CS "teams/cursorscope-go/roadmap.md" "Groomed roadmap — 16 slices after round-1 revision"
+  click CS "teams/cursorscope-go/roadmap.md" "Groomed roadmap — 17 slices after round-2 revision"
   click RP "teams/research-profiling/ledger.md" "Research ledger"
   click T1 "teams/cursorscope-go/slices/T1.status.md" "Parked — separate parallel thread"
   click SC "teams/cursorscope-go/slices/SC.status.md" "Contract slice — ships first"

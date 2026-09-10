@@ -68,7 +68,7 @@
 | V-14 | **REAL — orphan** | R-SA-04 assigned to **S1b** and now appears in its DoD 4 and its test list (`snapshot_hash` survives round-trip) |
 | V-15 | **REAL — three orphans** | **R-CS-14** → explicitly **dropped from E-CS** (D8), recorded in the spec doc's "considered, not in v1.1" list. **R-CS-04** → satisfied in adapted form by **S1a**'s spool (D9); S11 carries only the original HTTP form. **R-RL-16** → retagged **defer → F04**; S8 documents the constraint and hands it off, since no E-CS slice implements a CI |
 | V-16 | **REAL — four phantom claims** | Removed: R-CS-06 and R-CS-23 from S11 (with a line saying why each is not re-claimed); R-RL-08 from S9 (it is a *drop*, carried as a do-not-port note); R-SA-11 from S3 (it writes no doc file — R-SA-11 belongs to S8) |
-| V-17 | **REAL** | Graph rebuilt; the S1→S7 edge exists as `S1b --> S7`. All 26 edges cross-checked against the table's `Depends on` column in both directions; graph is acyclic |
+| V-17 | **REAL** | Graph rebuilt; the S1→S7 edge exists as `S1b --> S7`. All edges cross-checked (**correction, round 2: the round-1 graph had 28 edges, not the "26" written here**) against the table's `Depends on` column in both directions; graph is acyclic |
 | V-18 | **REAL** | **D7:** the `hooks.json` merge is **Go** (atomic, non-clobbering, backed up); `jq` appears only in the bash test's byte-comparison. The roadmap's "`jq` does the merge" line is gone |
 
 ## Low findings (conformance)
