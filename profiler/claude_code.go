@@ -1,25 +1,27 @@
 package profiler
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"time"
 )
 
-// ClaudeCodeAdapter captures runtime signals from Claude Code via OTel export.
+// ClaudeCodeAdapter captures runtime signals from Claude Code via OTel or session transcript.
 //
-// Claude Code emits OTel when CLAUDE_CODE_ENABLE_TELEMETRY=1 and OTEL_*_EXPORTER
-// env vars are set. This adapter reads from a file the OTel collector writes
-// (or a file-based exporter), not a live network endpoint, to keep the adapter
-// self-contained and testable without a running collector.
+// OTel requires CLAUDE_CODE_ENABLE_TELEMETRY=1 and an export file. Session data reads the
+// local JSONL transcript that Claude Code writes, with no collector required.
 //
 // Skill activation and attribution are always unknown for Claude Code — it has
-// no skill-level events in its OTel surface, only tool_decision (tool-level).
+// no skill-level events in either surface, only tool_use / tool_result (tool-level).
 type ClaudeCodeAdapter struct {
 	// OtelExportFile is the path to a JSON file containing OTel-exported data.
-	// Required for both Probe and Capture to report OTel capabilities.
 	OtelExportFile string
+	// ExportFile is the path to a JSONL session transcript (session_data source).
+	ExportFile string
 }
 
 // Name returns the harness identifier.
@@ -27,7 +29,8 @@ func (a ClaudeCodeAdapter) Name() string { return "claude_code" }
 
 // Probe inspects the environment and returns what metrics this adapter can produce.
 // OTel is reported as available only when an export file exists and contains
-// the relevant signals; empty or malformed files report "none".
+// the relevant signals; session_data is reported only when a JSONL transcript
+// contains the corresponding signals. Empty or malformed files report "none".
 func (a ClaudeCodeAdapter) Probe() CapabilityReport {
 	caps := map[MetricName]MetricSource{
 		MetricTokens:          SourceNone,
@@ -37,9 +40,11 @@ func (a ClaudeCodeAdapter) Probe() CapabilityReport {
 		MetricAttribution:     SourceNone,
 	}
 
+	otelProbed := false
 	if a.OtelExportFile != "" {
 		if _, err := os.Stat(a.OtelExportFile); err == nil {
 			if tokens, toolCalls, timing := hasOtelSignals(a.OtelExportFile); tokens || toolCalls || timing {
+				otelProbed = true
 				if tokens {
 					caps[MetricTokens] = SourceOtel
 				}
@@ -53,8 +58,24 @@ func (a ClaudeCodeAdapter) Probe() CapabilityReport {
 		}
 	}
 
+	if !otelProbed && a.ExportFile != "" {
+		if _, err := os.Stat(a.ExportFile); err == nil {
+			if tokens, toolCalls, timing := hasSessionDataSignals(a.ExportFile); tokens || toolCalls || timing {
+				if tokens {
+					caps[MetricTokens] = SourceSessionData
+				}
+				if toolCalls {
+					caps[MetricToolCalls] = SourceSessionData
+				}
+				if timing {
+					caps[MetricTiming] = SourceSessionData
+				}
+			}
+		}
+	}
+
 	// Claude Code has no skill-level activation or attribution events.
-	// These remain "none" regardless of OTel configuration.
+	// These remain "none" regardless of telemetry source.
 
 	return CapabilityReport{
 		Harness:      a.Name(),
@@ -83,56 +104,85 @@ func (a ClaudeCodeAdapter) Capture(sessionID string, opts CaptureOpts) (Profile,
 	profile.SkillActivation = UnknownActivationResult("Claude Code has no skill-level activation events")
 	profile.Attribution = UnknownAttributionResult("Claude Code does not attribute outputs to skills")
 
-	// If no OTel source is available, telemetry metrics are unknown.
-	if cap.Capabilities[MetricTokens] == SourceNone {
-		noOtelReason := "OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile."
-		profile.Tokens = UnknownTokenResult(noOtelReason)
-		profile.ToolCalls = UnknownToolCallResult(noOtelReason)
-		profile.Timing = UnknownTimingResult(noOtelReason)
+	// If no telemetry source is available, all telemetry metrics are unknown.
+	if cap.Capabilities[MetricTokens] == SourceNone &&
+		cap.Capabilities[MetricToolCalls] == SourceNone &&
+		cap.Capabilities[MetricTiming] == SourceNone {
+		noSourceReason := "No telemetry source detected. Provide an OTel export file or a JSONL session transcript via --otel-file or --export-file."
+		profile.Tokens = UnknownTokenResult(noSourceReason)
+		profile.ToolCalls = UnknownToolCallResult(noSourceReason)
+		profile.Timing = UnknownTimingResult(noSourceReason)
 		return profile, nil
 	}
 
-	// Read OTel export file.
-	exportFile := a.OtelExportFile
+	// OTel source.
+	if cap.Capabilities[MetricTokens] == SourceOtel ||
+		cap.Capabilities[MetricToolCalls] == SourceOtel ||
+		cap.Capabilities[MetricTiming] == SourceOtel {
+		exportFile := a.OtelExportFile
+		if exportFile == "" {
+			exportFile = opts.ExportFile
+		}
+
+		if exportFile == "" {
+			errReason := "OTel enabled but no export file path provided. Set OtelExportFile or opts.ExportFile."
+			profile.Tokens = ErrorTokenResult(errReason)
+			profile.ToolCalls = UnknownToolCallResult(errReason)
+			profile.Timing = UnknownTimingResult(errReason)
+			return profile, nil
+		}
+
+		data, err := os.ReadFile(exportFile)
+		if err != nil {
+			errReason := fmt.Sprintf("failed to read OTel export file: %v", err)
+			profile.Tokens = ErrorTokenResult(errReason)
+			profile.ToolCalls = UnknownToolCallResult(errReason)
+			profile.Timing = UnknownTimingResult(errReason)
+			return profile, nil
+		}
+
+		var otelData claudeCodeOtelExport
+		if err := json.Unmarshal(data, &otelData); err != nil {
+			errReason := fmt.Sprintf("failed to parse OTel export JSON: %v", err)
+			profile.Tokens = ErrorTokenResult(errReason)
+			profile.ToolCalls = UnknownToolCallResult(errReason)
+			profile.Timing = UnknownTimingResult(errReason)
+			return profile, nil
+		}
+
+		profile.Tokens = extractTokenCounts(otelData)
+		profile.ToolCalls = extractToolCalls(otelData)
+		profile.Timing = extractTiming(otelData)
+
+		return profile, nil
+	}
+
+	// session_data source.
+	exportFile := a.ExportFile
 	if exportFile == "" {
 		exportFile = opts.ExportFile
 	}
 
 	if exportFile == "" {
-		errReason := "OTel enabled but no export file path provided. Set OtelExportFile or opts.ExportFile."
+		errReason := "session_data enabled but no transcript file path provided. Set ExportFile or opts.ExportFile."
 		profile.Tokens = ErrorTokenResult(errReason)
 		profile.ToolCalls = UnknownToolCallResult(errReason)
 		profile.Timing = UnknownTimingResult(errReason)
 		return profile, nil
 	}
 
-	data, err := os.ReadFile(exportFile)
+	tokens, toolCalls, timing, err := parseClaudeCodeTranscript(exportFile)
 	if err != nil {
-		errReason := fmt.Sprintf("failed to read OTel export file: %v", err)
+		errReason := fmt.Sprintf("failed to parse session transcript: %v", err)
 		profile.Tokens = ErrorTokenResult(errReason)
 		profile.ToolCalls = UnknownToolCallResult(errReason)
 		profile.Timing = UnknownTimingResult(errReason)
 		return profile, nil
 	}
 
-	// Parse the OTel export data.
-	var otelData claudeCodeOtelExport
-	if err := json.Unmarshal(data, &otelData); err != nil {
-		errReason := fmt.Sprintf("failed to parse OTel export JSON: %v", err)
-		profile.Tokens = ErrorTokenResult(errReason)
-		profile.ToolCalls = UnknownToolCallResult(errReason)
-		profile.Timing = UnknownTimingResult(errReason)
-		return profile, nil
-	}
-
-	// Extract token counts from metrics.
-	profile.Tokens = extractTokenCounts(otelData)
-
-	// Extract tool calls from log events.
-	profile.ToolCalls = extractToolCalls(otelData)
-
-	// Extract timing from API request log events.
-	profile.Timing = extractTiming(otelData)
+	profile.Tokens = tokens
+	profile.ToolCalls = toolCalls
+	profile.Timing = timing
 
 	return profile, nil
 }
@@ -246,6 +296,204 @@ func hasOtelSignals(file string) (tokens, toolCalls, timing bool) {
 		}
 	}
 	return tokens, toolCalls, timing
+}
+
+// claudeCodeTranscriptRecord is the JSON shape of a line in Claude Code's session JSONL.
+type claudeCodeTranscriptRecord struct {
+	Timestamp string `json:"timestamp"`
+	Message   struct {
+		ID      string `json:"id"`
+		Content []struct {
+			Type      string `json:"type"`
+			Name      string `json:"name"`
+			ID        string `json:"id"`
+			ToolUseID string `json:"tool_use_id"`
+			IsError   bool   `json:"is_error"`
+		} `json:"content"`
+		Usage *struct {
+			InputTokens              int `json:"input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			OutputTokensDetails      struct {
+				ThinkingTokens int `json:"thinking_tokens"`
+			} `json:"output_tokens_details"`
+		} `json:"usage"`
+	} `json:"message"`
+}
+
+func hasSessionDataSignals(file string) (tokens, toolCalls, timing bool) {
+	f, err := os.Open(file)
+	if err != nil {
+		return false, false, false
+	}
+	defer f.Close()
+
+	reader := bufio.NewReader(f)
+	for {
+		line, err := reader.ReadString('\n')
+		if err == io.EOF {
+			if line != "" {
+				// Process the final line that lacks a trailing newline.
+			} else {
+				break
+			}
+		} else if err != nil {
+			break
+		}
+
+		var rec claudeCodeTranscriptRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			continue
+		}
+		if rec.Message.Usage != nil {
+			tokens = true
+		}
+		for _, c := range rec.Message.Content {
+			if c.Type == "tool_use" {
+				toolCalls = true
+			}
+		}
+		if rec.Timestamp != "" {
+			timing = true
+		}
+		if tokens && toolCalls && timing {
+			return
+		}
+	}
+	return tokens, toolCalls, timing
+}
+
+func parseClaudeCodeTranscript(file string) (TokenResult, ToolCallResult, TimingResult, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		return ErrorTokenResult(fmt.Sprintf("failed to read session transcript: %v", err)),
+			UnknownToolCallResult("session transcript not read"),
+			UnknownTimingResult("session transcript not read"),
+			err
+	}
+	defer f.Close()
+
+	reader := bufio.NewReader(f)
+	lastByMsgID := make(map[string]claudeCodeTranscriptRecord)
+	toolUses := make(map[string]*ToolCallEntry)
+	resultErrors := make(map[string]bool)
+	var minTime, maxTime time.Time
+	validRecords := 0
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err == io.EOF {
+			if line == "" {
+				break
+			}
+		} else if err != nil {
+			break
+		}
+
+		var rec claudeCodeTranscriptRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			continue
+		}
+		validRecords++
+
+		if rec.Message.ID != "" {
+			lastByMsgID[rec.Message.ID] = rec
+		}
+		for _, c := range rec.Message.Content {
+			if c.Type == "tool_use" {
+				toolUses[c.ID] = &ToolCallEntry{
+					Name:      c.Name,
+					Timestamp: rec.Timestamp,
+					Success:   true,
+				}
+			}
+			if c.Type == "tool_result" {
+				resultErrors[c.ToolUseID] = c.IsError
+			}
+		}
+		if t, err := parseClaudeCodeTimestamp(rec.Timestamp); err == nil {
+			if minTime.IsZero() || t.Before(minTime) {
+				minTime = t
+			}
+			if maxTime.IsZero() || t.After(maxTime) {
+				maxTime = t
+			}
+		}
+
+		if err == io.EOF {
+			break
+		}
+	}
+
+	if validRecords == 0 {
+		return ErrorTokenResult("no valid JSONL records in session transcript"),
+			UnknownToolCallResult("no valid JSONL records in session transcript"),
+			UnknownTimingResult("no valid JSONL records in session transcript"),
+			err
+	}
+
+	var tc TokenCounts
+	tokenFound := false
+	for _, rec := range lastByMsgID {
+		if rec.Message.Usage != nil {
+			tokenFound = true
+			u := rec.Message.Usage
+			tc.Input += u.InputTokens
+			tc.Output += u.OutputTokens
+			tc.CacheCreation += u.CacheCreationInputTokens
+			tc.CacheRead += u.CacheReadInputTokens
+			tc.Reasoning += u.OutputTokensDetails.ThinkingTokens
+		}
+	}
+
+	var calls []ToolCallEntry
+	for id, entry := range toolUses {
+		if isErr, ok := resultErrors[id]; ok {
+			entry.Success = !isErr
+		}
+		calls = append(calls, *entry)
+	}
+	callFound := len(calls) > 0
+
+	sort.Slice(calls, func(i, j int) bool {
+		return calls[i].Timestamp < calls[j].Timestamp
+	})
+
+	var tokenRes TokenResult
+	if tokenFound {
+		tokenRes = PresentTokenResult(tc, string(SourceSessionData))
+	} else {
+		tokenRes = UnknownTokenResult("no usage data in session transcript")
+	}
+
+	var toolRes ToolCallResult
+	if callFound {
+		toolRes = PresentToolCallResult(calls, string(SourceSessionData))
+	} else {
+		toolRes = UnknownToolCallResult("no tool_use events in session transcript")
+	}
+
+	var timingRes TimingResult
+	if !minTime.IsZero() && !maxTime.IsZero() {
+		td := TimingData{
+			StartTime: minTime.UTC().Format(time.RFC3339),
+			EndTime:   maxTime.UTC().Format(time.RFC3339),
+			TotalMs:   maxTime.Sub(minTime).Milliseconds(),
+		}
+		timingRes = PresentTimingResult(td, string(SourceSessionData))
+	} else {
+		timingRes = UnknownTimingResult("no timestamps in session transcript")
+	}
+
+	return tokenRes, toolRes, timingRes, nil
+}
+
+func parseClaudeCodeTimestamp(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, nil
+	}
+	return time.Parse(time.RFC3339, s)
 }
 
 func toInt(v any) int {

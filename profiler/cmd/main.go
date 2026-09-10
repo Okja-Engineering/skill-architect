@@ -36,9 +36,10 @@ func cmdProbe(args []string) {
 	fs := flag.NewFlagSet("probe", flag.ExitOnError)
 	harness := fs.String("harness", "", "harness name (claude_code)")
 	otelFile := fs.String("otel-file", "", "path to OTel export file")
+	exportFile := fs.String("export-file", "", "path to JSONL session transcript")
 	fs.Parse(args)
 
-	adapter := getAdapter(*harness, *otelFile)
+	adapter := getAdapter(*harness, *otelFile, *exportFile)
 	if adapter == nil {
 		fmt.Fprintf(os.Stderr, "unknown harness: %s (supported: claude_code)\n", *harness)
 		os.Exit(1)
@@ -68,7 +69,7 @@ func cmdCapture(args []string) {
 		os.Exit(1)
 	}
 
-	adapter := getAdapter(*harness, *otelFile)
+	adapter := getAdapter(*harness, *otelFile, *exportFile)
 	if adapter == nil {
 		fmt.Fprintf(os.Stderr, "unknown harness: %s (supported: claude_code)\n", *harness)
 		os.Exit(1)
@@ -99,10 +100,10 @@ func cmdCapture(args []string) {
 	fmt.Println(string(out))
 }
 
-func getAdapter(harness, otelFile string) profiler.ProfilerAdapter {
+func getAdapter(harness, otelFile, exportFile string) profiler.ProfilerAdapter {
 	switch harness {
 	case "claude_code":
-		return profiler.ClaudeCodeAdapter{OtelExportFile: otelFile}
+		return profiler.ClaudeCodeAdapter{OtelExportFile: otelFile, ExportFile: exportFile}
 	}
 	return nil
 }

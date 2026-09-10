@@ -406,3 +406,144 @@ func TestNoAttributionValueInJSONForUnknown(t *testing.T) {
 		t.Error("unknown attribution result should not have a 'value' key in JSON")
 	}
 }
+
+// --- F03 Slice 1.2: Claude Code session_data (JSONL transcript) adapter ---
+
+func TestCapabilityReport_ClaudeCode_WithSessionData(t *testing.T) {
+	tmp := t.TempDir()
+	jsonl := filepath.Join(tmp, "session.jsonl")
+	data := `{"timestamp":"2026-09-10T22:00:00.000Z","message":{"id":"msg_1","content":[{"type":"tool_use","name":"Bash","id":"toolu_1"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":10,"cache_read_input_tokens":20,"output_tokens_details":{"thinking_tokens":5}}}}
+{"timestamp":"2026-09-10T22:00:05.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":false}]}}
+`
+	os.WriteFile(jsonl, []byte(data), 0644)
+
+	adapter := ClaudeCodeAdapter{ExportFile: jsonl}
+	cap := adapter.Probe()
+
+	if cap.Capabilities[MetricTokens] != SourceSessionData {
+		t.Errorf("tokens = %q, want session_data", cap.Capabilities[MetricTokens])
+	}
+	if cap.Capabilities[MetricToolCalls] != SourceSessionData {
+		t.Errorf("tool_calls = %q, want session_data", cap.Capabilities[MetricToolCalls])
+	}
+	if cap.Capabilities[MetricTiming] != SourceSessionData {
+		t.Errorf("timing = %q, want session_data", cap.Capabilities[MetricTiming])
+	}
+	if cap.Capabilities[MetricSkillActivation] != SourceNone {
+		t.Errorf("skill_activation = %q, want none", cap.Capabilities[MetricSkillActivation])
+	}
+	if cap.Capabilities[MetricAttribution] != SourceNone {
+		t.Errorf("attribution = %q, want none", cap.Capabilities[MetricAttribution])
+	}
+}
+
+func TestCapabilityReport_ClaudeCode_SessionDataEmptyFile(t *testing.T) {
+	tmp := t.TempDir()
+	jsonl := filepath.Join(tmp, "session.jsonl")
+	os.WriteFile(jsonl, []byte(""), 0644)
+
+	adapter := ClaudeCodeAdapter{ExportFile: jsonl}
+	cap := adapter.Probe()
+
+	for metric, source := range cap.Capabilities {
+		if metric == MetricSkillActivation || metric == MetricAttribution {
+			continue
+		}
+		if source != SourceNone {
+			t.Errorf("%s = %q, want none for empty file", metric, source)
+		}
+	}
+}
+
+func TestCapture_ClaudeCode_WithSessionData(t *testing.T) {
+	tmp := t.TempDir()
+	jsonl := filepath.Join(tmp, "session.jsonl")
+	data := `{"timestamp":"2026-09-10T22:00:00.000Z","message":{"id":"msg_1","content":[{"type":"tool_use","name":"Bash","id":"toolu_1"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":10,"cache_read_input_tokens":20,"output_tokens_details":{"thinking_tokens":5}}}}
+{"timestamp":"2026-09-10T22:00:02.000Z","message":{"id":"msg_1","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":10,"cache_read_input_tokens":20,"output_tokens_details":{"thinking_tokens":5}}}}
+{"timestamp":"2026-09-10T22:00:05.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":false}]}}
+`
+	os.WriteFile(jsonl, []byte(data), 0644)
+
+	adapter := ClaudeCodeAdapter{ExportFile: jsonl}
+	opts := CaptureOpts{SnapshotHash: "sha123", SkillDir: "/skills/my-skill"}
+	profile, err := adapter.Capture("session-001", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if profile.Tokens.State != MetricPresent {
+		t.Errorf("tokens state = %q, want present", profile.Tokens.State)
+	}
+	if profile.Tokens.Value == nil {
+		t.Fatal("tokens value is nil")
+	}
+	if profile.Tokens.Value.Input != 100 {
+		t.Errorf("tokens input = %d, want 100", profile.Tokens.Value.Input)
+	}
+	if profile.Tokens.Value.Output != 50 {
+		t.Errorf("tokens output = %d, want 50", profile.Tokens.Value.Output)
+	}
+	if profile.Tokens.Value.CacheRead != 20 {
+		t.Errorf("tokens cache_read = %d, want 20", profile.Tokens.Value.CacheRead)
+	}
+	if profile.Tokens.Value.CacheCreation != 10 {
+		t.Errorf("tokens cache_creation = %d, want 10", profile.Tokens.Value.CacheCreation)
+	}
+	if profile.Tokens.Value.Reasoning != 5 {
+		t.Errorf("tokens reasoning = %d, want 5", profile.Tokens.Value.Reasoning)
+	}
+	if profile.Tokens.Source != "session_data" {
+		t.Errorf("tokens source = %q, want session_data", profile.Tokens.Source)
+	}
+
+	if profile.ToolCalls.State != MetricPresent {
+		t.Errorf("tool_calls state = %q, want present", profile.ToolCalls.State)
+	}
+	if len(profile.ToolCalls.Value) != 1 {
+		t.Fatalf("tool_calls count = %d, want 1", len(profile.ToolCalls.Value))
+	}
+	if profile.ToolCalls.Value[0].Name != "Bash" {
+		t.Errorf("tool_calls[0] name = %q, want Bash", profile.ToolCalls.Value[0].Name)
+	}
+	if !profile.ToolCalls.Value[0].Success {
+		t.Errorf("tool_calls[0] success = %v, want true", profile.ToolCalls.Value[0].Success)
+	}
+	if profile.ToolCalls.Source != "session_data" {
+		t.Errorf("tool_calls source = %q, want session_data", profile.ToolCalls.Source)
+	}
+
+	if profile.Timing.State != MetricPresent {
+		t.Errorf("timing state = %q, want present", profile.Timing.State)
+	}
+	if profile.Timing.Value == nil {
+		t.Fatal("timing value is nil")
+	}
+	if profile.Timing.Value.TotalMs != 5000 {
+		t.Errorf("timing total_ms = %d, want 5000", profile.Timing.Value.TotalMs)
+	}
+	if profile.Timing.Source != "session_data" {
+		t.Errorf("timing source = %q, want session_data", profile.Timing.Source)
+	}
+}
+
+func TestCapture_ClaudeCode_SessionDataToolError(t *testing.T) {
+	tmp := t.TempDir()
+	jsonl := filepath.Join(tmp, "session.jsonl")
+	data := `{"timestamp":"2026-09-10T22:00:00.000Z","message":{"id":"msg_1","content":[{"type":"tool_use","name":"Bash","id":"toolu_1"}],"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens_details":{"thinking_tokens":0}}}}
+{"timestamp":"2026-09-10T22:00:01.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":true}]}}
+`
+	os.WriteFile(jsonl, []byte(data), 0644)
+
+	adapter := ClaudeCodeAdapter{ExportFile: jsonl}
+	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "sha123", SkillDir: "/skills/my-skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if profile.ToolCalls.State != MetricPresent {
+		t.Fatalf("tool_calls state = %q, want present", profile.ToolCalls.State)
+	}
+	if profile.ToolCalls.Value[0].Success {
+		t.Errorf("tool_calls[0] success = %v, want false for is_error=true", profile.ToolCalls.Value[0].Success)
+	}
+}
