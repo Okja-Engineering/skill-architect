@@ -1,7 +1,7 @@
 # E-CS — Cursor hook telemetry for the profiler (skill-scope)
 
 ## Status
-- **Stage:** spec (**round-2 revision complete** — round-3 confirming hunters running)
+- **Stage:** spec (**round-3 gate NOT-CLEAN** — round-3 revision running)
 - **Owner:** chief of staff (manager hat)
 - **Branch:** none yet (target integration branch: `epic/skill-scope`)
 - **Worktree:** none yet
@@ -17,6 +17,8 @@
 - `review/hunter-conformance-round2.md` — round 2: NOT-CLEAN, 12 REAL; root = labels/enums transcribed by topic, not re-derived from source
 - `review/hunter-verifiability-round2.md` — round 2: NOT-CLEAN, 9 REAL + 1 SUSPECTED + 6 LOW; root = SC never swept downstream
 - `review/revision-log-round2.md` — **31 dispositions plus three proof tables**: (1) every DoD assertion in all 17 slices → its carrier field, (2) every enum literal and evidence label → its source line, (3) every `Depends on` recomputed from DoD + Files
+- `review/hunter-conformance-round3.md` — round 3: confirmed all 12 round-2 fixes landed **at root**; 12 new findings, mostly LOW
+- `review/hunter-verifiability-round3.md` — round 3: NOT-CLEAN, **5 HIGH** — hooks carry no timestamp, no success signal on `afterShellExecution`, no `tool_use_id` on `beforeReadFile`, one `Source` per `TokenResult`
 
 ## Round 2 revision summary
 Fixed by **class**, not by instance, because both hunters named "round 1 fixed the named instances" as the meta-defect.
@@ -28,8 +30,11 @@ Fixed by **class**, not by instance, because both hunters named "round 1 fixed t
 
 **MVE:** SC + S0 + S1a + S1b + S2 + S3 + S4 + S8a + S8b (9 PRs) + the SP1 gate. **Fallback (SP1 = no):** the same minus S3 — 8 PRs, and it closes. **Ships first: SC**, with S1a and SP1 in parallel; T1 as its own thread today.
 
+## Round 3 gate — NOT-CLEAN
+Conformance confirmed all 12 round-2 fixes at root; its 12 new findings are mostly LOW. Verifiability carries the weight: **5 HIGH** — hooks carry no timestamp, no success signal on `afterShellExecution`, no `tool_use_id` on `beforeReadFile`, one `Source` per `TokenResult`. Revision round 3 is running with a **source-supply table** (the `event.field` that supplies every asserted value).
+
 ## Note — sibling repo
 `/Users/matthewvandusen/Development/Auraprix/cursor-profiler` holds `intent.md` and `spec.md` mirroring this mandate; research findings live under `docs/research/` (add-only), including the deep-research report `existing-per-skill-cost-tools.md` that D10 is built on. **Contention:** that directory's `research-contradictions.md` (A4) calls the `cursor.*` telemetry names unverified, while round-1 conformance verified all of them against Cursor's Wire Reference (the *keys* were wrong; the names are real) — surfaced as a decision on the roadmap.
 
 ## Next
-If round 3 is **CLEAN** → present forks (§D) and User Questions 1–8 to the user. Else → round-3 revision.
+Round-4 confirming pass; then present to user.
