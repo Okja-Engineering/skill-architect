@@ -23,6 +23,33 @@ Skill Architect catches these problems with deterministic checks first, then rep
 | [`skill-audit`](skills/skill-audit/SKILL.md) | `/skill-architect:skill-audit` | Evaluate a skill directory against the Agent Skills spec, Anthropic best practices, and ICM context-management criteria. Reports pass/fail per dimension with concrete fixes. |
 | [`skill-rewrite`](skills/skill-rewrite/SKILL.md) | `/skill-architect:skill-rewrite` | Draft a rewritten `SKILL.md` from a `skill-audit` report. Produces a `REWRITE-DRAFT.md` with templates for missing sections; does not apply changes without approval. |
 
+## The profiler (preview)
+
+v0.4.0 adds a harness-agnostic profiler that captures runtime signals (tokens, tool calls, timing) from agent sessions and produces a serialized profile pinned to a skill snapshot hash. It degrades gracefully — unavailable metrics are `unknown` with a reason, never invented.
+
+The profiler uses an adapter-per-harness architecture:
+
+| Adapter | Status | Telemetry surface |
+|---|---|---|
+| Claude Code | ✅ Slice 1 | OTel export (tokens, tool calls, timing) |
+| Cursor | Planned | OTel + SQLite fallback |
+| Codex | Planned | OTel logs + hooks |
+| Devin | Planned | ATIF export + server API |
+
+```bash
+# Build the profiler CLI
+cd profiler && go build -o profiler ./cmd/
+
+# Probe what the adapter can capture
+./profiler probe --harness claude_code --otel-file ./otel-export.json
+
+# Capture a session profile
+./profiler capture --harness claude_code --session abc123 --snapshot sha123 \
+  --skill-dir ./skills/my-skill --otel-file ./otel-export.json
+```
+
+The profile JSON is the integration point for future paired comparisons (F04). See [`docs/profiler-spec.md`](docs/profiler-spec.md) for the adapter interface contract.
+
 ## Install
 
 ### Native plugin (recommended)
@@ -101,12 +128,15 @@ tests/test_skill.sh
 tests/test_walk.sh
 tests/test_f01.sh
 tests/test_f02.sh
+
+# Profiler tests (Go)
+cd profiler && go test ./...
 ```
 
 ## What this plugin does not do
 
 - It does not automatically rewrite the audited skill.
-- It does not run live agent evaluations (with-skill vs without-skill) in v0.3.0.
+- It does not run live paired comparisons (with-skill vs without-skill) — the profiler (v0.4.0 preview) captures runtime signals, but the comparison engine is not yet built.
 - It does not judge subjective writing quality or correctness of domain advice.
 
 See [`.out-of-scope.md`](.out-of-scope.md) for deliberate boundaries.

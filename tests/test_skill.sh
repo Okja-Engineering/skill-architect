@@ -25,7 +25,7 @@ import json, sys
 with open('$manifest') as f:
     data = json.load(f)
 assert data['name'] == 'skill-architect', 'name mismatch'
-assert data['version'] == '0.3.1', 'version mismatch'
+assert data['version'] == '0.4.0', 'version mismatch'
 assert 'skills' in data, 'missing skills'
 PY
   assert "$manifest is valid plugin.json" true

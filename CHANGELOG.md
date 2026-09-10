@@ -4,6 +4,18 @@ All notable changes to `skill-architect`.
 
 ## Unreleased
 
+## 0.4.0 — 2026-09-10
+
+Profiler preview: harness-agnostic runtime signal capture with graceful degradation.
+
+- Added `profiler/` Go module — adapter interface (`ProfilerAdapter`), `MetricResult` (present/unknown/error), `CapabilityReport`, and serialized `Profile` format pinned to a snapshot hash.
+- Added Claude Code adapter (Slice 1) — reads OTel export data for token counts, tool calls, and timing. Skill activation and attribution are honestly `unknown` (Claude Code has no skill-level events).
+- Added `profiler` CLI — `probe` reports capabilities, `capture` produces a profile JSON.
+- Added `docs/profiler-spec.md` — the adapter interface contract, profile format, and acceptance criteria.
+- 14 profiler tests pass (serialization, capability reports, capture with/without OTel, round-trip, no-value-in-JSON for unknown/error states).
+- All 131 existing tests still pass; no regressions.
+- Design space survey of 4 harnesses (Cursor, Claude Code, Codex, Devin) in `tmp/teams/architect/profiler-design-space.md`.
+
 ## 0.3.1 — 2026-09-09
 
 Dogfooding fixes: ran `skill-architect` against its own skills and addressed the findings.

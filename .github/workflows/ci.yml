@@ -29,3 +29,8 @@ jobs:
         run: tests/test_f01.sh
       - name: Run F02 unified audit report tests
         run: tests/test_f02.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Run profiler tests
+        run: cd profiler && go test ./...
