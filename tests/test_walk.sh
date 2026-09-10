@@ -66,7 +66,7 @@ EOF
 # Rewrite drafts a plan for the broken skill.
 test_rewrite_drafts_plan() {
   local bad="$tmp/bad-skill"
-  skills/skill-rewrite/scripts/draft-rewrite.sh -t "$bad" >/dev/null
+  skills/skill-rewrite/scripts/draft-rewrite.sh -t "$bad" -o "$bad/REWRITE-DRAFT.md" >/dev/null
   assert "rewrite draft created" test -f "$bad/REWRITE-DRAFT.md"
   assert "rewrite draft mentions When to use" grep -q "When to use" "$bad/REWRITE-DRAFT.md"
   assert "rewrite draft mentions Examples" grep -q "Examples" "$bad/REWRITE-DRAFT.md"

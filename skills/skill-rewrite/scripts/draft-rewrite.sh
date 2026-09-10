@@ -3,24 +3,36 @@ set -euo pipefail
 
 target_skill=""
 audit_report=""
+output=""
 
 usage() {
   cat <<EOF
-Usage: draft-rewrite.sh -t <target-skill-dir> [-a <audit-report-path>]
+Usage: draft-rewrite.sh -t <target-skill-dir> [-a <audit-report-path>] [-o <output-path>]
 
 Options:
   -t, --target    Target skill directory to rewrite (required)
-  -a, --audit     Path to an existing skill-audit report (optional)
+  -a, --audit     Path to an existing skill-audit report (markdown or JSON)
+  -o, --output    Path for the rewrite draft (default: ./REWRITE-DRAFT-<skill>.md)
   -h, --help      Show this help
 EOF
+}
+
+require_arg() {
+  if [[ $# -lt 2 ]]; then
+    usage >&2
+    exit 1
+  fi
+  printf '%s' "$2"
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -t|--target)
-      target_skill="$2"; shift 2 ;;
+      target_skill="$(require_arg "$@")"; shift 2 ;;
     -a|--audit)
-      audit_report="$2"; shift 2 ;;
+      audit_report="$(require_arg "$@")"; shift 2 ;;
+    -o|--output)
+      output="$(require_arg "$@")"; shift 2 ;;
     -h|--help)
       usage; exit 0 ;;
     *)
@@ -44,29 +56,63 @@ if [[ ! -f "$target_skill/SKILL.md" ]]; then
 fi
 
 skill_name="$(basename "$target_skill")"
-output="$target_skill/REWRITE-DRAFT.md"
-
-# Resolve skill-audit scripts relative to this script.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 skill_audit_root="$(dirname "$script_dir")/../skill-audit"
 
+if [[ ! -d "$skill_audit_root" ]]; then
+  echo "skill-audit not found at $skill_audit_root" >&2
+  exit 3
+fi
+
 if [[ -z "$audit_report" || ! -f "$audit_report" ]]; then
-  echo "No audit report provided; running structural checks..." >&2
-  audit_report="$(mktemp)"
-  "$skill_audit_root/scripts/check-frontmatter.sh" "$target_skill" > "$audit_report" 2>&1 || true
-  "$skill_audit_root/scripts/check-structure.sh" "$target_skill" >> "$audit_report" 2>&1 || true
+  if "$skill_audit_root/scripts/audit-report.sh" "$target_skill" > "/tmp/draft-rewrite-audit-${skill_name}.json" 2>/dev/null; then
+    audit_report="/tmp/draft-rewrite-audit-${skill_name}.json"
+  else
+    audit_report="$(mktemp)"
+    "$skill_audit_root/scripts/check-frontmatter.sh" "$target_skill" > "$audit_report" 2>&1 || true
+    "$skill_audit_root/scripts/check-structure.sh" "$target_skill" >> "$audit_report" 2>&1 || true
+  fi
+fi
+
+if [[ -z "$output" ]]; then
+  output="./REWRITE-DRAFT-${skill_name}.md"
 fi
 
 cat > "$output" <<EOF
 # Rewrite draft: $skill_name
 
 Generated from audit report: $audit_report
-
-## Current state
-
 EOF
 
-cat "$audit_report" >> "$output"
+echo "" >> "$output"
+echo "## Current state" >> "$output"
+echo "" >> "$output"
+
+if [[ "$audit_report" == *.json ]]; then
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '.quality.categories[] 
+      | select(.score < 10) 
+      | "- [ ] \(.name) (score \(.score)): \([.findings[]? | select(.type != "pass") | .message] | join("; "))"' \
+      "$audit_report" >> "$output" || true
+  else
+    echo "- [ ] Audit JSON present but jq not available; review manually." >> "$output"
+  fi
+else
+  awk -F'|' '
+    BEGIN { in_table = 0 }
+    /^\|[[:space:]]*Dimension[[:space:]]*\|/ { in_table = 1; next }
+    in_table && /^\|[-]+/ { next }
+    in_table && /^\|/ {
+      dim = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", dim)
+      score = $3; gsub(/^[[:space:]]+|[[:space:]]+$/, "", score)
+      notes = $4; gsub(/^[[:space:]]+|[[:space:]]+$/, "", notes)
+      if (score ~ /^[0-9]+$/ && score <= 1) {
+        printf("- [ ] %s (score %s): %s\n", dim, score, notes)
+      }
+    }
+    in_table && !/^\|/ { in_table = 0 }
+  ' "$audit_report" >> "$output"
+fi
 
 cat >> "$output" <<'EOF'
 
@@ -143,14 +189,6 @@ EOF
 fi
 
 cat >> "$output" <<'EOF'
-
-## Action items
-
-- [ ] Review the proposed structure against the skill's original intent.
-- [ ] Fill in the missing section templates above with domain-specific content.
-- [ ] Move mechanical steps to `scripts/` if they are currently described in prose.
-- [ ] Move deep reference content to `references/` or `assets/`.
-- [ ] Re-run the audit after applying changes.
 
 ## Notes
 

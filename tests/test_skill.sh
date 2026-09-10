@@ -74,8 +74,8 @@ assert "skill-audit passes its own structure check" true
 assert "skill-rewrite draft-rewrite.sh is executable" true
 tmp_skill="$(mktemp -d)"
 cp -R skills/skill-rewrite "$tmp_skill/skill-rewrite-test"
-skills/skill-rewrite/scripts/draft-rewrite.sh -t "$tmp_skill/skill-rewrite-test" >/dev/null
-[[ -f "$tmp_skill/skill-rewrite-test/REWRITE-DRAFT.md" ]]
+skills/skill-rewrite/scripts/draft-rewrite.sh -t "$tmp_skill/skill-rewrite-test" -o "$tmp_skill/REWRITE-DRAFT.md" >/dev/null
+[[ -f "$tmp_skill/REWRITE-DRAFT.md" ]]
 assert "skill-rewrite draft-rewrite.sh produces REWRITE-DRAFT.md" true
 rm -rf "$tmp_skill"
 

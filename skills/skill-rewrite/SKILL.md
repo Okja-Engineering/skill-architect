@@ -1,26 +1,25 @@
 ---
 name: skill-rewrite
-description: Draft a rewritten SKILL.md for an Agent Skill based on a skill-audit report. Use when a skill has failed or weak audit dimensions and you need a concrete rewrite plan before editing. The skill does not apply changes without explicit approval.
+description: Draft a rewritten SKILL.md for an Agent Skill from a skill-audit report. Use when a skill scored 0 or 1 on any audit dimension, when skillscore or skill-validator reports warnings or failures, or when asked to refactor, restructure, fix, or improve an existing SKILL.md before editing it. Produces a reviewable draft and rewrite plan only; never modifies the target skill without explicit approval. Not for creating a new skill from scratch.
 license: MIT
-compatibility: POSIX shell (bash 3.2+ or zsh), git.
+compatibility: POSIX shell (bash 3.2+ or zsh), git, jq. Requires the sibling skill-audit skill (its scripts/ and references/evaluation-matrix.md); skill-validator and skillscore only when no audit report is supplied.
 metadata:
-  version: "0.1.0"
+  version: "0.2.0"
 ---
 
 # skill-rewrite
 
-Draft a rewritten `SKILL.md` for an Agent Skill based on a `skill-audit` report. This skill turns audit findings into a concrete rewrite plan; it does not modify the audited skill without explicit approval.
+Draft a rewritten `SKILL.md` for an Agent Skill from a `skill-audit` report. This skill turns audit findings into a concrete rewrite plan and a draft; it does not modify the audited skill without explicit approval.
 
 ## When to use
 
 Use this skill when:
 
-- A skill has one or more failed or weak dimensions in a `skill-audit` report.
-- You are converting a prose workflow into a spec-compliant Agent Skill.
+- A skill has one or more dimensions scored 0 or 1 in a `skill-audit` report.
 - You need a structured rewrite plan before editing `SKILL.md`.
 - You want to preserve the skill's intent while fixing structural, trigger, or context-management issues.
 
-Do not use this skill to apply changes silently; the draft must be reviewed and approved first.
+Do not use this skill to apply changes silently; the draft must be reviewed and approved first. Do not use it to create a skill from scratch.
 
 ## Deterministic actions (60%)
 
@@ -28,61 +27,77 @@ Do not use this skill to apply changes silently; the draft must be reviewed and 
 
 Inputs:
 
-- `target_skill`: the skill directory to rewrite.
-- `audit_report`: optional path to an existing audit report. If omitted, run `skill-audit` first.
+- `target_skill`: one skill directory containing `SKILL.md`.
+- `audit_report`: path to an existing `skill-audit` report (markdown). If omitted, Stage 1 generates one.
+- `skill_root`: the directory containing this `SKILL.md` and `scripts/`.
+- `draft_out`: where the draft is written. Must be outside `target_skill`.
 
-### Stage 1: Run audit if needed
-
-If no audit report is provided, run the audit:
-
-```bash
-skill_root="<path-to-skill-architect>/skills/skill-audit"
-target_skill="<target-skill-dir>"
-"$skill_root/scripts/check-frontmatter.sh" "$target_skill"
-"$skill_root/scripts/check-structure.sh" "$target_skill"
-```
-
-Capture the output and score the 10 dimensions using `references/evaluation-matrix.md` from `skill-audit`.
-
-### Stage 2: Generate rewrite draft
-
-Run the rewrite drafter:
+Preflight:
 
 ```bash
-scripts/draft-rewrite.sh -t <target-skill-dir> [-a <audit-report-path>]
+[[ -f "$target_skill/SKILL.md" ]] || { echo "not a skill dir: $target_skill" >&2; exit 1; }
+[[ -d "$skill_root/../skill-audit/scripts" ]] || { echo "skill-audit not found beside $skill_root" >&2; exit 3; }
 ```
 
-This creates a `REWRITE-DRAFT.md` next to the target skill's `SKILL.md` with:
+Outputs: resolved `target_skill`, `skill_root`, `draft_out`, and either `audit_report` or a decision to run Stage 1.
 
-- Preserved frontmatter (with corrected `name` if mismatched).
-- A proposed structure following the Agent Skills spec and ICM principles.
-- Templates for missing sections: `When to use`, `Deterministic actions`, `Orchestration`, `Examples`, `Constraints`.
-- A checklist mapping each failed/weak audit dimension to a concrete fix.
+### Stage 1: Run the audit if no report was supplied
 
-### Stage 3: Produce rewrite plan
+```bash
+audit_report="$draft_out.audit.json"
+"$skill_root/../skill-audit/scripts/audit-report.sh" "$target_skill" > "$audit_report" || echo "audit exited $?" >&2
+jq '.summary' "$audit_report"
+```
 
-Read the draft and produce a final rewrite plan that includes:
+Score the 10 dimensions using `../skill-audit/references/evaluation-matrix.md`.
 
-1. What sections will be added, moved, or removed.
-2. What scripts or references need to be created, renamed, or deleted.
-3. What content is preserved unchanged.
-4. What requires human judgment (e.g., trigger phrasing, scope boundaries).
+Outputs: `audit_report` with a 10-dimension score table.
+
+### Stage 2: Generate the rewrite draft
+
+```bash
+"$skill_root/scripts/draft-rewrite.sh" -t "$target_skill" -a "$audit_report" -o "$draft_out"
+```
+
+The script writes `draft_out` containing:
+
+- The audit report inlined under `## Current state`.
+- The proposed section skeleton (Agent Skills spec + ICM).
+- Templates for any of `When to use`, `Examples`, `Validation` that the target lacks.
+- One checklist item per dimension scored 0 or 1 when the report contains the audit score table; otherwise generic action items.
+
+Never write the draft inside `target_skill`; that dirties the tree being audited before approval.
+
+Outputs: `draft_out`.
 
 ## Orchestration (30%)
 
+### Inputs
+
+- `target_skill`, `audit_report` (or none), `skill_root`, `draft_out`.
+
 ### Rewrite process
 
-1. Confirm the target skill directory and locate or generate the audit report.
-2. Read the current `SKILL.md`, `scripts/`, `references/`, and `assets/`.
-3. Identify the highest-impact fixes first:
+1. Confirm `target_skill` is a single skill directory and resolve `draft_out` outside it.
+2. Read the current `SKILL.md`, then `scripts/`, `references/`, and `assets/` when present.
+3. Order fixes by impact:
    - Spec compliance failures (frontmatter, layout).
    - Trigger failures (description missing what/when/keywords).
    - Body structure failures (missing headings, >500 lines, no examples).
    - Determinism failures (missing scripts, bad paths, no error handling).
-4. Generate the rewrite draft using `draft-rewrite.sh`.
-5. Present the draft to the maintainer and ask for approval.
-6. After approval, apply the rewrite. If approval is partial, apply only the approved changes.
-7. Re-run `skill-audit` and confirm the scores improved.
+4. Run Stage 2.
+5. Produce the rewrite plan from the draft: sections added/moved/removed; scripts or references to create, rename, or delete; content preserved unchanged; items needing human judgment.
+6. Present the plan and draft to the maintainer and ask for approval.
+
+### After approval
+
+7. Apply only the approved changes to `target_skill`.
+8. Re-run `skill-audit` and confirm no dimension scored lower than before.
+
+### Outputs
+
+- A rewrite plan (four parts, step 5) and a rewritten `SKILL.md` draft, both at `draft_out`.
+- Nothing inside `target_skill` until step 7.
 
 ### Content preservation rules
 
@@ -103,6 +118,19 @@ Use judgment for:
 
 When in doubt, keep the draft conservative and flag the uncertainty for the maintainer.
 
+## Validation
+
+Before presenting the draft, confirm:
+
+- [ ] Every audit dimension scored 0 or 1 maps to at least one change in the draft.
+- [ ] No content was added that is not traceable to an audit finding or the original `SKILL.md`.
+- [ ] Every existing working script is preserved or listed as removed with a reason.
+- [ ] `git status --porcelain` inside `target_skill` is empty.
+
+After approval and apply:
+
+- [ ] Re-audit scores are >= the original on every dimension.
+
 ## Constraints
 
 - Do not overwrite the original `SKILL.md` without explicit approval.
@@ -113,18 +141,42 @@ When in doubt, keep the draft conservative and flag the uncertainty for the main
 
 ## Examples
 
-### Generate a rewrite draft
+### Generate a rewrite draft from an existing report
 
 ```bash
-scripts/draft-rewrite.sh -t skills/release-check -a ./release-check-audit.md
+skill_root="skills/skill-rewrite"
+target_skill="skills/release-check"
+draft_out="/tmp/release-check-rewrite.md"
+"$skill_root/scripts/draft-rewrite.sh" -t "$target_skill" -a ./release-check-audit.md -o "$draft_out"
 ```
 
-Output: `skills/release-check/REWRITE-DRAFT.md`.
+Output: `Rewrite draft written to: /tmp/release-check-rewrite.md`
+
+### Example draft excerpt
+
+```markdown
+# Rewrite draft: release-check
+
+Generated from audit report: ./release-check-audit.md
+
+## Current state
+| Trigger | 1 | No synonyms; no negative scope. |
+| Examples | 0 | No concrete command shown. |
+
+## Missing section templates
+### Examples
+#### Example 1: <scenario>
+...
+
+## Action items
+- [ ] Trigger (score 1): add synonyms and a "Not for..." clause to the description.
+- [ ] Examples (score 0): add one runnable command with expected output.
+```
 
 ### Rewrite plan outline
 
 ```text
-skills/release-check/REWRITE-DRAFT.md
+/tmp/release-check-rewrite.md
 - Preserve: frontmatter name, description intent, existing scripts.
 - Add: When to use, Examples, Validation checklist.
 - Move: deep reference content to references/validation-patterns.md.
