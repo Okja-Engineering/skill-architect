@@ -146,11 +146,11 @@ After approval and apply:
 ```bash
 skill_root="skills/skill-rewrite"
 target_skill="skills/release-check"
-draft_out="/tmp/release-check-rewrite.md"
+draft_out="REWRITE-DRAFT-release-check.md"
 "$skill_root/scripts/draft-rewrite.sh" -t "$target_skill" -a ./release-check-audit.md -o "$draft_out"
 ```
 
-Output: `Rewrite draft written to: /tmp/release-check-rewrite.md`
+Output: `Rewrite draft written to: REWRITE-DRAFT-release-check.md`
 
 ### Example draft excerpt
 
@@ -176,7 +176,7 @@ Generated from audit report: ./release-check-audit.md
 ### Rewrite plan outline
 
 ```text
-/tmp/release-check-rewrite.md
+REWRITE-DRAFT-release-check.md
 - Preserve: frontmatter name, description intent, existing scripts.
 - Add: When to use, Examples, Validation checklist.
 - Move: deep reference content to references/validation-patterns.md.
