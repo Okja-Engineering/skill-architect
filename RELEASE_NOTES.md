@@ -1,5 +1,16 @@
 # Release notes
 
+## v0.3.1
+
+**Dogfooding fixes from self-audit.**
+
+- Added dependency-verification guards before script invocations — missing `skill-validator` or `skillscore` now fails loudly.
+- Added inline evaluation checklists and scoring dimensions table directly in `skill-audit` SKILL.md body, keeping external tool integration and reference files intact.
+- Added Inputs/Outputs stage contracts to the Orchestration section.
+- Fixed hardcoded `/tmp` path in `skill-rewrite` example.
+- Quality scores improved: `skill-audit` 89→92.5 (A-), `skill-rewrite` 86.5→89.5 (B+).
+- 131 tests pass; no spec regressions.
+
 ## v0.3.0
 
 **Unified machine-readable audit reports.**

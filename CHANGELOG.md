@@ -4,6 +4,20 @@ All notable changes to `skill-architect`.
 
 ## Unreleased
 
+## 0.3.1 — 2026-09-09
+
+Dogfooding fixes: ran `skill-architect` against its own skills and addressed the findings.
+
+- Added dependency-verification guards (`command -v skill-validator`, `command -v skillscore`) before script invocations in `skill-audit` SKILL.md — a missing dependency now fails loudly instead of silently.
+- Added inline evaluation checklists (spec, trigger, body, determinism, ICM, validation, self-contained) directly in `skill-audit` SKILL.md body so the auditor is self-contained for criteria that scripts don't cover mechanically.
+- Added scoring dimensions table with "Strong signal" column inline in `skill-audit` SKILL.md, keeping the `references/evaluation-matrix.md` reference for the tier model and output format.
+- Added inline report format template to Stage 4 of `skill-audit` SKILL.md.
+- Added Inputs/Outputs stage contracts to the Orchestration section of `skill-audit` SKILL.md.
+- Fixed hardcoded `/tmp/release-check-audit.md` path in `skill-rewrite` SKILL.md example — replaced with a relative path.
+- Bumped `skill-audit` metadata version to 0.2.0.
+- Quality scores improved: `skill-audit` 89→92.5 (A-), `skill-rewrite` 86.5→89.5 (B+).
+- All 131 tests pass; no spec regressions, no orphaned files.
+
 ## 0.3.0 — 2026-09-09
 
 - Added `audit-report.sh` — produces a unified machine-readable JSON report composing `skill-validator` (spec, structure, content, contamination), `skillscore` (7-dimension quality scoring), and house-policy checks (PL001–PL005, PT001–PT002) into one document with a top-level summary.
