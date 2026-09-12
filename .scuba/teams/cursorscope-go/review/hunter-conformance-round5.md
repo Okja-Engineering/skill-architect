@@ -39,3 +39,9 @@ C4-1…9 all FIXED at root (verified by running/reading); C4-2 stray count → L
 S9's Admin API figures: a summarizing fetch suggested the 30-day cap excluded `filtered-usage-events`; a verbatim fetch confirms it applies. C4-#5 stands; H6 mandates re-verification at build time.
 
 **Verdict: NOT-CLEAN.** Three MED above LOW, one root: rule 5 scoped tree-wide while the invariant is Cursor-scoped, and the "only assigner" returns rather than assigns. One root fix closes 1–3. The LOWs share the standing root: a count, range, or universal claim asserted from the topic of the cited block rather than counted or read.
+
+## Addendum (arrived 2026-09-11, after revision round 5 was applied)
+
+Walked the External-evidence stratum no prior round had covered: **20/20 citations into the cursorscope clone** (`cursor-profiler/tmp/research/cursorscope/`) verified exact, zero findings. Highlights: the five `category:` literals at `attribution.js:174,183,193,226,234,242`; `SKILL_PATH_RE` char-for-char; `TOOL_PAYLOAD_MAX_LEN` at `gen-ai-semconv.js:34` env-overridable, `:226` slice-plus-marker; `privacy.js` has no truncation and `privacy.test.js` has six cases, none truncation; `cursor-api-poller.js:44,47` exact; `ensure-cursorscope.sh` exactly 104 lines; `exit_code` read defensively at `telemetry.js:530,603` and absent from Cursor's docs; `package.json` 0.3.7 and the CHANGELOG memory-leak fix grounding R-CS-06; `install-global-hooks.sh:40` registers 19 events, missing exactly `beforeTabFileRead` and `workspaceOpen`.
+
+Effect on residue: §G13 / H7 narrows — the citations into cursorscope are verified; only the transcribed assertions of `attribution.test.js` / `gen-ai-semconv.test.js` remain unexecuted (needs a Node run). Verdict unchanged at the time of the pass; the three MED were subsequently addressed by revision round 5 (rule 5 scoped to eight Cursor-path files with baselines run against `main`; `ApplyTokenSelection` owns the assignment).
