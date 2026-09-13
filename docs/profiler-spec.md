@@ -11,7 +11,7 @@ A harness-agnostic profiler that captures runtime signals from any target harnes
 ### Metric results
 
 Every metric is wrapped so unavailable data is explicit, not silent. There is no
-generic `MetricResult[T]`: type parameters are avoided so the results marshal and
+generic `MetricResult[T]`. Type parameters are avoided so results marshal and
 unmarshal as plain JSON, so the shared state lives in `RawMetricResult` and each
 metric category has its own wrapper embedding it.
 
@@ -231,8 +231,8 @@ type Attribution struct {
 1. Metric result serialization: a `present` result includes value and source; an `unknown` result includes reason and no value key; an `error` result includes reason and no value key.
 2. `CapabilityReport` for Claude Code is per signal: `tokens`, `tool_calls`, and `timing` are each `otel` only when the export file actually contains that signal, and `none` otherwise; `skill_activation` and `attribution` are always `none`. An export carrying all three therefore reports `tokens: otel`, `tool_calls: otel`, `timing: otel`.
 3. `CapabilityReport` for Claude Code without OTel: all metrics `none`. Same for an export file that is empty, malformed, or carries none of the three signals.
-4. A Claude Code session with OTel produces a profile where tokens, tool_calls, and timing are `present`; skill_activation and attribution are `unknown` with reason.
-5. A session with no OTel produces a profile where all metrics are `unknown` with reason "OTel export not configured."
+4. A Claude Code session whose export carries all three signals produces a profile where tokens, tool_calls, and timing are `present`; skill_activation and attribution are `unknown` with reason.
+5. A session with no OTel produces a profile where all metrics are `unknown` with the reason quoted under **Fallback** above, which begins "OTel export not configured."
 6. Profile JSON round-trips: `Marshal → Unmarshal → Marshal` is identical.
 7. Profile `schema` field is `"skill-architect/profile/v1"`.
 8. Profile `snapshot_hash` matches the input.
