@@ -32,5 +32,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: profiler/go.mod
+          # The profiler module has no dependencies and so no go.sum. setup-go
+          # caches on a go.sum hash and warns on every run when it finds none.
+          cache: false
       - name: Run profiler tests
         run: cd profiler && go test ./...
