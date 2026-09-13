@@ -69,8 +69,8 @@ Anything else is `none`, and `capture` delivers exactly what `probe` advertised,
 both read the export through the same extractor. A partial export carrying tool calls and
 timing but no token metric yields those two `present` and `tokens` `unknown` with a
 reason, rather than discarding the run. An export that is missing, unreadable, or
-malformed is not "unconfigured": every signal comes back `error` naming the failure, so a
-file you supplied but the profiler cannot use says so.
+malformed is not "unconfigured": all three OTel signals come back `error` naming the
+failure, so a file you supplied but the profiler cannot use says so.
 
 `skill_activation` and `attribution` are always `none`: Claude Code emits no skill
 activation event, and this adapter does not read the skill-level attributes it does emit.
@@ -158,10 +158,10 @@ cp -R skills/skill-rewrite ~/.claude/skills/skill-rewrite
 
 Copy both, even if you only want `skill-rewrite`. Its `draft-rewrite.sh` resolves the
 audit scripts at `../skill-audit` relative to the `skill-rewrite` directory it lives in,
-so `skill-audit` must sit beside it in the same skills directory. Without the sibling it does not fail
-loudly: it still writes a `REWRITE-DRAFT.md`, but the "Current state" section contains
-`No such file or directory` for `check-frontmatter.sh` and `check-structure.sh` instead
-of an audit.
+so `skill-audit` must sit beside it in the same skills directory. Without the sibling it
+does not fail loudly: it still writes a `REWRITE-DRAFT.md`, but the "Current state"
+section contains `No such file or directory` for `check-frontmatter.sh` and
+`check-structure.sh` instead of an audit.
 
 The exact path depends on the agent (`~/.claude/skills/`, `.cursor/skills/`, `.codex/skills/`, `.devin/skills/`, etc.).
 
