@@ -11,7 +11,7 @@ import (
 
 // Usage:
 //
-//	profiler capture --harness claude_code --session <id> --snapshot <sha> --skill-dir <path> [--otel-file <path>] [--export-file <path>]
+//	profiler capture --harness claude_code --session <id> --snapshot <sha> --skill-dir <path> [--otel-file <path>]
 //	profiler probe --harness claude_code [--otel-file <path>]
 func main() {
 	if len(os.Args) < 2 {
@@ -60,7 +60,7 @@ func cmdCapture(args []string) {
 	snapshotHash := fs.String("snapshot", "", "snapshot hash (git SHA or content hash)")
 	skillDir := fs.String("skill-dir", "", "path to the skill being profiled")
 	otelFile := fs.String("otel-file", "", "path to OTel export file")
-	exportFile := fs.String("export-file", "", "path to session export file (e.g. Devin ATIF)")
+	exportFile := fs.String("export-file", "", "path to a non-OTel session export (e.g. Devin ATIF); reserved — no shipped adapter reads it, and passing it is an error")
 	fs.Parse(args)
 
 	if *sessionID == "" || *snapshotHash == "" || *skillDir == "" {
@@ -74,15 +74,15 @@ func cmdCapture(args []string) {
 		os.Exit(1)
 	}
 
+	if err := captureFlagError(*harness, *exportFile); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
 	opts := profiler.CaptureOpts{
 		ExportFile:   *exportFile,
 		SnapshotHash: *snapshotHash,
 		SkillDir:     *skillDir,
-	}
-	// --otel-file takes precedence for OTel-based adapters; --export-file
-	// is for non-OTel export formats (e.g. Devin ATIF in future adapters).
-	if *otelFile != "" {
-		opts.ExportFile = *otelFile
 	}
 
 	profile, err := adapter.Capture(*sessionID, opts)
@@ -97,6 +97,21 @@ func cmdCapture(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println(string(out))
+}
+
+// captureFlagError reports why the selected adapter cannot honour the flags it
+// was given, or nil when it can.
+//
+// --export-file fills CaptureOpts.ExportFile, which only an adapter reading a
+// session export (Devin's ATIF, a transcript) consults. No such adapter ships
+// yet, so no selectable harness can honour the flag. Refuse it: a flag the
+// adapter will ignore must fail loudly, not accept a path and produce an
+// all-unknown profile that looks like missing telemetry.
+func captureFlagError(harness, exportFile string) error {
+	if exportFile != "" {
+		return fmt.Errorf("--export-file is not read by the %s adapter; supply an OTel export with --otel-file", harness)
+	}
+	return nil
 }
 
 func getAdapter(harness, otelFile string) profiler.ProfilerAdapter {
