@@ -40,6 +40,9 @@ The profiler uses an adapter-per-harness architecture:
 # Build the profiler CLI
 cd profiler && go build -o profiler ./cmd/
 
+# Print the adapter version
+./profiler version
+
 # Probe what the adapter can capture
 ./profiler probe --harness claude_code --otel-file ./otel-export.json
 
@@ -48,9 +51,49 @@ cd profiler && go build -o profiler ./cmd/
   --skill-dir ./skills/my-skill --otel-file ./otel-export.json
 ```
 
+`version` prints the profiler adapter version (`0.1.0`). The adapter is versioned
+separately from the plugin, so this is not the plugin version.
+
+Probe detection is per signal, not all-or-nothing. It parses the export file and
+reports each capability on its own evidence:
+
+| Capability | Reported `otel` when the export contains |
+|---|---|
+| `tokens` | a `claude_code.token.usage` metric |
+| `tool_calls` | `claude_code.tool_decision` log events |
+| `timing` | `claude_code.api_request` log events |
+
+Anything absent is `none`. `capture` then delivers exactly what `probe` advertised: a
+partial export carrying tool calls and timing but no token metric yields those two
+`present` and `tokens` `unknown` with a reason, rather than discarding the run.
+`skill_activation` and `attribution` are always `none` — Claude Code does attach a
+`skill.name` attribute to its token and cost metrics, but this adapter does not read
+skill-level attributes yet.
+
+`capture` also accepts `--export-file`, reserved for adapters that read a non-OTel
+session export such as Devin's ATIF. The Claude Code adapter reads only `--otel-file`;
+passing `--export-file` to it on its own produces an all-`unknown` profile.
+
 The profile JSON is the integration point for future paired comparisons (F04). See [`docs/profiler-spec.md`](docs/profiler-spec.md) for the adapter interface contract.
 
 ## Install
+
+### Prerequisites
+
+The skills shell out to three external tools. Install them before running an audit:
+
+| Tool | Install | Without it |
+|---|---|---|
+| [`skill-validator`](https://github.com/agent-ecosystem/skill-validator) | `brew install agent-ecosystem/tap/skill-validator` | `skill-audit` stops at its structural-checks stage with `skill-validator not found` and exit 1. `check-frontmatter.sh` cannot run. `audit-report.sh` still emits a report, but `spec` is `null`, `spec_error` names the missing tool, and `summary.passed` is `false`. |
+| [`skillscore`](https://www.npmjs.com/package/skillscore) | `npm install -g skillscore` | `skill-audit` stops at the same stage with `skillscore not found` and exit 1. `check-quality.sh` exits 3. `audit-report.sh` emits `quality: null` with `quality_error`, and `quality_score` / `quality_grade` are `null`. |
+| `jq` | `brew install jq` (macOS) · `apt-get install jq` (Debian/Ubuntu) | `audit-report.sh` and `check-paths.sh --json` die with `jq: command not found` (exit 127). `check-structure.sh --json` is quieter and worse: it exits 0 and returns `{"findings": [], "passed": true}`, dropping every finding. |
+
+The `skill-validator` and `skillscore` checks are deliberately loud — a missing tool
+fails the audit instead of quietly scoring an unchecked skill as a pass. There is no
+such guard for `jq`, so confirm it is installed yourself.
+
+Building the profiler additionally needs Go, at the version declared in
+[`profiler/go.mod`](profiler/go.mod).
 
 ### Native plugin (recommended)
 
@@ -88,6 +131,13 @@ Copy only the skills you want into your agent's skill directory. You own the fil
 cp -R skills/skill-audit ~/.claude/skills/skill-audit
 cp -R skills/skill-rewrite ~/.claude/skills/skill-rewrite
 ```
+
+Copy both, even if you only want `skill-rewrite`. Its `draft-rewrite.sh` resolves the
+audit scripts at `../skill-audit` relative to its own directory, so `skill-audit` must
+sit beside it in the same skills directory. Without the sibling it does not fail
+loudly: it still writes a `REWRITE-DRAFT.md`, but the "Current state" section contains
+`No such file or directory` for `check-frontmatter.sh` and `check-structure.sh` instead
+of an audit.
 
 The exact path depends on the agent (`~/.claude/skills/`, `.cursor/skills/`, `.codex/skills/`, `.devin/skills/`, etc.).
 
