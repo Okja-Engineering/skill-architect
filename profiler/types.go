@@ -9,9 +9,9 @@ import "encoding/json"
 type MetricState string
 
 const (
-	MetricPresent MetricState = "present" // value captured from telemetry
-	MetricUnknown MetricState = "unknown" // no telemetry source available
-	MetricError   MetricState = "error"   // source existed but failed
+	MetricPresent MetricState = "present" // a value was read from telemetry
+	MetricUnknown MetricState = "unknown" // no telemetry source, or nothing readable in it
+	MetricError   MetricState = "error"   // the source existed and failed
 )
 
 // RawMetricResult is the state every metric result carries, so unavailable data
