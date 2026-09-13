@@ -90,7 +90,7 @@ func (a ClaudeCodeAdapter) resolve() otelSignals {
 
 	f, err := os.Open(a.OtelExportFile)
 	if err != nil {
-		return erroredSignals(fmt.Sprintf("failed to read OTel export file: %v", err))
+		return erroredSignals(fileReadError(err).Error())
 	}
 	defer f.Close()
 
@@ -233,7 +233,7 @@ func eventName(r otlpLogRecord) string {
 // does not report how many: a present result carries no reason in schema v1.
 
 func extractTokenCounts(export otlpExport) TokenResult {
-	acc := tokenAccumulator{}
+	acc := counterAccumulator{}
 	var seen, points, read int
 	var c tokenPointCounters
 

@@ -108,9 +108,9 @@ func TestOTLP_TopLevelValueThatIsNotAnObject(t *testing.T) {
 // a wrapped total serialises as a negative number of tokens — an answer that is
 // wrong in a direction no reader would question. There is no fixture for this:
 // a 2^63 token count in a reviewed file teaches nobody anything.
-func TestTokenAccumulator_TotalsSaturateRatherThanWrap(t *testing.T) {
-	acc := tokenAccumulator{}
-	// Two series of the same token type, summed at reduce.
+func TestCounterAccumulator_TotalsSaturateRatherThanWrap(t *testing.T) {
+	acc := counterAccumulator{}
+	// Two series under the same label, summed at reduce.
 	acc.add("model=a", tokenTypeInput, math.MaxInt64, 1, true, false)
 	acc.add("model=b", tokenTypeInput, 1000, 1, true, false)
 	// One series accumulating deltas past the limit.
@@ -124,14 +124,43 @@ func TestTokenAccumulator_TotalsSaturateRatherThanWrap(t *testing.T) {
 	if got := totals[tokenTypeOutput]; got != math.MaxInt64 {
 		t.Errorf("output total = %d, want %d — accumulating deltas must saturate", got, int64(math.MaxInt64))
 	}
-	if got := clampToInt(math.MaxInt64); got != math.MaxInt {
-		t.Errorf("clampToInt(MaxInt64) = %d, want %d", got, math.MaxInt)
+	// A label no series carried is absent, not zero: that is how the caller
+	// tells "nothing was read for this" from "this came to nothing".
+	if _, ok := totals[tokenTypeCacheRead]; ok {
+		t.Errorf("totals carry %q, which no series was added under", tokenTypeCacheRead)
 	}
-	if got := clampToInt(math.MinInt64); got != math.MinInt {
-		t.Errorf("clampToInt(MinInt64) = %d, want %d", got, math.MinInt)
+}
+
+// The clamp that carries an int64 total into the profile's int fields only ever
+// does anything where int is 32 bits. On the machine this is developed on, and
+// on CI, MinInt..MaxInt is the whole range of an int64 — so a test that calls
+// clampToInt exercises no clamping at all and would pass just as well with the
+// clamping deleted. The bounds are a parameter so the behaviour can be reached.
+func TestClampToRange_SaturatesAtTheBoundsItIsGiven(t *testing.T) {
+	const min32, max32 = math.MinInt32, math.MaxInt32
+	for _, tc := range []struct {
+		v    int64
+		want int64
+	}{
+		{math.MaxInt64, max32},
+		{max32 + 1, max32},
+		{max32, max32},
+		{1523, 1523},
+		{0, 0},
+		{min32, min32},
+		{min32 - 1, min32},
+		{math.MinInt64, min32},
+	} {
+		if got := clampToRange(tc.v, min32, max32); got != tc.want {
+			t.Errorf("clampToRange(%d, %d, %d) = %d, want %d", tc.v, int64(min32), int64(max32), got, tc.want)
+		}
 	}
+	// And the bounds clampToInt itself passes carry a count through unchanged.
 	if got := clampToInt(1523); got != 1523 {
 		t.Errorf("clampToInt(1523) = %d, want 1523 — a count in range is carried unchanged", got)
+	}
+	if got := clampToInt(math.MaxInt64); got != math.MaxInt {
+		t.Errorf("clampToInt(MaxInt64) = %d, want %d", got, math.MaxInt)
 	}
 }
 

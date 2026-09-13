@@ -222,7 +222,7 @@ func skipPrelude(br *bufio.Reader) (int64, error) {
 		case err == io.EOF:
 			return n, errors.New("OTel export file is empty")
 		case err != nil:
-			return n, fmt.Errorf("failed to read OTel export file: %v", err)
+			return n, fileReadError(err)
 		}
 		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
 			br.UnreadByte()
@@ -291,6 +291,15 @@ func decodeFailure(err error, batchIdx int, prelude, fileLen int64) error {
 		return malformedJSON(fileLen, batchIdx, "unexpected end of JSON input")
 	}
 	// Anything left is the file failing under us, not its contents.
+	return fileReadError(err)
+}
+
+// fileReadError is the reason for a capture file that could not be read as
+// bytes — it would not open, or it stopped mid-read. It is the one owner of
+// that sentence: the adapter, the prelude and the decoder all reach the same
+// failure from different places, and three copies of a string a test asserts on
+// are three chances for two of them to drift.
+func fileReadError(err error) error {
 	return fmt.Errorf("failed to read OTel export file: %v", err)
 }
 
@@ -657,32 +666,37 @@ func (s otlpSum) temporality() (int64, temporalityState) {
 
 // --- Accumulating counter data points ---
 
-// tokenSeries is one time series' contribution to a counter total.
-type tokenSeries struct {
-	tokenType  string
+// counterSeries is one time series' contribution to a counter total, under the
+// label its caller totals by.
+type counterSeries struct {
+	label      string
 	value      int64
 	timeNanos  int64
 	hasTime    bool
 	cumulative bool
 }
 
-// tokenAccumulator merges counter data points across every batch in a file,
+// counterAccumulator merges counter data points across every batch in a file,
 // keyed by series.
 //
 // Temporality decides how, and the two are opposite instructions: delta points
 // are the increments since the last export and add up; cumulative points are
 // running totals, so the latest supersedes the rest. Merging per series rather
 // than per sum is what lets a capture whose batches were written minutes apart
-// still add up, and what keeps two models' token counts from collapsing into
-// one.
-type tokenAccumulator map[string]*tokenSeries
+// still add up, and what keeps two models' counts from collapsing into one.
+//
+// The label is whatever the caller totals by — the token type, for this file's
+// only caller today. Nothing here knows what a token is: this is the format
+// layer, and a second OTLP-speaking adapter counting something else would use
+// it unchanged.
+type counterAccumulator map[string]*counterSeries
 
 // add folds one data point into its series.
-func (acc tokenAccumulator) add(key, tokenType string, value, timeNanos int64, hasTime, cumulative bool) {
+func (acc counterAccumulator) add(key, label string, value, timeNanos int64, hasTime, cumulative bool) {
 	cur, seen := acc[key]
 	if !seen {
-		acc[key] = &tokenSeries{
-			tokenType:  tokenType,
+		acc[key] = &counterSeries{
+			label:      label,
 			value:      value,
 			timeNanos:  timeNanos,
 			hasTime:    hasTime,
@@ -721,13 +735,14 @@ func (acc tokenAccumulator) add(key, tokenType string, value, timeNanos int64, h
 	}
 }
 
-// reduce totals each token type across every series it was seen on. The merge
-// above already turned each series into one number, so this adds series, never
-// points.
-func (acc tokenAccumulator) reduce() map[string]int64 {
+// reduce totals each label across every series it was seen on. The merge above
+// already turned each series into one number, so this adds series, never
+// points. A label no series carried is absent from the map, which is how the
+// caller tells "nothing was read for this" from "this came to zero".
+func (acc counterAccumulator) reduce() map[string]int64 {
 	totals := make(map[string]int64, len(acc))
 	for _, s := range acc {
-		totals[s.tokenType] = addSaturating(totals[s.tokenType], s.value)
+		totals[s.label] = addSaturating(totals[s.label], s.value)
 	}
 	return totals
 }
@@ -748,12 +763,20 @@ func addSaturating(a, b int64) int64 {
 
 // clampToInt carries an int64 total into the profile's int fields, saturating
 // rather than wrapping where int is 32 bits.
-func clampToInt(v int64) int {
+func clampToInt(v int64) int { return int(clampToRange(v, math.MinInt, math.MaxInt)) }
+
+// clampToRange is clampToInt with its bounds made arguments. On a 64-bit build
+// the bounds clampToInt passes are the whole range of an int64, so there is no
+// input that exercises the saturation at all — and a unit test that cannot
+// reach the behaviour it names is a test that would go green if the behaviour
+// were deleted. The bounds are a parameter so the 32-bit case can be reached on
+// the machine this is developed on.
+func clampToRange(v, min, max int64) int64 {
 	switch {
-	case v > math.MaxInt:
-		return math.MaxInt
-	case v < math.MinInt:
-		return math.MinInt
+	case v > max:
+		return max
+	case v < min:
+		return min
 	}
-	return int(v)
+	return v
 }
