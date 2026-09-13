@@ -3,7 +3,10 @@
 // the comparison engine (F04) reads profiles without knowing which adapter produced them.
 package profiler
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // MetricState represents the availability state of a metric.
 type MetricState string
@@ -64,6 +67,14 @@ type CaptureOpts struct {
 	SkillDir     string `json:"skill_dir"`             // path to the skill being profiled
 }
 
+// ExportFileUnsupportedError is the refusal for a CaptureOpts.ExportFile the
+// selected adapter cannot read. The adapter owns the contract and returns this
+// from Capture; the CLI raises the same error before it gets that far, so the
+// two cannot drift into telling the caller different things.
+func ExportFileUnsupportedError(harness string) error {
+	return fmt.Errorf("--export-file is not read by the %s adapter; supply an OTel export with --otel-file", harness)
+}
+
 // ProfilerAdapter is implemented by each harness adapter.
 type ProfilerAdapter interface {
 	// Name returns the harness identifier.
@@ -83,7 +94,12 @@ type TokenCounts struct {
 	Output        int `json:"output"`
 	CacheRead     int `json:"cache_read,omitempty"`
 	CacheCreation int `json:"cache_creation,omitempty"`
-	Reasoning     int `json:"reasoning,omitempty"`
+	// Reasoning has no source in Claude Code's OTel surface: its token.usage
+	// type attribute is exactly input, output, cacheRead and cacheCreation.
+	// Left unpopulated there, so omitempty drops the key rather than reporting
+	// a zero that was never measured. The field is harness-agnostic and stays
+	// for an adapter that does have the signal.
+	Reasoning int `json:"reasoning,omitempty"`
 }
 
 // ToolCallEntry records a single tool invocation.

@@ -1,9 +1,10 @@
 package profiler
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -12,23 +13,43 @@ import (
 // returns, so there is no second copy of a name to drift.
 const (
 	otelTokenUsageMetric = "claude_code.token.usage"
+	otelToolResultLog    = "claude_code.tool_result"
 	otelToolDecisionLog  = "claude_code.tool_decision"
 	otelAPIRequestLog    = "claude_code.api_request"
+
+	// Every Claude Code event name is qualified with this prefix in a record's
+	// body and unqualified in its event.name attribute.
+	otelEventPrefix = "claude_code."
+)
+
+// Token type attribute values on claude_code.token.usage. They are camelCase on
+// the wire and snake_case in the profile: the profile's keys are schema v1 and
+// do not follow the harness.
+const (
+	tokenTypeInput         = "input"
+	tokenTypeOutput        = "output"
+	tokenTypeCacheRead     = "cacheRead"
+	tokenTypeCacheCreation = "cacheCreation"
 )
 
 // ClaudeCodeAdapter captures runtime signals from Claude Code via OTel export.
 //
 // Claude Code emits OTel when CLAUDE_CODE_ENABLE_TELEMETRY=1 and OTEL_*_EXPORTER
-// env vars are set. This adapter reads from a file the OTel collector writes
-// (or a file-based exporter), not a live network endpoint, to keep the adapter
-// self-contained and testable without a running collector.
+// env vars are set. It has no file exporter, so the file this adapter reads is
+// written by something downstream: a local OTLP/HTTP receiver or an OpenTelemetry
+// collector's file exporter. Either way the format is OTLP/JSON — one
+// ExportMetricsServiceRequest or ExportLogsServiceRequest per JSON object — and
+// README "Capturing an OTel export" documents both routes. Reading a file rather
+// than a live endpoint keeps the adapter self-contained and testable without a
+// running collector.
 //
-// Skill activation and attribution are always unknown for Claude Code: it emits
-// no skill activation event, and this adapter reads none of the skill-level
-// attributes Claude Code does attach elsewhere in its OTel surface. Reporting
-// either signal would mean inventing it.
+// Skill activation and attribution are always unknown for Claude Code. It emits
+// no skill activation event; the skill.name attribute it does attach to
+// request-scoped signals is not read yet, and nothing in its telemetry maps an
+// output back to the skill that produced it. Reporting either signal would mean
+// inventing it.
 type ClaudeCodeAdapter struct {
-	// OtelExportFile is the path to a JSON file containing OTel-exported data.
+	// OtelExportFile is the path to a file containing an OTLP/JSON export.
 	// It is the adapter's only input: Probe and Capture both resolve this one
 	// path, and nothing else supplies one.
 	OtelExportFile string
@@ -56,23 +77,32 @@ type otelSignals struct {
 // below it re-decides either, so all three signals share one error path:
 //
 //   - no file configured — unknown, naming what to configure;
-//   - file unreadable or unparseable — error, naming the failure. The export was
-//     supplied, so "not configured" would send the caller to fix the one thing
-//     that is not wrong;
+//   - the file could not be read as an OTLP/JSON export — error, naming the
+//     failure. The export was supplied, so "not configured" would send the
+//     caller to fix the one thing that is not wrong;
+//   - it parsed but carries no OTLP envelope — unknown, naming the format
+//     expected. Nothing failed; the file simply is not an export;
 //   - parsed — each extractor settles its own signal from what it can read.
 func (a ClaudeCodeAdapter) resolve() otelSignals {
 	if a.OtelExportFile == "" {
 		return unknownSignals("OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile.")
 	}
 
-	data, err := os.ReadFile(a.OtelExportFile)
+	f, err := os.Open(a.OtelExportFile)
 	if err != nil {
 		return erroredSignals(fmt.Sprintf("failed to read OTel export file: %v", err))
 	}
+	defer f.Close()
 
-	var export claudeCodeOtelExport
-	if err := json.Unmarshal(data, &export); err != nil {
-		return erroredSignals(fmt.Sprintf("failed to parse OTel export JSON: %v", err))
+	export, err := readOTLP(f)
+	if err != nil {
+		// The format layer's error is already written for the reader: it names
+		// the shape that could not be read, never a Go type.
+		return erroredSignals(err.Error())
+	}
+	if !export.hasEnvelope() {
+		return unknownSignals("OTel export is not OTLP/JSON: no resourceMetrics or resourceLogs found. " +
+			"Claude Code emits OTLP via OTEL_EXPORTER_OTLP_PROTOCOL=http/json; see README 'Capturing an OTel export'.")
 	}
 
 	return otelSignals{
@@ -140,6 +170,14 @@ func (a ClaudeCodeAdapter) Probe() CapabilityReport {
 
 // Capture reads telemetry for a specific Claude Code session and produces a Profile.
 func (a ClaudeCodeAdapter) Capture(sessionID string, opts CaptureOpts) (Profile, error) {
+	// The adapter owns its input contract. CaptureOpts.ExportFile is a session
+	// export for an adapter that reads one; this adapter reads OTLP/JSON and
+	// nothing else, so a caller who supplies one is told, rather than handed a
+	// profile that looks like missing telemetry.
+	if opts.ExportFile != "" {
+		return Profile{}, ExportFileUnsupportedError(a.Name())
+	}
+
 	sig := a.resolve()
 
 	return Profile{
@@ -155,171 +193,310 @@ func (a ClaudeCodeAdapter) Capture(sessionID string, opts CaptureOpts) (Profile,
 		ToolCalls: sig.ToolCalls,
 		Timing:    sig.Timing,
 
-		// Claude Code emits no skill activation event, and this adapter reads
-		// none of the skill-level attributes it does emit.
-		SkillActivation: UnknownActivationResult("Claude Code has no skill-level activation events"),
-		Attribution:     UnknownAttributionResult("this adapter does not read Claude Code's skill attribution attributes"),
+		// skill.name marks the skill active for a request on token.usage,
+		// cost.usage and api_request, and appears verbatim for every skill but
+		// a third-party plugin's. This adapter does not read it yet, and no
+		// signal in the telemetry maps an output back to a skill at all.
+		SkillActivation: UnknownActivationResult("Claude Code emits no skill activation event; this adapter does not yet read " +
+			"skill.name, which marks the skill active for a request on token.usage, cost.usage and api_request " +
+			"(third-party plugin skills appear as \"third-party\"). Reading it is 0.5.0."),
+		Attribution: UnknownAttributionResult("Claude Code telemetry carries no output-to-skill mapping"),
 	}, nil
 }
 
-// claudeCodeOtelExport is the JSON structure written by a file-based OTel exporter
-// for Claude Code sessions. It contains metrics and log events.
-type claudeCodeOtelExport struct {
-	Metrics []otelMetric `json:"metrics,omitempty"`
-	Logs    []otelLog    `json:"logs,omitempty"`
-}
-
-type otelMetric struct {
-	Name       string         `json:"name"`
-	Attributes map[string]any `json:"attributes,omitempty"`
-	Value      any            `json:"value"`
-}
-
-type otelLog struct {
-	EventName  string         `json:"event_name"`
-	Attributes map[string]any `json:"attributes,omitempty"`
-	Timestamp  string         `json:"timestamp"`
+// eventName is a log record's fully-qualified event name, or "" for a record
+// whose identity cannot be read — which is not an error: an export carries
+// events this adapter does not read, and new ones arrive with every release.
+//
+// The body is the primary identity and carries the qualified name; the
+// event.name attribute carries the short one and can be dropped by attribute
+// cardinality limits, so the body is preferred. Normalising to the qualified
+// form keeps the names in the reasons below greppable against the user's own
+// export.
+func eventName(r otlpLogRecord) string {
+	name, ok := bodyName(r.Body)
+	if !ok || name == "" {
+		name, _ = r.Attributes.String("event.name")
+	}
+	if name == "" {
+		return ""
+	}
+	return otelEventPrefix + strings.TrimPrefix(name, otelEventPrefix)
 }
 
 // Each extractor is the single predicate for its signal: present only when it
 // read at least one usable value, unknown with a reason naming why not. A metric
 // or event with the right name but nothing readable inside it is evidence that
 // the harness was running, not evidence of a value.
+//
+// Data points and log records that cannot be read are skipped, and the profile
+// does not report how many: a present result carries no reason in schema v1.
 
-func extractTokenCounts(data claudeCodeOtelExport) TokenResult {
-	var tc TokenCounts
-	seen, read := 0, 0
-	for _, m := range data.Metrics {
-		if m.Name != otelTokenUsageMetric {
-			continue
-		}
+func extractTokenCounts(export otlpExport) TokenResult {
+	acc := tokenAccumulator{}
+	var seen, points, read, unreadableTemporality int
+
+	for m := range export.metrics(otelTokenUsageMetric) {
 		seen++
-		val, ok := toInt(m.Value)
-		if !ok {
+		if m.Sum == nil {
+			// A gauge or a histogram: the name matched, but there are no sum
+			// data points to visit.
 			continue
 		}
-		switch getString(m.Attributes, "token_type") {
-		case "input":
-			tc.Input += val
-		case "output":
-			tc.Output += val
-		case "cache_read":
-			tc.CacheRead += val
-		case "cache_creation":
-			tc.CacheCreation += val
-		case "reasoning", "reasoning_output":
-			tc.Reasoning += val
-		default:
-			continue
+		temporality, temporalityOK := m.Sum.temporality()
+		for _, dp := range m.Sum.DataPoints {
+			points++
+
+			// Delta and cumulative are opposite instructions — add, or
+			// supersede — so a temporality that reads as neither is not a third
+			// instruction to guess at. The point is refused and counted, which
+			// costs a number nobody could have trusted and states so in the
+			// reason, rather than silently over- or under-counting the session.
+			if !temporalityOK || (temporality != temporalityDelta && temporality != temporalityCumulative) {
+				unreadableTemporality++
+				continue
+			}
+
+			// type is overloaded across Claude Code's metrics, so it is read
+			// only on this one; another metric's type contributes nothing.
+			tokenType, ok := dp.Attributes.String("type")
+			if !ok || !isTokenType(tokenType) {
+				continue
+			}
+			value, ok := dp.value()
+			if !ok {
+				continue
+			}
+			timeNanos, hasTime := jsonInt64(dp.TimeUnixNano)
+			acc.add(dp.Attributes.seriesKey(), tokenType, value, timeNanos, hasTime, temporality == temporalityCumulative)
+			read++
 		}
-		read++
 	}
+
 	switch {
 	case seen == 0:
 		return UnknownTokenResult("no " + otelTokenUsageMetric + " metric found in OTel export")
+	case points == 0:
+		return UnknownTokenResult("no readable " + otelTokenUsageMetric + " metric in OTel export: it carried no sum data points")
 	case read == 0:
-		return UnknownTokenResult("no readable " + otelTokenUsageMetric + " metric in OTel export: none carried both a recognised token_type and a numeric value")
+		var clauses []string
+		if points > unreadableTemporality {
+			clauses = append(clauses, "no data point carried both a recognised type attribute ("+
+				tokenTypeInput+"/"+tokenTypeOutput+"/"+tokenTypeCacheRead+"/"+tokenTypeCacheCreation+
+				") and a numeric asDouble or asInt value")
+		}
+		if unreadableTemporality > 0 {
+			clauses = append(clauses, fmt.Sprintf("%d data points declared an aggregationTemporality that is neither %d (delta) nor %d (cumulative)",
+				unreadableTemporality, temporalityDelta, temporalityCumulative))
+		}
+		return UnknownTokenResult("no readable " + otelTokenUsageMetric + " metric in OTel export: " + strings.Join(clauses, "; "))
 	}
-	return PresentTokenResult(tc, string(SourceOtel))
+
+	// camelCase attribute values in, snake_case profile keys out. Reasoning has
+	// no source in Claude Code's surface (see TokenCounts) and stays
+	// unpopulated, so its key is absent from the profile rather than reported
+	// as a measured zero.
+	totals := acc.reduce()
+	return PresentTokenResult(TokenCounts{
+		Input:         clampToInt(totals[tokenTypeInput]),
+		Output:        clampToInt(totals[tokenTypeOutput]),
+		CacheRead:     clampToInt(totals[tokenTypeCacheRead]),
+		CacheCreation: clampToInt(totals[tokenTypeCacheCreation]),
+	}, string(SourceOtel))
 }
 
-func extractToolCalls(data claudeCodeOtelExport) ToolCallResult {
-	var calls []ToolCallEntry
-	seen := 0
-	for _, log := range data.Logs {
-		if log.EventName != otelToolDecisionLog {
-			continue
-		}
-		seen++
-		name := getString(log.Attributes, "tool_name")
-		if name == "" {
-			continue
-		}
-		calls = append(calls, ToolCallEntry{
-			Name:      name,
-			Timestamp: log.Timestamp,
-			// Success carries the permission decision, not the execution
-			// outcome: tool_decision says whether the call was approved, and
-			// this adapter reads no completion signal. Separating the two is a
-			// schema change, tracked for 0.5.0.
-			Success: getString(log.Attributes, "decision") == "approved",
-		})
+func isTokenType(s string) bool {
+	switch s {
+	case tokenTypeInput, tokenTypeOutput, tokenTypeCacheRead, tokenTypeCacheCreation:
+		return true
 	}
+	return false
+}
+
+// extractToolCalls lists the session's tool calls from two disjoint sources.
+//
+// claude_code.tool_result is emitted when a tool completes, and only then, so
+// it is the execution outcome: ToolCallEntry.Success means the tool ran and
+// succeeded. claude_code.tool_decision is the permission decision, and supplies
+// the calls that were rejected and therefore never ran — they produce no
+// result. Because an accepted call's outcome is read from its result and a
+// rejected call has none, the two sources cannot describe the same call and no
+// de-duplication by tool_use_id is needed. An export captured mid-run has
+// accepts whose results have not been written yet; those calls are not listed,
+// and the reason below says so.
+func extractToolCalls(export otlpExport) ToolCallResult {
+	var calls []timedCall
+	var c toolCallCounters
+
+	for r := range export.logRecords() {
+		// At most one defect is counted per record, name before outcome, so no
+		// record is counted twice and every number in the reason is a record.
+		switch eventName(r) {
+		case otelToolResultLog:
+			c.seen++
+			name, ok := r.Attributes.String("tool_name")
+			if !ok || name == "" {
+				c.unnamedResults++
+				continue
+			}
+			success, ok := r.Attributes.Bool("success")
+			if !ok {
+				// An outcome that was not read is not an outcome. Recording it
+				// as a failure would invent a failed call.
+				c.unreadableOutcomes++
+				continue
+			}
+			calls = append(calls, toolCall(name, success, r))
+		case otelToolDecisionLog:
+			c.seen++
+			decision, _ := r.Attributes.String("decision")
+			switch decision {
+			case "reject":
+				name, ok := r.Attributes.String("tool_name")
+				if !ok || name == "" {
+					c.unnamedRejects++
+					continue
+				}
+				calls = append(calls, toolCall(name, false, r))
+			case "accept":
+				c.accepts++
+			default:
+				c.undecided++
+			}
+		}
+	}
+
 	switch {
-	case seen == 0:
-		return UnknownToolCallResult("no " + otelToolDecisionLog + " log events found in OTel export")
+	case c.seen == 0:
+		return UnknownToolCallResult("no " + otelToolResultLog + " or " + otelToolDecisionLog +
+			" log events found in OTel export")
 	case len(calls) == 0:
-		return UnknownToolCallResult("no readable " + otelToolDecisionLog + " log events in OTel export: none carried a tool_name")
+		return UnknownToolCallResult("no tool call outcomes in OTel export: " + c.reason())
 	}
-	return PresentToolCallResult(calls, string(SourceOtel))
+	return PresentToolCallResult(orderedEntries(calls), string(SourceOtel))
 }
 
-func extractTiming(data claudeCodeOtelExport) TimingResult {
+// toolCallCounters is what the walk observed, and the only thing the reason is
+// built from — so a reason cannot state a number the walk did not count.
+//
+// The reason is composed from the counters rather than selected by a branch per
+// combination: four independent defects need fifteen branches, and the ones
+// that were missing were exactly the combinations nobody thought of. A clause
+// list has one entry per counter and cannot go stale when a counter is added.
+type toolCallCounters struct {
+	seen               int
+	unnamedResults     int
+	unreadableOutcomes int
+	accepts            int
+	undecided          int
+	unnamedRejects     int
+}
+
+func (c toolCallCounters) reason() string {
+	clauses := make([]string, 0, 5)
+	for _, cl := range []struct {
+		n    int
+		text string
+	}{
+		{c.unnamedResults, "%d " + otelToolResultLog + " events carried no tool_name"},
+		{c.unreadableOutcomes, "%d " + otelToolResultLog + " events carried no readable success value"},
+		{c.accepts, "%d " + otelToolDecisionLog + " events were accepts, and only " + otelToolResultLog +
+			" reports an outcome — the export may have been captured before those tools completed"},
+		{c.undecided, "%d " + otelToolDecisionLog + " events carried no recognised decision"},
+		{c.unnamedRejects, "%d " + otelToolDecisionLog + " events recorded a reject with no tool_name"},
+	} {
+		if cl.n > 0 {
+			clauses = append(clauses, fmt.Sprintf(cl.text, cl.n))
+		}
+	}
+	return strings.Join(clauses, "; ")
+}
+
+// timedCall keeps an entry beside the time it sorts by. A call whose timestamp
+// could not be read is kept, not dropped: the call was read, only its clock was
+// not, and dropping it would make tool_calls lie about how many calls the
+// session made.
+type timedCall struct {
+	entry ToolCallEntry
+	nanos int64
+	timed bool
+}
+
+func toolCall(name string, success bool, r otlpLogRecord) timedCall {
+	call := timedCall{entry: ToolCallEntry{Name: name, Success: success}}
+	if t, ok := nanoTime(r.TimeUnixNano); ok {
+		call.entry.Timestamp = t.Format(time.RFC3339Nano)
+		call.nanos, call.timed = t.UnixNano(), true
+	}
+	return call
+}
+
+// orderedEntries sorts the calls by timestamp ascending, untimed calls last in
+// file order. ToolCallEntry.Timestamp has no omitempty, so an untimed call
+// serialises with an empty timestamp rather than borrowing a neighbour's.
+func orderedEntries(calls []timedCall) []ToolCallEntry {
+	sort.SliceStable(calls, func(i, j int) bool {
+		if calls[i].timed != calls[j].timed {
+			return calls[i].timed
+		}
+		if !calls[i].timed {
+			return false
+		}
+		return calls[i].nanos < calls[j].nanos
+	})
+	entries := make([]ToolCallEntry, 0, len(calls))
+	for _, c := range calls {
+		entries = append(entries, c.entry)
+	}
+	return entries
+}
+
+// extractTiming reports the span the API requests cover.
+//
+// It is scoped to claude_code.api_request rather than to every log record: a
+// file of startup events would otherwise report a session span, and total_ms
+// would mean something different than it did in 0.4.0. The cost is that the
+// span excludes the prompt before the first request and any tool activity after
+// the last one, which the spec says out loud. Per-request duration_ms and
+// active_time.total measure different quantities and have no field in schema v1.
+func extractTiming(export otlpExport) TimingResult {
 	var first, last time.Time
-	var start, end string
 	seen, have := 0, false
-	for _, log := range data.Logs {
-		if log.EventName != otelAPIRequestLog {
+
+	for r := range export.logRecords() {
+		if eventName(r) != otelAPIRequestLog {
 			continue
 		}
 		seen++
-		t := parseTime(log.Timestamp)
-		if t.IsZero() {
+		t, ok := nanoTime(r.TimeUnixNano)
+		if !ok {
 			continue
 		}
 		// The span runs from the earliest event to the latest, not from the
-		// first line to the last: an exporter is free to write events out of
-		// order, and a session must not end before it starts.
+		// first record in the file to the last: an exporter is free to write
+		// batches out of order, and a session must not end before it starts.
 		if !have || t.Before(first) {
-			first, start = t, log.Timestamp
+			first = t
 		}
 		if !have || t.After(last) {
-			last, end = t, log.Timestamp
+			last = t
 		}
 		have = true
 	}
+
 	switch {
 	case seen == 0:
 		return UnknownTimingResult("no " + otelAPIRequestLog + " log events found in OTel export")
 	case !have:
-		return UnknownTimingResult("no readable " + otelAPIRequestLog + " log events in OTel export: none carried a parseable RFC 3339 timestamp")
+		return UnknownTimingResult("no readable " + otelAPIRequestLog +
+			" log events in OTel export: none carried a parseable timeUnixNano")
 	}
+	// A single request is a zero-length span: a value that was read, not an
+	// absence. The nanosecond digits stay out of the profile — these fields are
+	// timestamps.
 	return PresentTimingResult(TimingData{
-		StartTime: start,
-		EndTime:   end,
+		StartTime: first.Format(time.RFC3339Nano),
+		EndTime:   last.Format(time.RFC3339Nano),
 		TotalMs:   last.Sub(first).Milliseconds(),
 	}, string(SourceOtel))
-}
-
-// toInt reads a numeric JSON value. The second return distinguishes "the value
-// was zero" from "the value was not a number" — the difference between a count
-// that was read and a count that was invented.
-func toInt(v any) (int, bool) {
-	switch n := v.(type) {
-	case int:
-		return n, true
-	case int64:
-		return int(n), true
-	case float64:
-		return int(n), true
-	case json.Number:
-		i, err := n.Int64()
-		return int(i), err == nil
-	}
-	return 0, false
-}
-
-func getString(m map[string]any, key string) string {
-	if v, ok := m[key].(string); ok {
-		return v
-	}
-	return ""
-}
-
-func parseTime(s string) time.Time {
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return time.Time{}
-	}
-	return t
 }

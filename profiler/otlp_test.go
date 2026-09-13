@@ -1,6 +1,7 @@
 package profiler
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,5 +100,37 @@ func TestOTLP_TopLevelValueThatIsNotAnObject(t *testing.T) {
 				t.Errorf("reason = %q names a Go type; it is read by users, not by the compiler", got.Reason)
 			}
 		})
+	}
+}
+
+// The accumulator's totals are int64 and the profile's counts are int. Nothing
+// a real session costs comes near either limit, but a malformed export can, and
+// a wrapped total serialises as a negative number of tokens — an answer that is
+// wrong in a direction no reader would question. There is no fixture for this:
+// a 2^63 token count in a reviewed file teaches nobody anything.
+func TestTokenAccumulator_TotalsSaturateRatherThanWrap(t *testing.T) {
+	acc := tokenAccumulator{}
+	// Two series of the same token type, summed at reduce.
+	acc.add("model=a", tokenTypeInput, math.MaxInt64, 1, true, false)
+	acc.add("model=b", tokenTypeInput, 1000, 1, true, false)
+	// One series accumulating deltas past the limit.
+	acc.add("model=c", tokenTypeOutput, math.MaxInt64, 1, true, false)
+	acc.add("model=c", tokenTypeOutput, math.MaxInt64, 2, true, false)
+
+	totals := acc.reduce()
+	if got := totals[tokenTypeInput]; got != math.MaxInt64 {
+		t.Errorf("input total = %d, want %d — summing series must saturate", got, int64(math.MaxInt64))
+	}
+	if got := totals[tokenTypeOutput]; got != math.MaxInt64 {
+		t.Errorf("output total = %d, want %d — accumulating deltas must saturate", got, int64(math.MaxInt64))
+	}
+	if got := clampToInt(math.MaxInt64); got != math.MaxInt {
+		t.Errorf("clampToInt(MaxInt64) = %d, want %d", got, math.MaxInt)
+	}
+	if got := clampToInt(math.MinInt64); got != math.MinInt {
+		t.Errorf("clampToInt(MinInt64) = %d, want %d", got, math.MinInt)
+	}
+	if got := clampToInt(1523); got != 1523 {
+		t.Errorf("clampToInt(1523) = %d, want 1523 — a count in range is carried unchanged", got)
 	}
 }

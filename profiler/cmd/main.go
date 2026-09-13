@@ -80,7 +80,6 @@ func cmdCapture(args []string) {
 	}
 
 	opts := profiler.CaptureOpts{
-		ExportFile:   *exportFile,
 		SnapshotHash: *snapshotHash,
 		SkillDir:     *skillDir,
 	}
@@ -107,9 +106,13 @@ func cmdCapture(args []string) {
 // yet, so no selectable harness can honour the flag. Refuse it: a flag the
 // adapter will ignore must fail loudly, not accept a path and produce an
 // all-unknown profile that looks like missing telemetry.
+//
+// The refusal itself belongs to the adapter, which owns the contract and gives
+// the same error to a library caller. This guard is the earlier, cheaper
+// version of it, so the CLI exits before doing any work.
 func captureFlagError(harness, exportFile string) error {
 	if exportFile != "" {
-		return fmt.Errorf("--export-file is not read by the %s adapter; supply an OTel export with --otel-file", harness)
+		return profiler.ExportFileUnsupportedError(harness)
 	}
 	return nil
 }
