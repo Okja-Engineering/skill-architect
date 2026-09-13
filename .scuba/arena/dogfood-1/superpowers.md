@@ -1,0 +1,100 @@
+# dogfood-1: obra/superpowers
+
+**RUN STATUS: BLOCKED — no gate output was produced.** This agent ran in background mode; `go build -o /tmp/skillgate-superpowers ./cmd/skillgate` and every mutating/exec command (including `go version`, `git ls-remote`, `ls /tmp`, `curl`) were auto-denied. `/tmp/gate-superpowers.json` does not exist. Everything below is a *predicted* triage derived from (a) reading `skillgate/` source end-to-end (`gate.go`, `verdict.go`, `ledger.go`, `tripwire.go`, `tripwire_a.go`, `tripwire_b.go`, `refgraph.go`, `icm.go`, `frontmatter.go`, `budget.go`, `report.go`, `quarantine.go`) and (b) manual inspection of essentially the whole target repo via `raw.githubusercontent.com` and GitHub tree pages. Counts marked `~` are estimates; every classification needs a real run to confirm. Re-run commands:
+
+```bash
+cd skillgate && go build -o /tmp/skillgate-superpowers ./cmd/skillgate
+/tmp/skillgate-superpowers gate -o /tmp/gate-superpowers.json https://github.com/obra/superpowers.git
+```
+
+**Target note:** `obra/superpowers` @ `main`, v6.3.0 per `package.json`/`gemini-extension.json` (commit SHA unverified — no git/API access). This is the best-case dogfood target for manifest/hook coverage: one package shipping 14 `SKILL.md`s under `skills/`, plus seven harness integrations (`.claude-plugin`, `.codex-plugin`, `.cursor-plugin`, `.devin-plugin`, `.kimi-plugin`, `.hermes-plugin`, `.opencode`, `.pi`), a polyglot hook runner, a bundled companion HTTP/WS server with its own security test suite, and root context files (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`).
+
+## Predicted header fields
+
+| field | prediction | basis |
+|---|---|---|
+| verdict | **REJECT** | confirmed blockers by source analysis: T013 (one per SKILL.md — none declare `allowed-tools`, bundle ships scripts), T017 (`hooks/hooks.json` bundled command + `package.json` `pi.extensions`), T006 (`tests/brainstorm-server/auth.test.js` `TOKEN = 'testtoken-…'`), plus predicted T004/T005/T010 blockers/highs in test files; additionally any ledger skip (binary assets) forces REJECT on this untrusted remote bundle |
+| coverage | **incomplete** | `assets/app-icon.png` (PNG → NUL in first 8 KiB → `binary_unparsed`); possibly other binary images unverified. `coverage.complete=false` → untrusted input → REJECT regardless of findings |
+| too_large | unlikely | `tests/brainstorm-server/package-lock.json` exists but is a small `ws`-only lockfile; no confirmed file >1 MiB |
+| file_count_limit | no | repo is ~150–250 files, far under `maxFiles=4096` |
+| checks_skipped | 4 entries | `skillspector` (binary not found), `agnix` (not found), `skill-validator` (not found), standing `preactivation-bash-leg` (F14). **Not** `icm-token-budget` — see bug #1 below |
+| provenance | `url`, `commit` (resolved HEAD sha — value unverified), `quarantine` (`$TMPDIR/skillgate-quarantine-*`), `sha256_manifest` over ledger hashes | `quarantine.go` `FetchTarget` + `gate.go` `sha256OfSet` |
+| package_manifests | 7 expected | `.claude-plugin/plugin.json` ✓ **detected** (question asked — yes), `.codex-plugin/plugin.json`, `.cursor-plugin/plugin.json`, `.devin-plugin/plugin.json`, `.kimi-plugin/plugin.json`, `package.json`, `tests/brainstorm-server/package.json`. `isManifestFile` matches base names `package.json|plugin.json|mcp.json|.mcp.json|*.plugin.json` |
+
+Manifest-detection gaps to note in the JSON if they appear: `.agents/plugins/marketplace.json`, `.claude-plugin/marketplace.json` (if present), `.hermes-plugin/plugin.yaml` (YAML — extension not matched), `gemini-extension.json`, `.version-bump.json`, `hooks/hooks.json`, `hooks/hooks-cursor.json` are all real package/harness declarations that `isManifestFile` does **not** classify as manifests.
+
+## Findings by rule — rule | count | TP or FP | mechanism/evidence
+
+"TP-mech / FP-context" = the detector matched what it was designed to match, but the flagged artifact is legitimate.
+
+- **T013** (no `allowed-tools` on executable bundle) | ~14 | **TRUE POSITIVE by stated intent** — confirmed: `skills/*/SKILL.md` ×14 (brainstorming, dispatching-parallel-agents, executing-plans, finishing-a-development-branch, receiving-code-review, requesting-code-review, subagent-driven-development, systematic-debugging, test-driven-development, using-git-worktrees, using-superpowers, verification-before-completion, writing-plans, writing-skills), verified frontmatter `name`+`description` only on the 8 sampled; the bundle ships `.sh`, `.cjs`, `.ts`, `.js`, `.cmd` executables → every SKILL.md gets `executable bundle declares no allowed-tools boundary`. *Caveat:* `hasExec` is computed over the **whole ledger** — `receiving-code-review` (ships only `code-reviewer.md`) gets the same blocker as `brainstorming` (ships a server). This package really does auto-execute code at session start (hook → `run-hook.cmd` → `session-start`), so a boundary finding is defensible; the per-skill fan-out is the coarse part.
+- **T017** (manifest-declared executables) | 2 | **TRUE POSITIVE by stated intent** — (a) `hooks/hooks.json`: `"command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" session-start"` — `$`-prefixed command resolves inside the bundle → `manifest declares hook command into bundled executable`; (b) `package.json`: `"pi": {"extensions": ["./.pi/extensions/superpowers.ts"]}` → `manifest declares bundled extension`. The package genuinely registers bundled executables for session-start execution — exactly what the rule exists to surface. Benign intent.
+- **T006** (credential-shaped literal) | ~1–3 | **FALSE POSITIVE** — `tests/brainstorm-server/auth.test.js`: `const TOKEN = 'testtoken-0123456789abcdef0123456789abcdef'` matches `(?i)(token|…)\s*[:=]\s*["'][A-Za-z0-9_./+=-]{16,}["']`. It is a hardcoded **test fixture** key for a loopback auth test — fake by construction, published in the repo's own test suite. Sibling test files may carry similar quoted constants.
+- **T004** (transmit to literal remote host) | ~5–15 | **FALSE POSITIVE** — `tests/brainstorm-server/server.test.js` (and likely `lifecycle.test.js`, `browser-launcher.test.js`, `ws-protocol.test.js`) contain `fetch(\`http://localhost:${PORT}/…\`)` — `fetch(` + `https?://` on one line. The "remote host" is a loopback test client for the bundled companion server. `http.get(url,…)` lines correctly do NOT fire (URL not on the same line).
+- **T005** (env dump → sink) | ~2–5 | **FALSE POSITIVE** — the same test files: `spawn('node', [SERVER_PATH], { env: { ...process.env, BRAINSTORM_PORT: … } })` matches `\{\s*\.\.\.process\.env`, and `https?://`/`fetch(`/`http.get` elsewhere in the file satisfies `reSink`. The spread passes the developer's env **through** to a spawned local test server; nothing env-derived reaches the loopback URL. `server.cjs` correctly does NOT fire (only single-var `process.env.X` reads; `process.env[name]` iteration also doesn't match the dump leg).
+- **T010** (harness config snoop `.claude/` etc.) | ~2–8 | **FALSE POSITIVE** — `tests/hooks/test-session-start.sh` contains `~/.claude/skills` (it stages a fake Claude install); `tests/claude-code/{test-helpers,run-skill-tests,test-*}*.sh` and `analyze-token-usage.py` almost certainly reference `~/.claude`/`.claude/` paths (the suite exists to exercise Claude Code). `reClaudePaths` fires on the path literal alone — no read verb required — so a project's own cross-harness test scaffolding trips a snooping rule.
+- **G001** (dangling refs) | ~2–5 | **TRUE POSITIVE by stated intent** — confirmed dangling: `CLAUDE.md` and `README.md` contain backticked `` `evals/README.md` `` — `evals/` is deliberately not shipped (cloned on demand per docs) → resolves inside root, no file exists → real dangling ref. Possible additional hits: `` `.github/PULL_REQUEST_TEMPLATE.md` `` in `CLAUDE.md` (existence unverified) and `docs/` refs not fully fetched. Mechanism is exactly what the rule wants; the evals case is an intentional clone-externally convention, so severity Medium is arguably high.
+- **G002** (reference cycles) | 0–1 | unverified — possible SCC via cross-skill links (e.g. `subagent-driven-development/SKILL.md` ↔ `requesting-code-review/code-reviewer.md`); not confirmed.
+- **I001/I002/I003** | 0 predicted | all sampled SKILL.mds have `name`+`description`, names match dir names and charset, descriptions « 1024 chars.
+- **I004** (>500-line body) | 0–1 | unverified — longest SKILL.mds sampled were ~200–350 lines.
+- **I005** (8k-token ceiling) | **silently inert** — see bug #1: no `skill-validator` → `budget.Files` empty → loop finds nothing, and the intended `icm-token-budget` named skip never registers because in-process budget items make `budget != nil`.
+- **H002** (CC-only frontmatter keys) | 0 predicted | sampled frontmatter carries only `name`/`description`; none of `allowed-tools`, `disable-model-invocation`, `context`, `when_to_use` seen (8/14 verified).
+- **T014** (over-broad declared tools) | 0 | no `allowed-tools` keys exist.
+- **T002** (instruction override) | 0 | checked the riskiest file — `using-superpowers/SKILL.md`'s `<EXTREMELY-IMPORTANT>` block ("YOU MUST USE IT", "not negotiable") matches **no** `reOverride` arm (`important:` requires a literal colon; no `ignore previous`/`do not ask`/`override…rules|safety` phrasing). `CLAUDE.md`'s "Stop. Read this section before doing anything" likewise clean. The earlier-suspected `docs/CLAUDE_MD_TESTING.md` **does not exist** (404).
+- **T001/T003** | 0 predicted | no hidden-Unicode/homoglyph content observed in sampled files; unfetched `references/*.md` are a residual unknown.
+- **T007/T008/T009** | 0 predicted | no pipe-to-shell, no unpinned installs (`npm test`/`npm ci` don't match the arg-required pattern), no decode-then-exec observed.
+- **T011/T012** | 0 predicted | `.cursor-plugin/` and `.codex-plugin/` do **not** match (`\.cursor/` requires a slash right after `.cursor`; `.codex-plugin/` ≠ `\.codex/`); no `state.vscdb`/`accessToken`+cursor context seen.
+- **T015/T016** | 0 | `hooks/hooks.json`, `hooks/hooks-cursor.json` are harness-config files but carry no `mcp` path component, no wildcard bind, no auto-approve keys.
+- **T018** (Cursor hooks) | 0 | requires path `.cursor/hooks.json`; the repo's Cursor hook config lives at `hooks/hooks-cursor.json` → **uncovered** (see bugs).
+- **T019** (path escape) | 0 predicted | every `../` ref verified resolves inside the root (`hooks/session-start` `${SCRIPT_DIR}/..`, `scripts/*` `dirname "$0")/..`, `tests/*` `../..`, `server.cjs` `__dirname/../../..`). `AGENTS.md` is the one-line file `CLAUDE.md` (possibly a symlink; target in-bundle → no escape either way).
+- **T020** (persistence writes) | 0 predicted | test scripts `mkdir -p ~/.claude/skills` — but `rePersistPath` needs `.claude/settings`, `.cursor/`, `.pi/`, rc files, etc. `~/.claude/skills` doesn't match; `mkdir` isn't a persist verb anyway. `tests/pi/test-pi-extension.mjs` reads `.pi/` paths without writes.
+
+## FP classes nominated — class | rule | minimal fix sketch | est. blast radius
+
+| class | rule | minimal fix sketch | est. blast radius |
+|---|---|---|---|
+| **Loopback treated as remote host** | T004 | In `reNetCmd`/`rePyNet` matches, drop `localhost`, `127.0.0.0/8`, `::1`, `0.0.0.0`, `*.test`, and `${PORT}`-style template hosts; or suppress when file path matches `test/|tests/|__tests__|*.test.*`. | High — any repo with HTTP-client tests hits it |
+| **File-level env+sink AND correlation** | T005 | Require the sink line to reference (textually or via simple dataflow) the env-dump result, or at least a non-loopback URL; optionally suppress under `test(s)/` paths. | High — test scaffolding that passes `process.env` to spawned children is ubiquitous |
+| **Quoted test-fixture credential literals** | T006 | Skip literals matching obvious placeholders (`test`, `fake`, `dummy`, `example`, `xxx`, repeated chars) and/or files under `test(s)/`; keep the rule for real-looking secrets elsewhere. | Medium — test suites with hardcoded keys are common |
+| **Harness-path literals in test/dev scripts** | T010/T011 | Require a file-access verb (`cat|read|open|fs.read|source|jq|sqlite`) near the path literal, or downgrade findings under `test(s)/`, `docs/`, `examples/`; annotating `tests/**` as "self-harness-testing" would kill most noise. | Medium — any project that tests harness integration self-reports as a snooper |
+| **Bundle-wide `hasExec` poisons every SKILL.md** | T013 | Compute `hasExec` per skill subtree (skills/x/** executables ⇒ x/SKILL.md needs the boundary) rather than per ledger; or emit one bundle-level finding instead of N per-skill blockers. | High on multi-skill packages; here 14 blockers for what is really one package property |
+| **`evals/README.md`-style clone-externally refs** | G001 | None required for TP classification — the ref genuinely dangles. Optional: detect an adjacent "clone/install externally" sentence and annotate severity Low. | Low |
+
+## Gate bugs / surprises / coverage gaps
+
+1. **`icm-token-budget` named skip is masked** (`gate.go` + `icm.go`): when `skill-validator` is absent, `budget` is still populated with in-process `budgetItems()` (exact chars) → `icmCheck` sees `budget != nil` → the intended `"no token counter ran …"` skip is never emitted, while `budget.Files` is empty so SK-I005 can never fire. The F13 "every skip is named" contract is silently broken: the check neither runs nor reports itself skipped. Any bundle with a SKILL.md description reproduces this — i.e., always.
+2. **Cursor hook chain is doubly invisible**: `.cursor-plugin/plugin.json` declares `"hooks": "./hooks/hooks-cursor.json"`; `hooks/hooks-cursor.json` runs `./hooks/run-hook.cmd session-start`. T018 only looks at `.cursor/hooks.json`; T017's hook-command leg only looks at `hooks/hooks.json`. A bundled executable registered for session-start under Cursor produces **zero** findings — while the identical Claude declaration (`hooks/hooks.json`) produces a T017 blocker. Coverage asymmetry on the same payload.
+3. **Other unmonitored executable declarations**: `package.json`'s `"main": ".opencode/plugins/superpowers.js"` (the actual OpenCode plugin entry), `.hermes-plugin/plugin.yaml`'s `pre_llm_call` hook, `.kimi-plugin/plugin.json`'s `sessionStart` skill binding, `.agents/plugins/marketplace.json` — none are T017-covered (extensions + npm lifecycle keys + `hooks/hooks.json` only) and most aren't even `package_manifests`-listed.
+4. **`hooks/` dir is not `isScript`**: `hooks/session-start` (the extensionless hook payload — the actual code that runs at session start) and `hooks/run-hook.cmd` (`.cmd` not in the extension list, `hooks/` not `scripts/`) escape T004/T005/T008/T010/T011/T020 entirely. The highest-risk file in the package gets the *least* scanning.
+5. **`README.md` instructs fetching remote instructions**: the OpenCode install path tells the agent "Fetch and follow instructions from `https://raw.githubusercontent.com/…/INSTALL.md`" — the canonical remote-instruction-injection shape — and passes clean because no rule covers fetch-and-follow *prose* (T002 is override-phrasing only; T007 needs `curl … | sh` in a script). Worth a rule-design note, not a bug.
+6. **Untrusted-remote + any skip = unconditional REJECT** (carried from pi-mono): one committed PNG (`assets/app-icon.png` → `binary_unparsed`) forces `coverage.complete=false` → REJECT. Combined with the T013 fan-out, the verdict here will be REJECT stacked on REJECT — fine for this target, but the "incomplete coverage" leg makes APPROVE unreachable for almost any real repo.
+7. **Server-side telemetry is real but unflagged by design**: `server.cjs` injects `<img src="https://primeradiant.com/brand/…?v=VERSION">` into the served brainstorm UI — a disclosed, opt-out third-party beacon (README documents it). No rule fires: the request is made by the *browser*, and the file has no env-dump leg. Correct outcome per rule intent (this is disclosed telemetry, not exfiltration), but worth recording that the one genuinely network-callable artifact in the bundle produces no finding.
+8. **`session-start` script quality**: it hardcodes `--plugin-dir` paths per harness and falls back to globbing `~/.claude/skills` etc. — legitimate, but note it *reads* other harness dirs at runtime while only T010-able via path literals (and it escapes T010 because extensionless `hooks/` files aren't `isScript`). Same file is both a runtime snoop (by regex standards) and unscanned — the classifier and the scanner disagree on what "script" means.
+9. **Performance/UX unverified**: no run → no wall-clock, token-budget output, hang, or crash data. The repo is small (~150–250 files); no scale concerns expected. `git clone --depth 1` into quarantine + 60 s timeout is the only plausible failure point.
+
+## Evidence appendix (confirmed repo content)
+
+- `hooks/hooks.json` — Claude `SessionStart` → `"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd" session-start` (T017 command leg fires).
+- `hooks/hooks-cursor.json` — Cursor session-start → `./hooks/run-hook.cmd session-start` (fires **no** rule — gap).
+- `hooks/run-hook.cmd` — cmd/bash polyglot; locates Git-for-Windows bash, else `bash` on PATH, `exec`s `hooks/<name>`; silent exit if no bash. No `..` escapes.
+- `hooks/session-start` — resolves plugin dir per harness (`--plugin-dir`, `~/.claude`, etc.) and prints the `using-superpowers` bootstrap into session context.
+- `package.json` — `"main": ".opencode/plugins/superpowers.js"`, `"pi": {"extensions": ["./.pi/extensions/superpowers.ts"]}` (T017 extension leg fires), no `scripts` key (no lifecycle findings).
+- `.pi/extensions/superpowers.ts` — `session_start`/`session_compact` handlers injecting bootstrap text; `fs.readFileSync` of skill files; no env/net.
+- `.opencode/plugins/superpowers.js` — registers a `skill` tool + `experimental.chat.system.transform` hook; reads `process.env.OPENCODE_CONFIG_DIR` (single-var — no T005).
+- `.hermes-plugin/__init__.py` + `plugin.yaml` — registers skills + `pre_llm_call` hook injecting bootstrap (unmonitored by any rule).
+- `skills/brainstorming/scripts/server.cjs` — ~500-line HTTP+WS companion server, per-session token auth, binds `127.0.0.1` by default, disclosed third-party logo beacon; single-var `process.env` reads only → no T004/T005.
+- `tests/brainstorm-server/{server,auth,lifecycle,ws-protocol,browser-launcher}.test.js` — spawn `server.cjs` with `{ ...process.env, … }`, hit `http://localhost:PORT` → T004/T005/T006 FP cluster.
+- `tests/hooks/test-session-start.sh` — stages `~/.claude/skills` fake install → T010.
+- `tests/claude-code/` — `analyze-token-usage.py`, `run-skill-tests.sh`, `test-helpers.sh`, `test-sdd-workspace.sh`, `test-subagent-driven-development{,-integration}.sh`, `test-worktree-*.sh` (contents unverified — probable additional T010).
+- `CLAUDE.md`/`README.md` — `` `evals/README.md` `` backticked refs to a deliberately unshipped dir → G001.
+- `GEMINI.md` — two `@./skills/…` import lines (both resolve; `@`-imports aren't extracted as refs anyway).
+- `AGENTS.md` — literal one-line `CLAUDE.md` pointer.
+- `.pre-commit-config.yaml` — local `uv`/`ruff`/`ty` hooks scoped to `evals/` (clean).
+- `gemini-extension.json` — `contextFileName: GEMINI.md` only.
+- `docs/` — `windows/`, `plans/`, `superpowers/` subtrees partially listed; contents unverified.
+
+## Blockers to completing the real run
+
+- Background-mode exec denial: `go build`, `git`, the gate binary itself, and even `ls /tmp` were refused. Read-only `exec` inside the workspace (`ls`, `find`) works. Needs a foreground re-run or pre-approved `go build` + `skillgate gate` exec.
+- No commit SHA captured → `provenance.commit` unknown; all verdict/count/provenance fields above are source-derived predictions pending `/tmp/gate-superpowers.json`.
+- Unverified file-level unknowns that could shift counts: `tests/claude-code/*.sh|py`, `tests/{antigravity,codex-plugin-sync,devin,kimi,opencode}/`, `docs/plans|superpowers/**`, remaining `references/*.md` bodies, whether any other binary assets exist beyond `assets/app-icon.png`.
