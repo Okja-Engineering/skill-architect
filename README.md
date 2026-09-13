@@ -61,19 +61,116 @@ only when the export yields a value the adapter can actually read:
 
 | Capability | Reported `otel` when the export carries |
 |---|---|
-| `tokens` | a `claude_code.token.usage` metric with a recognised token type and a numeric value |
-| `tool_calls` | `claude_code.tool_decision` events carrying a tool name |
+| `tokens` | a `claude_code.token.usage` metric whose sum data points carry a `type` attribute of `input`, `output`, `cacheRead` or `cacheCreation` and a numeric `asDouble` or `asInt` value |
+| `tool_calls` | `claude_code.tool_result` events carrying a tool name and a readable `success` value, plus `claude_code.tool_decision` events recording a reject |
 | `timing` | `claude_code.api_request` events carrying a parseable timestamp |
 
 Anything else is `none`, and `capture` delivers exactly what `probe` advertised, because
 both read the export through the same extractor. A partial export carrying tool calls and
 timing but no token metric yields those two `present` and `tokens` `unknown` with a
-reason, rather than discarding the run. An export that is missing, unreadable, or
-malformed is not "unconfigured": all three OTel signals come back `error` naming the
-failure, so a file you supplied but the profiler cannot use says so.
+reason, rather than discarding the run.
 
-`skill_activation` and `attribution` are always `none`: Claude Code emits no skill
-activation event, and this adapter does not read the skill-level attributes it does emit.
+A file you supplied is never reported as "unconfigured". If it cannot be read as an
+OTLP/JSON export — unreadable, empty, not a JSON object at the top level, malformed, or
+carrying a value that does not fit the OTLP schema — all three OTel signals come back
+`error`, naming the failure and the batch and byte it was at. If it parses but carries no
+telemetry, they come back `unknown` instead: that includes well-formed JSON with no
+`resourceMetrics` or `resourceLogs`, which is reported as not being an OTLP export rather
+than as a broken one.
+
+`skill_activation` and `attribution` are always `none`. Claude Code emits no skill
+activation event. It does attach a `skill.name` attribute to `claude_code.token.usage`,
+`claude_code.cost.usage` and `claude_code.api_request`, marking the skill active for that
+request — built-in, bundled, user-defined and official-marketplace skill names appear
+verbatim, and only third-party plugin skills are replaced with `"third-party"` — but this
+adapter does not read it yet. That is 0.5.0. Attribution has no source at all: nothing in
+the telemetry maps an output back to the skill that produced it.
+
+### Capturing an OTel export
+
+The adapter reads OTLP/JSON: one `ExportMetricsServiceRequest` or
+`ExportLogsServiceRequest` JSON object per batch, either one per line (NDJSON) or
+concatenated. Claude Code has **no file exporter**, so the file has to be written by
+something downstream of it. Two routes produce exactly that format.
+
+**Route (a) — a local OTLP receiver.** Nothing to install, and it is the route the
+envelopes this adapter's test fixtures are modelled on were observed through:
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_METRICS_EXPORTER=otlp
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export OTEL_METRIC_EXPORT_INTERVAL=2000   # default 60000 — too slow for a short run
+export OTEL_LOGS_EXPORT_INTERVAL=1000     # default 5000
+export OTEL_LOG_TOOL_DETAILS=1            # exposes tool parameters on tool_result /
+                                          # tool_decision events; this adapter reads none
+claude -p "…"
+```
+
+Claude Code POSTs one complete JSON object to `/v1/metrics` and `/v1/logs` per export
+interval. Appending each body as a line gives you the file:
+
+```python
+# otlp-capture.py — run before `claude -p`; Ctrl-C when the session ends
+import http.server
+
+PATH = "otel-export.ndjson"
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("content-length", 0)))
+        with open(PATH, "ab") as f:
+            f.write(body.strip() + b"\n")
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, *args):
+        pass
+
+http.server.HTTPServer(("127.0.0.1", 4318), Handler).serve_forever()
+```
+
+**Route (b) — an OpenTelemetry collector.** Point Claude Code at the collector with the
+same env block, and give both pipelines one shared `file` exporter, so there is one file
+and nothing to concatenate:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+exporters:
+  file:
+    path: ./otel-export.ndjson
+    format: json    # one JSON object per line
+    append: true    # defaults to false, which truncates your capture on every start
+                    # leave compression unset: compressed output is length-prefixed
+                    # binary framing, not line JSON
+service:
+  pipelines:
+    metrics: { receivers: [otlp], exporters: [file] }
+    logs: { receivers: [otlp], exporters: [file] }
+```
+
+This config is derived from the collector `fileexporter` README and source, not from a
+run of it here; route (a) is the one that was exercised.
+
+**Not the `console` exporter.** Anthropic's docs suggest it for debugging, and its output
+is `console.dir` object inspection — unquoted keys, bare `undefined`, trailing commas.
+That is not JSON at all, and it is not the OTLP envelope either. Nothing can parse it.
+
+Two things to know about the resulting file. If the collector or receiver is stopped
+mid-write, the last line is a partial object: the profiler reports `error` naming that
+batch and offset and uses nothing from the earlier ones, so restart cleanly or delete the
+partial last line and retry. And a real capture carries `user.email`, `organization.id`
+and `session.id` — scrub it before pasting into an issue.
+
+A bundled receiver subcommand is 0.5.0; `--otel-file` is the only input today.
 
 `capture` also declares `--export-file`, for adapters that read a non-OTel session export
 such as Devin's ATIF. No shipped adapter reads it, so passing it fails rather than
