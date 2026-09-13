@@ -51,8 +51,10 @@ cd profiler && go build -o profiler ./cmd/
   --skill-dir ./skills/my-skill --otel-file ./otel-export.json
 ```
 
-`version` prints the profiler adapter version (`0.1.0`). The adapter is versioned
-separately from the plugin, so this is not the plugin version.
+`version` prints the adapter version that every profile records in
+`capability.adapter_version` — `profiler 0.4.1` at this release. It tracks what
+the adapter captures, so profiles produced by different adapter versions stay
+distinguishable. It is not the plugin version, though the two match here.
 
 Probe detection is per signal, not all-or-nothing. It parses the export file and
 reports each capability on its own evidence:
