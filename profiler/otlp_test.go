@@ -399,3 +399,110 @@ func TestOTLP_AnUnexpectedEndOfFileNamesTheFileLength(t *testing.T) {
 		})
 	}
 }
+
+// --- Merging counter data points ---
+//
+// Cumulative points are running totals, so the accumulator keeps the latest and
+// discards the rest. "Latest" has to be decided for every pair of points it can
+// be handed, including the pairs a well-behaved exporter never produces: the
+// wrong answer here does not fail, it reports a number.
+
+func TestCounterAccumulator_CumulativeKeepsTheLatestPoint(t *testing.T) {
+	const series = "model=a"
+	for _, tc := range []struct {
+		name string
+		// add is the points folded in, in file order, after the first.
+		first  counterPoint
+		rest   []counterPoint
+		want   int64
+		reason string
+	}{
+		{
+			name:   "a later timestamp supersedes an earlier one",
+			first:  counterPoint{value: 500, nanos: 1, timed: true},
+			rest:   []counterPoint{{value: 900, nanos: 2, timed: true}},
+			want:   900,
+			reason: "the running total at the later instant is the total",
+		},
+		{
+			name:   "an earlier timestamp does not supersede a later one",
+			first:  counterPoint{value: 900, nanos: 2, timed: true},
+			rest:   []counterPoint{{value: 500, nanos: 1, timed: true}},
+			want:   900,
+			reason: "file order is not time order; an exporter may write batches out of order",
+		},
+		{
+			name:   "at the same instant, the greater running total wins",
+			first:  counterPoint{value: 500, nanos: 1, timed: true},
+			rest:   []counterPoint{{value: 900, nanos: 1, timed: true}},
+			want:   900,
+			reason: "a running total only goes up, so the greater one is the later",
+		},
+		{
+			name:   "a timed point beats an untimed one",
+			first:  counterPoint{value: 900},
+			rest:   []counterPoint{{value: 500, nanos: 1, timed: true}},
+			want:   500,
+			reason: "a point that says when it was is better evidence than one that does not",
+		},
+		{
+			name:   "an untimed point does not beat a timed one",
+			first:  counterPoint{value: 500, nanos: 1, timed: true},
+			rest:   []counterPoint{{value: 900}},
+			want:   500,
+			reason: "a point that says when it was is better evidence than one that does not",
+		},
+		{
+			name:   "with no times at all, the greater running total wins",
+			first:  counterPoint{value: 500},
+			rest:   []counterPoint{{value: 900}, {value: 700}},
+			want:   900,
+			reason: "nothing else orders them, and a running total only goes up",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acc := counterAccumulator{}
+			acc.add(series, tokenTypeInput, tc.first.value, tc.first.nanos, tc.first.timed, true)
+			for _, p := range tc.rest {
+				acc.add(series, tokenTypeInput, p.value, p.nanos, p.timed, true)
+			}
+			if got := acc.reduce()[tokenTypeInput]; got != tc.want {
+				t.Errorf("total = %d, want %d — %s", got, tc.want, tc.reason)
+			}
+		})
+	}
+}
+
+// counterPoint is one data point's contribution, as the accumulator takes it.
+type counterPoint struct {
+	value int64
+	nanos int64
+	timed bool
+}
+
+// Delta and cumulative are opposite instructions, and no producer mixes them on
+// one series. If one does, the series stays cumulative for the rest of the
+// file: of the two ways to be wrong about it, this is the one that cannot
+// double-count a session's tokens.
+func TestCounterAccumulator_AMixedSeriesStaysCumulative(t *testing.T) {
+	const series = "model=a"
+	for _, tc := range []struct {
+		name  string
+		order []bool // cumulative flag per point, in file order
+	}{
+		{"cumulative first", []bool{true, false}},
+		{"delta first", []bool{false, true}},
+		{"cumulative in the middle", []bool{false, true, false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acc := counterAccumulator{}
+			for i, cumulative := range tc.order {
+				acc.add(series, tokenTypeInput, 100, int64(i+1), true, cumulative)
+			}
+			if got := acc.reduce()[tokenTypeInput]; got != 100 {
+				t.Errorf("total = %d, want 100 — a series that ever declared itself cumulative "+
+					"must not start adding its points up", got)
+			}
+		})
+	}
+}

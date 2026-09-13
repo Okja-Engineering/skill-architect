@@ -130,18 +130,20 @@ func TestCapabilityReport_ClaudeCode_WithoutOtel(t *testing.T) {
 	}
 }
 
-func TestCapabilityReport_ClaudeCode_EmptyOtelFile(t *testing.T) {
-	// Well-formed JSON carrying no OTLP envelope: parsed fine, carries no
-	// telemetry, so every signal is "none".
+// Well-formed JSON that carries no OTLP envelope parsed fine and carries no
+// telemetry, so every signal — including the two that are always none — is
+// none. There is nothing about skill_activation or attribution that this input
+// makes different, so there is nothing to skip.
+func TestCapabilityReport_ClaudeCode_NoOtlpEnvelope(t *testing.T) {
 	adapter := ClaudeCodeAdapter{OtelExportFile: fixture("no_envelope.json")}
 	cap := adapter.Probe()
 
+	if len(cap.Capabilities) != 5 {
+		t.Fatalf("capability report covers %d signals, want 5", len(cap.Capabilities))
+	}
 	for metric, source := range cap.Capabilities {
-		if metric == MetricSkillActivation || metric == MetricAttribution {
-			continue
-		}
 		if source != SourceNone {
-			t.Errorf("%s = %q, want none for empty file", metric, source)
+			t.Errorf("%s = %q, want none for a file carrying no OTLP envelope", metric, source)
 		}
 	}
 }
@@ -262,6 +264,58 @@ func TestCapture_ClaudeCode_WithoutOtel(t *testing.T) {
 	if profile.Attribution.State != MetricUnknown {
 		t.Errorf("attribution state = %q, want unknown", profile.Attribution.State)
 	}
+
+	// The three OTel signals carry the fallback reason the spec quotes, word
+	// for word. A substring check passes against a sentence that says the
+	// opposite; the spec quotes this one, so the test has to hold it to it.
+	for metric, got := range map[MetricName]string{
+		MetricTokens:    profile.Tokens.Reason,
+		MetricToolCalls: profile.ToolCalls.Reason,
+		MetricTiming:    profile.Timing.Reason,
+	} {
+		if got != fallbackReasonInSpec {
+			t.Errorf("%s reason =\n  %q\nwant the reason docs/profiler-spec.md quotes under Fallback:\n  %q",
+				metric, got, fallbackReasonInSpec)
+		}
+	}
+}
+
+// The two reasons docs/profiler-spec.md quotes verbatim, copied from the spec
+// rather than from the code, so that a change to either without a change to the
+// other is a failing test rather than a documentation defect nobody notices.
+const (
+	// docs/profiler-spec.md, "Fallback".
+	fallbackReasonInSpec = "OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile."
+	// docs/profiler-spec.md, "Capture logic" step 6.
+	activationReasonInSpec = "Claude Code emits no skill activation event; this adapter does not yet read " +
+		"skill.name, which marks the skill active for a request on token.usage, cost.usage and api_request " +
+		"(third-party plugin skills appear as \"third-party\"). Reading it is 0.5.0."
+)
+
+// skill_activation and attribution are a property of the harness and of this
+// adapter, not of any export, so their reasons are the same in every case the
+// adapter can be in — and both are quoted in the spec.
+func TestCapture_TheHarnessLevelReasonsAreTheSpecsWordForWord(t *testing.T) {
+	for _, name := range []string{"full_export.ndjson", "skill_name_present.json", "malformed.json", "no_envelope.json"} {
+		t.Run(name, func(t *testing.T) {
+			profile := capturedProfile(t, name)
+			if got := profile.SkillActivation.Reason; got != activationReasonInSpec {
+				t.Errorf("skill_activation reason =\n  %q\nwant\n  %q", got, activationReasonInSpec)
+			}
+			if got := profile.Attribution.Reason; got != "Claude Code telemetry carries no output-to-skill mapping" {
+				t.Errorf("attribution reason = %q", got)
+			}
+		})
+	}
+	// And with no export configured at all.
+	adapter := ClaudeCodeAdapter{}
+	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := profile.SkillActivation.Reason; got != activationReasonInSpec {
+		t.Errorf("skill_activation reason with no export =\n  %q\nwant\n  %q", got, activationReasonInSpec)
+	}
 }
 
 // A supplied CaptureOpts.ExportFile is refused by the adapter that cannot read
@@ -323,19 +377,43 @@ func TestProfileRoundTrip(t *testing.T) {
 
 // --- Acceptance criterion 7: Profile schema field ---
 
+// The schema string is the contract F04 reads profiles by, so the literal is
+// what the test holds it to. Comparing the profile's field to the constant that
+// produced it passes whatever the constant says, including a typo.
 func TestProfileSchemaField(t *testing.T) {
+	const want = "skill-architect/profile/v1"
+
+	if ProfileSchema != want {
+		t.Errorf("ProfileSchema = %q, want %q — schema v1 is what consumers are reading", ProfileSchema, want)
+	}
+
 	adapter := ClaudeCodeAdapter{}
 	profile, _ := adapter.Capture("s", CaptureOpts{SnapshotHash: "h", SkillDir: "/d"})
-	if profile.Schema != ProfileSchema {
-		t.Errorf("schema = %q, want %q", profile.Schema, ProfileSchema)
+	if profile.Schema != want {
+		t.Errorf("schema = %q, want %q", profile.Schema, want)
 	}
 
 	// Verify via JSON marshal too (custom MarshalJSON).
 	data, _ := json.Marshal(profile)
 	var raw map[string]any
 	json.Unmarshal(data, &raw)
-	if raw["schema"] != ProfileSchema {
-		t.Errorf("json schema = %v, want %q", raw["schema"], ProfileSchema)
+	if raw["schema"] != want {
+		t.Errorf("json schema = %v, want %q", raw["schema"], want)
+	}
+}
+
+// The adapter version is a release surface: it goes into every profile, and
+// tests/test_skill.sh asserts the same number beside the five plugin manifests.
+// Pinning the literal here is what makes a forgotten bump fail rather than
+// quietly ship a 0.4.1 profile labelled as something else.
+func TestAdapterVersionIsThisRelease(t *testing.T) {
+	const want = "0.4.1"
+	if AdapterVersion != want {
+		t.Errorf("AdapterVersion = %q, want %q", AdapterVersion, want)
+	}
+	report := ClaudeCodeAdapter{}.Probe()
+	if report.AdapterVer != want {
+		t.Errorf("capability.adapter_version = %q, want %q", report.AdapterVer, want)
 	}
 }
 
@@ -439,70 +517,122 @@ func capturedSignals(p Profile) map[MetricName]capturedSignal {
 	}
 }
 
-func TestCaptureDeliversEverySignalProbeAdvertises(t *testing.T) {
-	cases := []struct {
-		name string
-		// fixture is the OTLP export the adapter is pointed at, unless one of
-		// the two flags below says otherwise.
-		fixture      string
-		unconfigured bool         // adapter has no export file at all
-		missingFile  bool         // adapter points at a path that does not exist
-		present      []MetricName // signals that must be "present"
-		absent       MetricState  // state required of tokens/tool_calls/timing when not present
-	}{
-		{name: "no export file configured", unconfigured: true, absent: MetricUnknown},
-		{name: "export file path set but file missing", missingFile: true, absent: MetricError},
+// captureCase is one export shape the contract above is asserted over. The
+// table is package-level so the fixture directory can be checked against it:
+// see TestEveryFixtureIsAContractCase, which is what keeps "add a fixture" and
+// "assert the contract for it" from being two things someone has to remember.
+type captureCase struct {
+	name string
+	// fixture is the OTLP export the adapter is pointed at, unless one of
+	// the two flags below says otherwise.
+	fixture      string
+	unconfigured bool         // adapter has no export file at all
+	missingFile  bool         // adapter points at a path that does not exist
+	present      []MetricName // signals that must be "present"
+	absent       MetricState  // state required of tokens/tool_calls/timing when not present
+}
 
-		// Exports that carry values.
-		{name: "every signal", fixture: "full_export.ndjson",
-			present: []MetricName{MetricTokens, MetricToolCalls, MetricTiming}, absent: MetricUnknown},
-		{name: "tokens only", fixture: "tokens_only.json",
-			present: []MetricName{MetricTokens}, absent: MetricUnknown},
-		{name: "tool calls only", fixture: "tool_calls_only.json",
-			present: []MetricName{MetricToolCalls}, absent: MetricUnknown},
-		{name: "timing only", fixture: "timing_only.json",
-			present: []MetricName{MetricTiming}, absent: MetricUnknown},
-		{name: "tool calls and timing, no token metric", fixture: "partial_no_tokens.json",
-			present: []MetricName{MetricToolCalls, MetricTiming}, absent: MetricUnknown},
-		{name: "delta sums across batches", fixture: "multi_batch_delta.ndjson",
-			present: []MetricName{MetricTokens}, absent: MetricUnknown},
-		{name: "cumulative takes the last value per series", fixture: "cumulative.ndjson",
-			present: []MetricName{MetricTokens}, absent: MetricUnknown},
-		{name: "numbers and strings both decode", fixture: "number_string_variants.json",
-			present: []MetricName{MetricTokens, MetricToolCalls, MetricTiming}, absent: MetricUnknown},
-		{name: "readable points alongside an unreadable one", fixture: "as_double_rounding.json",
-			present: []MetricName{MetricTokens}, absent: MetricUnknown},
-		{name: "an accept and its result are one call", fixture: "accept_then_result.json",
-			present: []MetricName{MetricToolCalls}, absent: MetricUnknown},
-		{name: "a failed tool call is still a call", fixture: "tool_failure.json",
-			present: []MetricName{MetricToolCalls}, absent: MetricUnknown},
-		{name: "a tool call with no timestamp is still a call", fixture: "no_timestamp_tool_call.json",
-			present: []MetricName{MetricToolCalls}, absent: MetricUnknown},
-		{name: "skill.name is carried but not read", fixture: "skill_name_present.json",
-			present: []MetricName{MetricTokens, MetricTiming}, absent: MetricUnknown},
-		{name: "api_request records out of order", fixture: "out_of_order.ndjson",
-			present: []MetricName{MetricTiming}, absent: MetricUnknown},
+var captureCases = []captureCase{
+	{name: "no export file configured", unconfigured: true, absent: MetricUnknown},
+	{name: "export file path set but file missing", missingFile: true, absent: MetricError},
 
-		// Exports that parse but carry nothing readable for any signal.
-		{name: "token.usage arrives as a gauge", fixture: "gauge_not_sum.json", absent: MetricUnknown},
-		{name: "temporality reads as neither delta nor cumulative", fixture: "unreadable_temporality.json", absent: MetricUnknown},
-		{name: "tool events with nothing readable", fixture: "unreadable_tool_events.json", absent: MetricUnknown},
-		{name: "accepts with no results yet", fixture: "accepts_no_results.json", absent: MetricUnknown},
-		{name: "a reject with no tool name", fixture: "unnamed_reject.json", absent: MetricUnknown},
-		{name: "api_request with no timeUnixNano", fixture: "untimed_api_request.json", absent: MetricUnknown},
-		{name: "only events the adapter does not read", fixture: "unknown_events.json", absent: MetricUnknown},
-		{name: "no OTLP envelope", fixture: "no_envelope.json", absent: MetricUnknown},
-		{name: "the envelope the adapter used to invent", fixture: "bespoke_envelope.json", absent: MetricUnknown},
+	// Exports that carry values.
+	{name: "every signal", fixture: "full_export.ndjson",
+		present: []MetricName{MetricTokens, MetricToolCalls, MetricTiming}, absent: MetricUnknown},
+	{name: "tokens only", fixture: "tokens_only.json",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "tool calls only", fixture: "tool_calls_only.json",
+		present: []MetricName{MetricToolCalls}, absent: MetricUnknown},
+	{name: "timing only", fixture: "timing_only.json",
+		present: []MetricName{MetricTiming}, absent: MetricUnknown},
+	{name: "tool calls and timing, no token metric", fixture: "partial_no_tokens.json",
+		present: []MetricName{MetricToolCalls, MetricTiming}, absent: MetricUnknown},
+	{name: "delta sums across batches", fixture: "multi_batch_delta.ndjson",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "cumulative takes the last value per series", fixture: "cumulative.ndjson",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "numbers and strings both decode", fixture: "number_string_variants.json",
+		present: []MetricName{MetricTokens, MetricToolCalls, MetricTiming}, absent: MetricUnknown},
+	{name: "readable points alongside an unreadable one", fixture: "as_double_rounding.json",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "an accept and its result are one call", fixture: "accept_then_result.json",
+		present: []MetricName{MetricToolCalls}, absent: MetricUnknown},
+	{name: "a failed tool call is still a call", fixture: "tool_failure.json",
+		present: []MetricName{MetricToolCalls}, absent: MetricUnknown},
+	{name: "a tool call with no timestamp is still a call", fixture: "no_timestamp_tool_call.json",
+		present: []MetricName{MetricToolCalls}, absent: MetricUnknown},
+	{name: "skill.name is carried but not read", fixture: "skill_name_present.json",
+		present: []MetricName{MetricTokens, MetricTiming}, absent: MetricUnknown},
+	{name: "api_request records out of order", fixture: "out_of_order.ndjson",
+		present: []MetricName{MetricTiming}, absent: MetricUnknown},
+	{name: "only a cache count was exported", fixture: "cache_only.json",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "counts read as zero", fixture: "zero_token_count.json",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "two series told apart by a non-string attribute", fixture: "array_attribute_series.ndjson",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "the temporality enum spelled out by name", fixture: "temporality_enum_names.json",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "asDouble beside asInt on one point", fixture: "as_double_wins_over_as_int.json",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "log records spread over several resources and scopes", fixture: "log_record_shapes.json",
+		present: []MetricName{MetricToolCalls}, absent: MetricUnknown},
 
-		// Exports that cannot be read as OTLP/JSON at all.
-		{name: "malformed JSON", fixture: "malformed.json", absent: MetricError},
-		{name: "a partial final line", fixture: "truncated_final_line.ndjson", absent: MetricError},
-		{name: "a value that does not fit the schema", fixture: "type_mismatch.json", absent: MetricError},
-		{name: "an array of exports", fixture: "top_level_array.json", absent: MetricError},
-		{name: "an empty file", fixture: "empty.json", absent: MetricError},
+	// Exports that parse but carry nothing readable for any signal.
+	{name: "token.usage arrives as a gauge", fixture: "gauge_not_sum.json", absent: MetricUnknown},
+	{name: "temporality reads as neither delta nor cumulative", fixture: "unreadable_temporality.json", absent: MetricUnknown},
+	{name: "tool events with nothing readable", fixture: "unreadable_tool_events.json", absent: MetricUnknown},
+	{name: "accepts with no results yet", fixture: "accepts_no_results.json", absent: MetricUnknown},
+	{name: "a reject with no tool name", fixture: "unnamed_reject.json", absent: MetricUnknown},
+	{name: "api_request with no timeUnixNano", fixture: "untimed_api_request.json", absent: MetricUnknown},
+	{name: "only events the adapter does not read", fixture: "unknown_events.json", absent: MetricUnknown},
+	{name: "no OTLP envelope", fixture: "no_envelope.json", absent: MetricUnknown},
+	{name: "the envelope the adapter used to invent", fixture: "bespoke_envelope.json", absent: MetricUnknown},
+	{name: "an envelope carrying no telemetry", fixture: "empty_envelope.json", absent: MetricUnknown},
+	{name: "a sum that declared no temporality", fixture: "absent_temporality.json", absent: MetricUnknown},
+	{name: "a token type the adapter does not recognise", fixture: "unrecognised_token_type.json", absent: MetricUnknown},
+	{name: "values no count can hold", fixture: "value_not_a_count.json", absent: MetricUnknown},
+
+	// Exports that cannot be read as OTLP/JSON at all.
+	{name: "malformed JSON", fixture: "malformed.json", absent: MetricError},
+	{name: "a partial final line", fixture: "truncated_final_line.ndjson", absent: MetricError},
+	{name: "a value that does not fit the schema", fixture: "type_mismatch.json", absent: MetricError},
+	{name: "an array of exports", fixture: "top_level_array.json", absent: MetricError},
+	{name: "an empty file", fixture: "empty.json", absent: MetricError},
+}
+
+// TestEveryFixtureIsAContractCase makes the fixture directory the coverage
+// denominator. A fixture nobody wrote a case for is a shape this contract was
+// never asserted over, and the only way to notice is to count.
+func TestEveryFixtureIsAContractCase(t *testing.T) {
+	covered := make(map[string]bool, len(captureCases))
+	for _, tc := range captureCases {
+		if tc.fixture != "" {
+			covered[tc.fixture] = true
+		}
 	}
+	found, err := filepath.Glob(filepath.Join("testdata", "otlp", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := 0
+	for _, path := range found {
+		name := filepath.Base(path)
+		if filepath.Ext(name) != ".json" && filepath.Ext(name) != ".ndjson" {
+			continue // the directory's own README
+		}
+		files++
+		if !covered[name] {
+			t.Errorf("%s has no case in captureCases: the probe/capture contract was never asserted over it", name)
+		}
+	}
+	if files != len(covered) {
+		t.Errorf("%d fixtures on disk, %d named in captureCases — one of them names a file that is not there", files, len(covered))
+	}
+}
 
-	for _, tc := range cases {
+func TestCaptureDeliversEverySignalProbeAdvertises(t *testing.T) {
+	for _, tc := range captureCases {
 		t.Run(tc.name, func(t *testing.T) {
 			var adapter ClaudeCodeAdapter
 			switch {
@@ -1083,4 +1213,47 @@ func TestTokens_AnUnreadCountIsAbsentAndAReadZeroIsZero(t *testing.T) {
 			assertTokenJSON(t, profile.Tokens.Value, tc.want)
 		})
 	}
+}
+
+// A log record's identity comes from its body, and the event.name attribute is
+// the fallback for a record whose body was dropped. When the two disagree the
+// body wins, because event.name is the one attribute cardinality limits can
+// replace — and getting it backwards files a tool call under timing.
+//
+// The same fixture spreads its records over two resourceLogs with two
+// scopeLogs each: a walk that indexes [0] loses three quarters of them.
+func TestToolCalls_TheBodyNamesTheEventAndEveryScopeIsWalked(t *testing.T) {
+	profile := capturedProfile(t, "log_record_shapes.json")
+
+	if profile.ToolCalls.State != MetricPresent {
+		t.Fatalf("tool_calls state = %q (reason %q), want present", profile.ToolCalls.State, profile.ToolCalls.Reason)
+	}
+	// Timed calls first in timestamp order, then the untimed ones in file
+	// order — which here means across resources and scopes, in the order the
+	// walk visits them.
+	assertToolCalls(t, profile.ToolCalls.Value, []ToolCallEntry{
+		{Name: "Read", Timestamp: "2026-09-13T20:49:55.46Z", Success: true},
+		{Name: "Write", Timestamp: "2026-09-13T20:49:55.56Z", Success: true},
+		{Name: "Bash", Timestamp: "", Success: true},
+		{Name: "Grep", Timestamp: "", Success: false},
+	})
+
+	// The first record's event.name attribute says api_request. Its body says
+	// tool_result, and the body is what counts — so there is no api_request in
+	// this export at all.
+	if profile.Timing.State != MetricUnknown {
+		t.Errorf("timing state = %q, want unknown — event.name overrode the body", profile.Timing.State)
+	}
+	if want := "no claude_code.api_request log events found in OTel export"; profile.Timing.Reason != want {
+		t.Errorf("timing reason = %q, want %q", profile.Timing.Reason, want)
+	}
+}
+
+// A data point may carry both asDouble and asInt. Claude Code's own exporter
+// sets asDouble, and a collector re-serialising the same number may add asInt,
+// so asDouble is the one that is read — consistently, not by whichever the
+// decoder saw first.
+func TestTokens_AsDoubleIsReadBeforeAsInt(t *testing.T) {
+	profile := capturedProfile(t, "as_double_wins_over_as_int.json")
+	assertTokenJSON(t, profile.Tokens.Value, `{"input":1523}`)
 }

@@ -1,0 +1,73 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "claude-code" } }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": { "name": "com.anthropic.claude_code.events" },
+          "logRecords": [
+            {
+              "timeUnixNano": "1789332595460000000",
+              "body": { "stringValue": "claude_code.tool_result" },
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "api_request" } },
+                { "key": "tool_name", "value": { "stringValue": "Read" } },
+                { "key": "success", "value": { "stringValue": "true" } }
+              ]
+            }
+          ]
+        },
+        {
+          "scope": { "name": "com.anthropic.claude_code.events.second_scope" },
+          "logRecords": [
+            {
+              "body": { "stringValue": "claude_code.tool_result" },
+              "attributes": [
+                { "key": "tool_name", "value": { "stringValue": "Bash" } },
+                { "key": "success", "value": { "stringValue": "true" } }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "claude-code" } }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": { "name": "com.anthropic.claude_code.events" },
+          "logRecords": [
+            {
+              "body": { "stringValue": "claude_code.tool_result" },
+              "attributes": [
+                { "key": "tool_name", "value": { "stringValue": "Grep" } },
+                { "key": "success", "value": { "stringValue": "false" } }
+              ]
+            }
+          ]
+        },
+        {
+          "scope": { "name": "com.anthropic.claude_code.events.second_scope" },
+          "logRecords": [
+            {
+              "timeUnixNano": "1789332595560000000",
+              "body": { "stringValue": "claude_code.tool_result" },
+              "attributes": [
+                { "key": "tool_name", "value": { "stringValue": "Write" } },
+                { "key": "success", "value": { "stringValue": "true" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

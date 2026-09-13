@@ -31,6 +31,32 @@ PY
   assert "$manifest is valid plugin.json" true
 done
 
+# The marketplace manifest is the fifth version surface. `claude plugin
+# marketplace add` reads it, and it carries its own copy of the version, so a
+# release that bumps the four plugin.json files and forgets this one advertises
+# the previous release to anyone installing by name.
+[[ -f .claude-plugin/marketplace.json ]]
+assert ".claude-plugin/marketplace.json exists" true
+python3 - <<'PY'
+import json
+with open('.claude-plugin/marketplace.json') as f:
+    data = json.load(f)
+assert data['name'] == 'skill-architect', 'marketplace name mismatch'
+plugins = data['plugins']
+assert len(plugins) == 1, 'expected exactly one plugin entry'
+assert plugins[0]['name'] == 'skill-architect', 'plugin entry name mismatch'
+assert plugins[0]['version'] == '0.4.1', 'plugin entry version mismatch'
+assert plugins[0]['source'] == './', 'plugin entry source mismatch'
+PY
+assert ".claude-plugin/marketplace.json is valid and at 0.4.1" true
+
+# The profiler records its own version in every profile it writes, and it is the
+# sixth surface carrying this release's number. It is asserted here beside the
+# manifests so one place shows all of them, and in Go by
+# TestAdapterVersionIsThisRelease.
+grep -q 'AdapterVersion = "0.4.1"' profiler/types.go
+assert "profiler AdapterVersion is 0.4.1" true
+
 # Each skill has a valid SKILL.md with frontmatter and name matching directory.
 for skill in skill-audit skill-rewrite; do
   dir="skills/$skill"
