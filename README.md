@@ -84,7 +84,7 @@ The skills shell out to three external tools. Install them before running an aud
 
 | Tool | Install | Without it |
 |---|---|---|
-| [`skill-validator`](https://github.com/agent-ecosystem/skill-validator) | `brew install agent-ecosystem/tap/skill-validator` | `skill-audit` stops at its structural-checks stage with `skill-validator not found` and exit 1. `check-frontmatter.sh` cannot run. `audit-report.sh` still emits a report, but `spec` is `null`, `spec_error` names the missing tool, and `summary.passed` is `false`. |
+| [`skill-validator`](https://github.com/agent-ecosystem/skill-validator) | `brew install agent-ecosystem/tap/skill-validator` | `skill-audit` stops at its structural-checks stage with `skill-validator not found` and exit 1 — that guard is what protects you. `audit-report.sh` also detects it: `spec` is `null`, `spec_error` names the tool, and `summary.passed` is `false`. `check-frontmatter.sh` run on its own does **not** detect it and prints `frontmatter OK` with exit 0 without validating anything, so do not bypass the guard. |
 | [`skillscore`](https://www.npmjs.com/package/skillscore) | `npm install -g skillscore` | `skill-audit` stops at the same stage with `skillscore not found` and exit 1. `check-quality.sh` exits 3. `audit-report.sh` emits `quality: null` with `quality_error`, and `quality_score` / `quality_grade` are `null`. |
 | `jq` | `brew install jq` (macOS) · `apt-get install jq` (Debian/Ubuntu) | `audit-report.sh` and `check-paths.sh --json` die with `jq: command not found` (exit 127). `check-structure.sh --json` is quieter and worse: it exits 0 and returns `{"findings": [], "passed": true}`, dropping every finding. |
 
