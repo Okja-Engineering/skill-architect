@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -409,72 +410,295 @@ func TestNoAttributionValueInJSONForUnknown(t *testing.T) {
 
 // --- Probe/Capture consistency: the adapter contract ---
 //
-// The invariant: Probe advertises, per signal, what the adapter can produce
-// from a given export. Capture must deliver exactly that. Every signal Probe
-// reports available (source != "none") must be "present" in the profile with
-// that source; every signal Probe reports "none" must be "unknown" with a
-// reason. A partial export must not cause the signals it does carry to be
-// discarded.
+// Two invariants, stated once here and asserted over every export shape below.
 //
-// Pinned to the contract, not to any particular gating implementation.
-func TestCaptureDeliversEverySignalProbeAdvertises(t *testing.T) {
-	const tokenMetric = `{"name": "claude_code.token.usage", "attributes": {"token_type": "input"}, "value": 1500}`
-	const toolLog = `{"event_name": "claude_code.tool_decision", "attributes": {"tool_name": "Bash", "decision": "approved"}, "timestamp": "2026-09-10T22:00:05Z"}`
-	const apiLog = `{"event_name": "claude_code.api_request", "timestamp": "2026-09-10T22:00:00Z"}`
+//  1. "Present" means a value was read. A signal is present only when the export
+//     carried something the adapter could actually assimilate. Structural
+//     evidence alone — a metric with the right name but a token type or value
+//     the adapter cannot read, a log event with no usable payload — is not a
+//     value, and calling it "present" invents data the export never carried.
+//  2. Probe and Capture apply the same predicate, per signal. Every capability
+//     the report marks available is "present" in the profile with that source;
+//     every capability it marks "none" is not present, carries a reason, and
+//     carries no value.
+//
+// Both are pinned to the contract rather than to any particular gating,
+// detection, or parsing implementation, so a rewrite of the adapter's internals
+// still has to satisfy them.
 
+// capturedSignal is one signal's state paired with whether the profile actually
+// carries a value for it, so the contract can be checked over every capability
+// the report enumerates instead of a hand-maintained subset.
+type capturedSignal struct {
+	raw      RawMetricResult
+	hasValue bool
+}
+
+func capturedSignals(p Profile) map[MetricName]capturedSignal {
+	return map[MetricName]capturedSignal{
+		MetricTokens:          {p.Tokens.RawMetricResult, p.Tokens.Value != nil},
+		MetricToolCalls:       {p.ToolCalls.RawMetricResult, len(p.ToolCalls.Value) > 0},
+		MetricSkillActivation: {p.SkillActivation.RawMetricResult, len(p.SkillActivation.Value) > 0},
+		MetricTiming:          {p.Timing.RawMetricResult, p.Timing.Value != nil},
+		MetricAttribution:     {p.Attribution.RawMetricResult, p.Attribution.Value != nil},
+	}
+}
+
+// Export fragments. The "usable" ones carry a value the adapter can read; the
+// rest carry the right structure and nothing readable inside it.
+const (
+	tokenInput        = `{"name": "claude_code.token.usage", "attributes": {"token_type": "input"}, "value": 1500}`
+	tokenOutput       = `{"name": "claude_code.token.usage", "attributes": {"token_type": "output"}, "value": 300}`
+	tokenNoAttributes = `{"name": "claude_code.token.usage", "value": 1500}`
+	tokenUnknownType  = `{"name": "claude_code.token.usage", "attributes": {"token_type": "mystery"}, "value": 1500}`
+	tokenNonNumeric   = `{"name": "claude_code.token.usage", "attributes": {"token_type": "input"}, "value": "lots"}`
+	toolLogBash       = `{"event_name": "claude_code.tool_decision", "attributes": {"tool_name": "Bash", "decision": "approved"}, "timestamp": "2026-09-10T22:00:05Z"}`
+	toolLogNoName     = `{"event_name": "claude_code.tool_decision", "attributes": {"decision": "approved"}, "timestamp": "2026-09-10T22:00:05Z"}`
+	apiLogStart       = `{"event_name": "claude_code.api_request", "timestamp": "2026-09-10T22:00:00Z"}`
+	apiLogNoTimestamp = `{"event_name": "claude_code.api_request", "attributes": {"model": "claude"}}`
+)
+
+func TestCaptureDeliversEverySignalProbeAdvertises(t *testing.T) {
 	cases := []struct {
-		name   string
-		export string
+		name string
+		// export is written to a file the adapter is pointed at, unless one of
+		// the two flags below says otherwise.
+		export       string
+		unconfigured bool         // adapter has no export file at all
+		missingFile  bool         // adapter points at a path that does not exist
+		present      []MetricName // signals that must be "present"
+		absent       MetricState  // state required of tokens/tool_calls/timing when not present
 	}{
-		{"empty export", `{}`},
-		{"tokens only", `{"metrics": [` + tokenMetric + `]}`},
-		{"tool calls only", `{"logs": [` + toolLog + `]}`},
-		{"timing only", `{"logs": [` + apiLog + `]}`},
-		{"tool calls and timing, no token metric", `{"logs": [` + toolLog + `, ` + apiLog + `]}`},
-		{"all signals", `{"metrics": [` + tokenMetric + `], "logs": [` + toolLog + `, ` + apiLog + `]}`},
+		{name: "no export file configured", unconfigured: true, absent: MetricUnknown},
+		{name: "export file path set but file missing", missingFile: true, absent: MetricError},
+		{name: "empty export", export: `{}`, absent: MetricUnknown},
+		{name: "malformed JSON", export: `{"metrics": [`, absent: MetricError},
+		{name: "truncated after a valid prefix", export: `{"metrics": [{"name": "claude_code.token.usage"`, absent: MetricError},
+		{name: "tokens only", export: `{"metrics": [` + tokenInput + `]}`,
+			present: []MetricName{MetricTokens}, absent: MetricUnknown},
+		{name: "tool calls only", export: `{"logs": [` + toolLogBash + `]}`,
+			present: []MetricName{MetricToolCalls}, absent: MetricUnknown},
+		{name: "timing only", export: `{"logs": [` + apiLogStart + `]}`,
+			present: []MetricName{MetricTiming}, absent: MetricUnknown},
+		{name: "tool calls and timing, no token metric", export: `{"logs": [` + toolLogBash + `, ` + apiLogStart + `]}`,
+			present: []MetricName{MetricToolCalls, MetricTiming}, absent: MetricUnknown},
+		{name: "all signals", export: `{"metrics": [` + tokenInput + `], "logs": [` + toolLogBash + `, ` + apiLogStart + `]}`,
+			present: []MetricName{MetricTokens, MetricToolCalls, MetricTiming}, absent: MetricUnknown},
+		{name: "token metric with no attributes", export: `{"metrics": [` + tokenNoAttributes + `]}`,
+			absent: MetricUnknown},
+		{name: "token metric with an unrecognised token_type", export: `{"metrics": [` + tokenUnknownType + `]}`,
+			absent: MetricUnknown},
+		{name: "token metric with a non-numeric value", export: `{"metrics": [` + tokenNonNumeric + `]}`,
+			absent: MetricUnknown},
+		{name: "readable token metric alongside unreadable ones",
+			export:  `{"metrics": [` + tokenUnknownType + `, ` + tokenNonNumeric + `, ` + tokenOutput + `]}`,
+			present: []MetricName{MetricTokens}, absent: MetricUnknown},
+		{name: "tool_decision with no tool_name", export: `{"logs": [` + toolLogNoName + `]}`,
+			absent: MetricUnknown},
+		{name: "api_request with no timestamp", export: `{"logs": [` + apiLogNoTimestamp + `]}`,
+			absent: MetricUnknown},
+		{name: "api_request events out of chronological order",
+			export:  `{"logs": [{"event_name": "claude_code.api_request", "timestamp": "2026-09-10T22:00:15Z"}, ` + apiLogStart + `]}`,
+			present: []MetricName{MetricTiming}, absent: MetricUnknown},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			otelFile := filepath.Join(t.TempDir(), "otel.json")
-			if err := os.WriteFile(otelFile, []byte(tc.export), 0644); err != nil {
-				t.Fatal(err)
+			var adapter ClaudeCodeAdapter
+			switch {
+			case tc.unconfigured:
+				adapter = ClaudeCodeAdapter{}
+			case tc.missingFile:
+				adapter = ClaudeCodeAdapter{OtelExportFile: filepath.Join(t.TempDir(), "absent.json")}
+			default:
+				otelFile := filepath.Join(t.TempDir(), "otel.json")
+				if err := os.WriteFile(otelFile, []byte(tc.export), 0644); err != nil {
+					t.Fatal(err)
+				}
+				adapter = ClaudeCodeAdapter{OtelExportFile: otelFile}
 			}
 
-			adapter := ClaudeCodeAdapter{OtelExportFile: otelFile}
 			report := adapter.Probe()
 			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			captured := map[MetricName]RawMetricResult{
-				MetricTokens:    profile.Tokens.RawMetricResult,
-				MetricToolCalls: profile.ToolCalls.RawMetricResult,
-				MetricTiming:    profile.Timing.RawMetricResult,
+			// The capability report is the denominator: every signal the
+			// adapter knows about is walked, none assumed.
+			if len(report.Capabilities) != 5 {
+				t.Fatalf("capability report covers %d signals, want 5", len(report.Capabilities))
 			}
 
-			for _, metric := range []MetricName{MetricTokens, MetricToolCalls, MetricTiming} {
-				got := captured[metric]
-				advertised := report.Capabilities[metric]
-				if advertised == SourceNone {
-					if got.State != MetricUnknown {
-						t.Errorf("%s: probe advertised none, capture state = %q, want %q", metric, got.State, MetricUnknown)
+			signals := capturedSignals(profile)
+			for metric, advertised := range report.Capabilities {
+				got, ok := signals[metric]
+				if !ok {
+					t.Fatalf("%s: capability reported but no result in the profile", metric)
+				}
+				wantPresent := false
+				for _, m := range tc.present {
+					if m == metric {
+						wantPresent = true
 					}
-					if got.Reason == "" {
-						t.Errorf("%s: unknown result must carry a reason", metric)
+				}
+
+				if wantPresent {
+					if advertised == SourceNone {
+						t.Errorf("%s: export carries a readable value, probe advertised %q", metric, advertised)
+					}
+					if got.raw.State != MetricPresent {
+						t.Errorf("%s: probe advertised %q, capture state = %q (reason %q), want %q",
+							metric, advertised, got.raw.State, got.raw.Reason, MetricPresent)
+					}
+					if got.raw.Source != string(advertised) {
+						t.Errorf("%s: capture source = %q, want %q", metric, got.raw.Source, advertised)
+					}
+					if !got.hasValue {
+						t.Errorf("%s: state %q with no value — a present signal must carry the value that was read",
+							metric, got.raw.State)
+					}
+					if got.raw.Reason != "" {
+						t.Errorf("%s: present result carries reason %q", metric, got.raw.Reason)
 					}
 					continue
 				}
-				if got.State != MetricPresent {
-					t.Errorf("%s: probe advertised %q, capture state = %q (reason %q), want %q",
-						metric, advertised, got.State, got.Reason, MetricPresent)
+
+				if advertised != SourceNone {
+					t.Errorf("%s: nothing readable in the export, probe advertised %q", metric, advertised)
 				}
-				if got.Source != string(advertised) {
-					t.Errorf("%s: capture source = %q, want %q", metric, got.Source, advertised)
+				if got.raw.State == MetricPresent {
+					t.Errorf("%s: state = present with no readable value in the export", metric)
+				}
+				if got.hasValue {
+					t.Errorf("%s: state %q carries a value; unknown and error results must carry none",
+						metric, got.raw.State)
+				}
+				if got.raw.Reason == "" {
+					t.Errorf("%s: state %q must carry a reason", metric, got.raw.State)
+				}
+				// Skill activation and attribution are a property of the
+				// harness, not of this export, so they are always unknown.
+				want := tc.absent
+				if metric == MetricSkillActivation || metric == MetricAttribution {
+					want = MetricUnknown
+				}
+				if got.raw.State != want {
+					t.Errorf("%s: state = %q, want %q", metric, got.raw.State, want)
 				}
 			}
 		})
+	}
+}
+
+// An export that was supplied but cannot be used is diagnosable as exactly
+// that. Telling the user to provide an export file they already provided sends
+// them to fix the one thing that is not wrong.
+func TestCapture_UnusableExport_IsDiagnosable(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		write   bool
+		wantIn  string
+	}{
+		{"malformed JSON", `{"metrics": [`, true, "parse"},
+		{"not JSON at all", "resourceMetrics: none\n", true, "parse"},
+		{"file does not exist", "", false, "read"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			otelFile := filepath.Join(t.TempDir(), "otel.json")
+			if tc.write {
+				if err := os.WriteFile(otelFile, []byte(tc.content), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			adapter := ClaudeCodeAdapter{OtelExportFile: otelFile}
+			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for metric, got := range map[MetricName]RawMetricResult{
+				MetricTokens:    profile.Tokens.RawMetricResult,
+				MetricToolCalls: profile.ToolCalls.RawMetricResult,
+				MetricTiming:    profile.Timing.RawMetricResult,
+			} {
+				if got.State != MetricError {
+					t.Errorf("%s: state = %q (reason %q), want %q — the export existed and failed",
+						metric, got.State, got.Reason, MetricError)
+				}
+				if !strings.Contains(got.Reason, tc.wantIn) {
+					t.Errorf("%s: reason = %q, want it to name the %s failure", metric, got.Reason, tc.wantIn)
+				}
+				if strings.Contains(got.Reason, "not configured") {
+					t.Errorf("%s: reason = %q — the export was configured; this sends the user to fix the wrong thing",
+						metric, got.Reason)
+				}
+			}
+		})
+	}
+}
+
+// Timing is the span the api_request events cover, so it cannot run backwards
+// however the exporter ordered them.
+func TestTimingIsASpanNotFileOrder(t *testing.T) {
+	otelFile := filepath.Join(t.TempDir(), "otel.json")
+	otelData := `{
+		"logs": [
+			{"event_name": "claude_code.api_request", "timestamp": "2026-09-10T22:00:15Z"},
+			{"event_name": "claude_code.api_request", "timestamp": "2026-09-10T22:00:00Z"},
+			{"event_name": "claude_code.api_request", "timestamp": "2026-09-10T22:00:07Z"}
+		]
+	}`
+	if err := os.WriteFile(otelFile, []byte(otelData), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := ClaudeCodeAdapter{OtelExportFile: otelFile}
+	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Timing.Value == nil {
+		t.Fatalf("timing value is nil (state %q, reason %q)", profile.Timing.State, profile.Timing.Reason)
+	}
+	got := *profile.Timing.Value
+	if got.StartTime != "2026-09-10T22:00:00Z" {
+		t.Errorf("start_time = %q, want the earliest event 2026-09-10T22:00:00Z", got.StartTime)
+	}
+	if got.EndTime != "2026-09-10T22:00:15Z" {
+		t.Errorf("end_time = %q, want the latest event 2026-09-10T22:00:15Z", got.EndTime)
+	}
+	if got.TotalMs < 0 {
+		t.Errorf("total_ms = %d, a session cannot take negative time", got.TotalMs)
+	}
+	if got.TotalMs != 15000 {
+		t.Errorf("total_ms = %d, want 15000", got.TotalMs)
+	}
+}
+
+// Token counts are the sum of what was read, never a zero standing in for what
+// could not be read.
+func TestTokens_OnlyReadableMetricsAreCounted(t *testing.T) {
+	otelFile := filepath.Join(t.TempDir(), "otel.json")
+	otelData := `{"metrics": [` + tokenUnknownType + `, ` + tokenNonNumeric + `, ` + tokenNoAttributes + `, ` + tokenOutput + `]}`
+	if err := os.WriteFile(otelFile, []byte(otelData), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := ClaudeCodeAdapter{OtelExportFile: otelFile}
+	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Tokens.Value == nil {
+		t.Fatalf("tokens value is nil (state %q, reason %q)", profile.Tokens.State, profile.Tokens.Reason)
+	}
+	want := TokenCounts{Output: 300}
+	if *profile.Tokens.Value != want {
+		t.Errorf("tokens = %+v, want %+v — only the one readable metric counts", *profile.Tokens.Value, want)
 	}
 }
 
