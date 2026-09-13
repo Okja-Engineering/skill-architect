@@ -8,31 +8,64 @@ A harness-agnostic profiler that captures runtime signals from any target harnes
 
 ## Core types
 
-### MetricResult<T>
+### Metric results
 
-Every metric is wrapped so unavailable data is explicit, not silent:
+Every metric is wrapped so unavailable data is explicit, not silent. There is no
+generic `MetricResult[T]`: type parameters are avoided so the results marshal and
+unmarshal as plain JSON, so the shared state lives in `RawMetricResult` and each
+metric category has its own wrapper embedding it.
 
 ```go
 type MetricState string
 
 const (
-    MetricPresent  MetricState = "present"   // value captured from telemetry
-    MetricUnknown  MetricState = "unknown"   // no telemetry source available
-    MetricError    MetricState = "error"     // source existed but failed
+    MetricPresent MetricState = "present" // value captured from telemetry
+    MetricUnknown MetricState = "unknown" // no telemetry source available
+    MetricError   MetricState = "error"   // source existed but failed
 )
 
-type MetricResult[T any] struct {
-    State   MetricState `json:"state"`
-    Value   T           `json:"value,omitempty"`     // present when State == "present"
-    Reason  string      `json:"reason,omitempty"`    // present when State != "present"
-    Source  string      `json:"source,omitempty"`    // "otel" | "hooks" | "session_data" | "server_api" | "sqlite"
+type RawMetricResult struct {
+    State  MetricState `json:"state"`
+    Reason string      `json:"reason,omitempty"` // present when State != "present"
+    Source string      `json:"source,omitempty"` // "otel" | "hooks" | "session_data" | "server_api" | "sqlite"
+}
+
+// One wrapper per metric category. Value is a pointer wherever the payload is a
+// struct, so omitempty drops the key entirely for unknown and error states.
+type TokenResult struct {
+    RawMetricResult
+    Value *TokenCounts `json:"value,omitempty"`
+}
+
+type ToolCallResult struct {
+    RawMetricResult
+    Value []ToolCallEntry `json:"value,omitempty"`
+}
+
+type ActivationResult struct {
+    RawMetricResult
+    Value []ActivationEntry `json:"value,omitempty"`
+}
+
+type TimingResult struct {
+    RawMetricResult
+    Value *TimingData `json:"value,omitempty"`
+}
+
+type AttributionResult struct {
+    RawMetricResult
+    Value *AttributionData `json:"value,omitempty"`
 }
 ```
 
+Adapters build results through the constructors rather than setting `State` by
+hand: `PresentTokenResult`/`UnknownTokenResult`/`ErrorTokenResult` and the
+matching `Present…`/`Unknown…` pair for each other category.
+
 **Rules:**
 - `State == "present"` → `Value` must be populated, `Reason` must be empty.
-- `State == "unknown"` → `Value` must be zero-valued, `Reason` explains why (e.g., "no OTel export configured", "harness has no skill activation events").
-- `State == "error"` → `Value` must be zero-valued, `Reason` describes the failure (e.g., "OTel collector unreachable: connection refused").
+- `State == "unknown"` → `Value` is nil and its key is absent from the JSON; `Reason` explains why (e.g., "no `claude_code.token.usage` metric found in OTel export", "Claude Code has no skill-level activation events").
+- `State == "error"` → `Value` is nil and its key is absent from the JSON; `Reason` describes the failure (e.g., "failed to parse OTel export JSON: …").
 - `Source` is always populated when `State == "present"` so the profile is auditable.
 
 ### CapabilityReport
@@ -57,6 +90,11 @@ type CapabilityReport struct {
     Capabilities map[MetricName]MetricSource `json:"capabilities"`
 }
 
+// AnySource reports whether probing found any telemetry source at all. Capture
+// uses it to decide whether there is an export worth reading; no adapter may use
+// a single metric's capability as a proxy for the whole export.
+func (c CapabilityReport) AnySource() bool
+
 type MetricSource string
 
 const (
@@ -69,7 +107,7 @@ const (
 )
 ```
 
-**Capability vs result:** `CapabilityReport` says what the adapter *can* produce. `MetricResult` says what it *did* produce for a specific session. An adapter may declare `tokens: "otel"` in its capability report but return `MetricError` for a specific session if OTel was misconfigured.
+**Capability vs result:** `CapabilityReport` says what the adapter *can* produce. A metric result says what it *did* produce for a specific session. An adapter may declare `tokens: "otel"` in its capability report but return `MetricError` for a specific session if OTel was misconfigured.
 
 ### ProfilerAdapter interface
 
@@ -110,11 +148,11 @@ type Profile struct {
     SkillDir     string           `json:"skill_dir"`
     Capability   CapabilityReport `json:"capability"`
 
-    Tokens          MetricResult[TokenCounts]      `json:"tokens"`
-    ToolCalls       MetricResult[[]ToolCallEntry]   `json:"tool_calls"`
-    SkillActivation MetricResult[[]ActivationEntry] `json:"skill_activation"`
-    Timing          MetricResult[TimingData]        `json:"timing"`
-    Attribution     MetricResult[AttributionData]   `json:"attribution"`
+    Tokens          TokenResult       `json:"tokens"`
+    ToolCalls       ToolCallResult    `json:"tool_calls"`
+    SkillActivation ActivationResult  `json:"skill_activation"`
+    Timing          TimingResult      `json:"timing"`
+    Attribution     AttributionResult `json:"attribution"`
 }
 
 type TokenCounts struct {
@@ -177,24 +215,25 @@ type Attribution struct {
 2. Skill activation and attribution are always `none` for Claude Code (no skill-level events in OTel).
 
 **Capture logic:**
-1. Read OTel metrics from the configured endpoint (or a file the collector writes).
+1. Probe first. If `AnySource()` is false there is nothing to read: every metric is `unknown` with the fallback reason below, and capture stops. Otherwise read the export file.
 2. Extract `claude_code.token.usage` metrics → `TokenCounts`.
 3. Extract `claude_code.tool_decision` log events → `ToolCallEntry` list.
 4. Extract timing from `claude_code.api_request` log events → `TimingData`.
-5. `SkillActivation` → `MetricUnknown` with reason "Claude Code has no skill-level activation events".
-6. `Attribution` → `MetricUnknown` with reason "Claude Code does not attribute outputs to skills".
-7. Wrap all results in `MetricResult` with `Source: "otel"`.
+5. Steps 2–4 settle their own signal independently: `present` with `Source: "otel"` when the export carries that signal, `unknown` naming the missing signal when it does not. A partial export never discards the signals it does carry.
+6. `SkillActivation` → `unknown` with reason "Claude Code has no skill-level activation events".
+7. `Attribution` → `unknown` with reason "Claude Code does not attribute outputs to skills".
 8. Serialize to `Profile` JSON.
 
-**Fallback:** If OTel is not configured, all metrics are `unknown` with reason "OTel export not configured. Set CLAUDE_CODE_ENABLE_TELEMETRY=1 and OTEL_METRICS_EXPORTER=otlp."
+**Fallback:** If no export file is configured, or the file is missing, unreadable, malformed, or carries none of the three signals, all metrics are `unknown` with reason "OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile." The adapter reads only the file it is given — it does not inspect `CLAUDE_CODE_ENABLE_TELEMETRY` or the `OTEL_*` env vars itself.
 
 ## Acceptance criteria (Slice 1)
 
-1. `MetricResult[T]` serialization: a `present` result includes value and source; an `unknown` result includes reason and no value; an `error` result includes reason and no value.
-2. `CapabilityReport` for Claude Code with OTel configured: `tokens: otel`, `tool_calls: otel`, `timing: otel`, `skill_activation: none`, `attribution: none`.
-3. `CapabilityReport` for Claude Code without OTel: all metrics `none`.
+1. Metric result serialization: a `present` result includes value and source; an `unknown` result includes reason and no value key; an `error` result includes reason and no value key.
+2. `CapabilityReport` for Claude Code is per signal: `tokens`, `tool_calls`, and `timing` are each `otel` only when the export file actually contains that signal, and `none` otherwise; `skill_activation` and `attribution` are always `none`. An export carrying all three therefore reports `tokens: otel`, `tool_calls: otel`, `timing: otel`.
+3. `CapabilityReport` for Claude Code without OTel: all metrics `none`. Same for an export file that is empty, malformed, or carries none of the three signals.
 4. A Claude Code session with OTel produces a profile where tokens, tool_calls, and timing are `present`; skill_activation and attribution are `unknown` with reason.
 5. A session with no OTel produces a profile where all metrics are `unknown` with reason "OTel export not configured."
 6. Profile JSON round-trips: `Marshal → Unmarshal → Marshal` is identical.
 7. Profile `schema` field is `"skill-architect/profile/v1"`.
 8. Profile `snapshot_hash` matches the input.
+9. Probe and capture agree: every signal the capability report marks available is `present` in the profile with that source, and every signal it marks `none` is `unknown` with a reason. This holds for partial exports — an export with tool calls and timing but no token metric captures both, with tokens `unknown`.
