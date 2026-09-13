@@ -56,25 +56,33 @@ cd profiler && go build -o profiler ./cmd/
 the adapter captures, so profiles produced by different adapter versions stay
 distinguishable. It is not the plugin version, though the two match here.
 
-Probe detection is per signal, not all-or-nothing. It parses the export file and
-reports each capability on its own evidence:
+Probe detection is per signal, not all-or-nothing, and a signal is reported available
+only when the export yields a value the adapter can actually read:
 
-| Capability | Reported `otel` when the export contains |
+| Capability | Reported `otel` when the export carries |
 |---|---|
-| `tokens` | a `claude_code.token.usage` metric |
-| `tool_calls` | `claude_code.tool_decision` log events |
-| `timing` | `claude_code.api_request` log events |
+| `tokens` | a `claude_code.token.usage` metric with a recognised token type and a numeric value |
+| `tool_calls` | `claude_code.tool_decision` events carrying a tool name |
+| `timing` | `claude_code.api_request` events carrying a parseable timestamp |
 
-Anything absent is `none`. `capture` then delivers exactly what `probe` advertised: a
-partial export carrying tool calls and timing but no token metric yields those two
-`present` and `tokens` `unknown` with a reason, rather than discarding the run.
-`skill_activation` and `attribution` are always `none` — Claude Code does attach a
-`skill.name` attribute to its token and cost metrics, but this adapter does not read
-skill-level attributes yet.
+Anything else is `none`, and `capture` delivers exactly what `probe` advertised, because
+both read the export through the same extractor. A partial export carrying tool calls and
+timing but no token metric yields those two `present` and `tokens` `unknown` with a
+reason, rather than discarding the run. An export that is missing, unreadable, or
+malformed is not "unconfigured": every signal comes back `error` naming the failure, so a
+file you supplied but the profiler cannot use says so.
 
-`capture` also accepts `--export-file`, reserved for adapters that read a non-OTel
-session export such as Devin's ATIF. The Claude Code adapter reads only `--otel-file`;
-passing `--export-file` to it on its own produces an all-`unknown` profile.
+`skill_activation` and `attribution` are always `none`: Claude Code emits no skill
+activation event, and this adapter does not read the skill-level attributes it does emit.
+
+`capture` also declares `--export-file`, for adapters that read a non-OTel session export
+such as Devin's ATIF. No shipped adapter reads it, so passing it fails rather than
+silently ignoring the path you gave:
+
+```text
+$ ./profiler capture --harness claude_code … --export-file session.json
+--export-file is not read by the claude_code adapter; supply an OTel export with --otel-file
+```
 
 The profile JSON is the integration point for future paired comparisons (F04). See [`docs/profiler-spec.md`](docs/profiler-spec.md) for the adapter interface contract.
 
@@ -86,7 +94,7 @@ The skills shell out to three external tools. Install them before running an aud
 
 | Tool | Install | Without it |
 |---|---|---|
-| [`skill-validator`](https://github.com/agent-ecosystem/skill-validator) | `brew install agent-ecosystem/tap/skill-validator` | `skill-audit` stops at its structural-checks stage with `skill-validator not found` and exit 1 — that guard is what protects you. `audit-report.sh` also detects it: `spec` is `null`, `spec_error` names the tool, and `summary.passed` is `false`. `check-frontmatter.sh` run on its own does **not** detect it and prints `frontmatter OK` with exit 0 without validating anything, so do not bypass the guard. |
+| [`skill-validator`](https://github.com/agent-ecosystem/skill-validator) | `brew install agent-ecosystem/tap/skill-validator` | `skill-audit` stops at its structural-checks stage with `skill-validator not found` and exit 1 — that guard is what protects you. `audit-report.sh` also detects it: `spec` is `null`, `spec_error` names the tool, and `summary.passed` is `false`. `check-frontmatter.sh` run on its own does **not** detect it: the missing binary exits 127, which the script does not handle, so it skips spec validation silently. Only the license policy gate still runs — a license-less skill exits 2, a licensed one prints `frontmatter OK` and exits 0 having checked nothing else. Do not bypass the guard. |
 | [`skillscore`](https://www.npmjs.com/package/skillscore) | `npm install -g skillscore` | `skill-audit` stops at the same stage with `skillscore not found` and exit 1. `check-quality.sh` exits 3. `audit-report.sh` emits `quality: null` with `quality_error`, and `quality_score` / `quality_grade` are `null`. |
 | `jq` | `brew install jq` (macOS) · `apt-get install jq` (Debian/Ubuntu) | `audit-report.sh` and `check-paths.sh --json` die with `jq: command not found` (exit 127). `check-structure.sh --json` is quieter and worse: it exits 0 and returns `{"findings": [], "passed": true}`, dropping every finding. |
 
@@ -101,10 +109,20 @@ Building the profiler additionally needs Go, at the version declared in
 
 Install `skill-architect` as a plugin in your agent. The plugin namespace keeps the skills grouped and avoids collisions with other skills you may have installed.
 
+`claude plugin install` resolves a plugin *name* against the marketplaces you have
+configured — it does not take a repo path — so Claude Code installs in two steps. This
+repo is its own marketplace (`.claude-plugin/marketplace.json`):
+
+```bash
+claude plugin marketplace add Okja-Engineering/skill-architect
+claude plugin install skill-architect@skill-architect
+```
+
+`claude plugin list` then shows `skill-architect@skill-architect` at version 0.4.1.
+
 | Agent | Command |
 |---|---|
 | Devin | `devin plugins install Okja-Engineering/skill-architect` |
-| Claude Code | `claude plugins install Okja-Engineering/skill-architect` |
 | Codex | Install from the local plugin directory or marketplace entry (see [Codex plugin docs](https://www.codex-docs.com/en/docs/build-plugins)) |
 | Cursor | Copy or symlink the plugin directory to your Cursor plugins folder (see [Cursor plugin docs](https://cursor.com/docs/plugins)) |
 
@@ -122,8 +140,12 @@ All native plugins use the same namespace:
 devin plugins install .
 
 # Claude Code (from inside the repo)
-claude plugins install .
+claude plugin marketplace add ./
+claude plugin install skill-architect@skill-architect
 ```
+
+The trailing slash matters: `claude plugin marketplace add .` is rejected as an invalid
+source format, `./` is accepted.
 
 ### Manual standalone copy
 
@@ -135,8 +157,8 @@ cp -R skills/skill-rewrite ~/.claude/skills/skill-rewrite
 ```
 
 Copy both, even if you only want `skill-rewrite`. Its `draft-rewrite.sh` resolves the
-audit scripts at `../skill-audit` relative to its own directory, so `skill-audit` must
-sit beside it in the same skills directory. Without the sibling it does not fail
+audit scripts at `../skill-audit` relative to the `skill-rewrite` directory it lives in,
+so `skill-audit` must sit beside it in the same skills directory. Without the sibling it does not fail
 loudly: it still writes a `REWRITE-DRAFT.md`, but the "Current state" section contains
 `No such file or directory` for `check-frontmatter.sh` and `check-structure.sh` instead
 of an audit.
