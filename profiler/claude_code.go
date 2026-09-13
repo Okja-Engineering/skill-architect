@@ -7,6 +7,14 @@ import (
 	"time"
 )
 
+// OTel signal names emitted by Claude Code. Probe's detection and Capture's
+// extraction must agree on these, so they are named once.
+const (
+	otelTokenUsageMetric = "claude_code.token.usage"
+	otelToolDecisionLog  = "claude_code.tool_decision"
+	otelAPIRequestLog    = "claude_code.api_request"
+)
+
 // ClaudeCodeAdapter captures runtime signals from Claude Code via OTel export.
 //
 // Claude Code emits OTel when CLAUDE_CODE_ENABLE_TELEMETRY=1 and OTEL_*_EXPORTER
@@ -83,8 +91,10 @@ func (a ClaudeCodeAdapter) Capture(sessionID string, opts CaptureOpts) (Profile,
 	profile.SkillActivation = UnknownActivationResult("Claude Code has no skill-level activation events")
 	profile.Attribution = UnknownAttributionResult("Claude Code does not attribute outputs to skills")
 
-	// If no OTel source is available, telemetry metrics are unknown.
-	if cap.Capabilities[MetricTokens] == SourceNone {
+	// Only when probing found no telemetry source at all is every signal
+	// unknown. A partial export still yields the signals it carries; each
+	// extractor below settles its own signal's state.
+	if !cap.AnySource() {
 		noOtelReason := "OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile."
 		profile.Tokens = UnknownTokenResult(noOtelReason)
 		profile.ToolCalls = UnknownToolCallResult(noOtelReason)
@@ -160,7 +170,7 @@ func extractTokenCounts(data claudeCodeOtelExport) TokenResult {
 	var tc TokenCounts
 	found := false
 	for _, m := range data.Metrics {
-		if m.Name == "claude_code.token.usage" {
+		if m.Name == otelTokenUsageMetric {
 			found = true
 			tokenType, _ := m.Attributes["token_type"].(string)
 			val := toInt(m.Value)
@@ -187,7 +197,7 @@ func extractTokenCounts(data claudeCodeOtelExport) TokenResult {
 func extractToolCalls(data claudeCodeOtelExport) ToolCallResult {
 	var calls []ToolCallEntry
 	for _, log := range data.Logs {
-		if log.EventName == "claude_code.tool_decision" {
+		if log.EventName == otelToolDecisionLog {
 			entry := ToolCallEntry{
 				Name:      getString(log.Attributes, "tool_name"),
 				Timestamp: log.Timestamp,
@@ -205,7 +215,7 @@ func extractToolCalls(data claudeCodeOtelExport) ToolCallResult {
 func extractTiming(data claudeCodeOtelExport) TimingResult {
 	var start, end string
 	for _, log := range data.Logs {
-		if log.EventName == "claude_code.api_request" {
+		if log.EventName == otelAPIRequestLog {
 			if start == "" {
 				start = log.Timestamp
 			}
@@ -232,16 +242,16 @@ func hasOtelSignals(file string) (tokens, toolCalls, timing bool) {
 		return false, false, false
 	}
 	for _, m := range otelData.Metrics {
-		if m.Name == "claude_code.token.usage" {
+		if m.Name == otelTokenUsageMetric {
 			tokens = true
 			break
 		}
 	}
 	for _, log := range otelData.Logs {
 		switch log.EventName {
-		case "claude_code.tool_decision":
+		case otelToolDecisionLog:
 			toolCalls = true
-		case "claude_code.api_request":
+		case otelAPIRequestLog:
 			timing = true
 		}
 	}

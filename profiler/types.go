@@ -54,6 +54,20 @@ type CapabilityReport struct {
 	Capabilities map[MetricName]MetricSource `json:"capabilities"`
 }
 
+// AnySource reports whether probing found any telemetry source at all.
+// Capture uses this to decide whether there is an export worth reading. It must
+// not use a single metric's capability as a proxy for the whole export: a
+// partial export makes some signals available and others not, and each signal's
+// own state is settled when it is extracted.
+func (c CapabilityReport) AnySource() bool {
+	for _, src := range c.Capabilities {
+		if src != SourceNone {
+			return true
+		}
+	}
+	return false
+}
+
 // CaptureOpts carries optional configuration for a capture session.
 type CaptureOpts struct {
 	OtelEndpoint string `json:"otel_endpoint,omitempty"` // OTLP receiver URL
