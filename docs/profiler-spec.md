@@ -89,7 +89,6 @@ type ProfilerAdapter interface {
 }
 
 type CaptureOpts struct {
-    OtelEndpoint  string `json:"otel_endpoint,omitempty"`   // OTLP receiver URL
     ExportFile    string `json:"export_file,omitempty"`      // ATIF export or session transcript path
     APIKey        string `json:"api_key,omitempty"`          // server API auth (Devin)
     SnapshotHash  string `json:"snapshot_hash"`              // git SHA or content hash of the skill being profiled

@@ -70,11 +70,10 @@ func (c CapabilityReport) AnySource() bool {
 
 // CaptureOpts carries optional configuration for a capture session.
 type CaptureOpts struct {
-	OtelEndpoint string `json:"otel_endpoint,omitempty"` // OTLP receiver URL
-	ExportFile   string `json:"export_file,omitempty"`   // ATIF export or session transcript path
-	APIKey       string `json:"api_key,omitempty"`       // server API auth (Devin)
-	SnapshotHash string `json:"snapshot_hash"`           // git SHA or content hash of the skill being profiled
-	SkillDir     string `json:"skill_dir"`               // path to the skill being profiled
+	ExportFile   string `json:"export_file,omitempty"` // ATIF export or session transcript path
+	APIKey       string `json:"api_key,omitempty"`     // server API auth (Devin)
+	SnapshotHash string `json:"snapshot_hash"`         // git SHA or content hash of the skill being profiled
+	SkillDir     string `json:"skill_dir"`             // path to the skill being profiled
 }
 
 // ProfilerAdapter is implemented by each harness adapter.
