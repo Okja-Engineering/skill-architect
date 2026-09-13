@@ -25,7 +25,7 @@ Skill Architect catches these problems with deterministic checks first, then rep
 
 ## The profiler (preview)
 
-v0.4.0 adds a harness-agnostic profiler that captures runtime signals (tokens, tool calls, timing) from agent sessions and produces a serialized profile pinned to a skill snapshot hash. It degrades gracefully — unavailable metrics are `unknown` with a reason, never invented.
+v0.4.0 adds a harness-agnostic profiler that captures runtime signals (tokens, tool calls, timing) from agent sessions and writes them to a profile JSON labelled with the snapshot id you pass in. It degrades gracefully — unavailable metrics are `unknown` with a reason, never invented.
 
 The profiler uses an adapter-per-harness architecture:
 

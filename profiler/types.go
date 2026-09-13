@@ -163,7 +163,9 @@ type AttributionResult struct {
 	Value *AttributionData `json:"value,omitempty"`
 }
 
-// Profile is the serialized, snapshot-pinned artifact that F04 reads.
+// Profile is the serialized artifact that F04 reads. SnapshotHash is the
+// caller-supplied id labelling the skill version; it is recorded verbatim and
+// is not derived from, or validated against, SkillDir.
 type Profile struct {
 	Schema       string           `json:"schema"` // "skill-architect/profile/v1"
 	ProfiledAt   string           `json:"profiled_at"`

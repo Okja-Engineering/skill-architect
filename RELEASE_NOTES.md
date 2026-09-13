@@ -6,7 +6,7 @@
 
 - New `profiler/` Go module with adapter interface (`ProfilerAdapter`), `MetricResult` (present/unknown/error), `CapabilityReport`, and serialized `Profile` format.
 - Claude Code adapter reads OTel export data for token counts (including reasoning tokens), tool calls, and timing. Skill activation and attribution are honestly `unknown` — Claude Code has no skill-level events.
-- `profiler` CLI: `probe` reports what the adapter can capture; `capture` produces a snapshot-pinned profile JSON.
+- `profiler` CLI: `probe` reports what the adapter can capture; `capture` produces a profile JSON carrying the `--snapshot` id the caller supplied. The id labels the profile; nothing hashes or validates `--skill-dir` against it.
 - Graceful degradation: unavailable metrics are `unknown` with a reason, never silently invented.
 - 14 profiler tests pass. All 131 existing tests still pass.
 - Design survey of 4 harnesses (Cursor, Claude Code, Codex, Devin) informed the adapter-per-harness architecture.

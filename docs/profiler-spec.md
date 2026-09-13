@@ -4,7 +4,7 @@
 
 ## Purpose
 
-A harness-agnostic profiler that captures runtime signals from any target harness (Cursor, Claude Code, Codex, Devin), degrades gracefully to `unknown` for unavailable metrics, and produces a serialized profile pinned to a snapshot hash that F04 (paired comparisons) can read and recompute.
+A harness-agnostic profiler that captures runtime signals from any target harness (Cursor, Claude Code, Codex, Devin), degrades gracefully to `unknown` for unavailable metrics, and produces a serialized profile labelled with a caller-supplied snapshot id that F04 (paired comparisons) can read and group by.
 
 ## Core types
 
@@ -136,7 +136,7 @@ type CaptureOpts struct {
 
 ## Serialized profile format
 
-The profile is a JSON document pinned to a snapshot hash. It is the integration point for F04.
+The profile is a JSON document carrying the caller-supplied snapshot id. It is the integration point for F04.
 
 ```go
 type Profile struct {
@@ -144,7 +144,7 @@ type Profile struct {
     ProfiledAt   string           `json:"profiled_at"`      // ISO 8601 UTC
     Harness      string           `json:"harness"`
     SessionID    string           `json:"session_id"`
-    SnapshotHash string           `json:"snapshot_hash"`    // pins to skill version
+    SnapshotHash string           `json:"snapshot_hash"`    // caller-supplied id for the skill version
     SkillDir     string           `json:"skill_dir"`
     Capability   CapabilityReport `json:"capability"`
 
@@ -196,7 +196,7 @@ type Attribution struct {
 **Serialization rules:**
 - Profile is JSON. Pretty-printed for human readability, but parsing is canonical.
 - `schema: "skill-architect/profile/v1"` is required. Future versions bump the suffix.
-- `snapshot_hash` pins the profile to a specific skill version. F04 revalidates against this before comparing.
+- `snapshot_hash` is whatever the caller passed to `--snapshot`, copied into the profile verbatim. The profiler neither hashes nor validates `--skill-dir` against it; the caller owns that correspondence. F04 is expected to compare only profiles carrying the same `snapshot_hash`.
 - A profile with all metrics `unknown` is valid — it honestly reports that no telemetry was available.
 - A profile must round-trip: `Marshal → Unmarshal → Marshal` produces identical JSON (modulo key ordering).
 
