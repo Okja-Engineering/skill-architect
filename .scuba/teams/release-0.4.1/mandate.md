@@ -43,6 +43,12 @@ Ship v0.4.1 of skill-architect to Okja-Engineering/skill-architect as one PR fro
 17. `CHANGELOG.md`: new `## 0.4.1 — <date>` section listing items 1–15; `## Unreleased` stays empty above it. `RELEASE_NOTES.md`: `## v0.4.1` section.
 18. Undocumented-but-delivered, document in README profiler section: `profiler version` subcommand, `capture --export-file` flag, per-signal probe detection.
 
+
+### Item 19 — added by user decision 2026-09-13: parse real OTLP/JSON
+The Claude Code adapter must read OTLP/JSON as Claude Code actually emits it (`resourceMetrics[].scopeMetrics[].metrics[]` and `resourceLogs[].scopeLogs[].logRecords[]`, real attribute keys such as `type` ∈ input/output/cacheRead/cacheCreation, `decision` on `tool_decision`), not the bespoke `{"metrics":[...],"logs":[...]}` envelope. Ground truth: `otlp-research.md` in this directory (researcher output). Build: a senior-implementer, after round-1 repair lands, against a plan derived from that document. Definition of done: a realistic OTLP/JSON export from the documented route yields tokens, tool_calls, timing `present` with real values; the bespoke envelope is dropped unless the research gives a reason to keep it; the "reasoning tokens" claim is removed unless the type exists; README/spec/RELEASE_NOTES describe the documented capture route and the real format; contract test covers real-shape fixtures; probe and capture share one predicate per signal. Sequencing: do not start until round-1 repair is pushed (same file, one writer).
+
+**Item 19 decisions (chief of staff, 2026-09-13 16:12, defaults the user may override):** plan is `otlp-plan.md`. W4 resolved by item 19: `ToolCallEntry.Success` means "the tool ran and succeeded" (from `tool_result`); rejected calls are listed from `tool_decision` with success=false; spec, RELEASE_NOTES 0.4.1 and the AdapterVersion bump (W9) carry the semantic change; no JSON key changes, profile/v1 stays. skill_activation and attribution stay `unknown` with accurate reasons. Bundled receiver subcommand deferred to 0.5.0; README documents the collector file-exporter route. No live end-to-end run is possible without an authenticated session; the implementer states that in status.md rather than claiming one.
+
 ## Verification (all must pass in the worktree before the PR opens)
 ```
 cd profiler && go build ./... && go vet ./... && go test ./...
