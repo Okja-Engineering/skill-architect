@@ -14,9 +14,11 @@ const (
 	MetricError   MetricState = "error"   // source existed but failed
 )
 
-// MetricResult wraps every metric so unavailable data is explicit, not silent.
-// Generics are avoided for JSON marshal/unmarshal simplicity; callers use typed
-// wrappers (TokenResult, ToolCallResult, etc.) that embed RawMetricResult.
+// RawMetricResult is the state every metric result carries, so unavailable data
+// is explicit rather than silent. There is no generic MetricResult[T]: type
+// parameters are avoided for JSON marshal/unmarshal simplicity, and each metric
+// category has its own wrapper (TokenResult, ToolCallResult, and the rest)
+// embedding this.
 type RawMetricResult struct {
 	State  MetricState `json:"state"`
 	Reason string      `json:"reason,omitempty"` // present when State != "present"
@@ -52,20 +54,6 @@ type CapabilityReport struct {
 	AdapterVer   string                      `json:"adapter_version"`
 	ProbedAt     string                      `json:"probed_at"` // ISO 8601 UTC
 	Capabilities map[MetricName]MetricSource `json:"capabilities"`
-}
-
-// AnySource reports whether probing found any telemetry source at all.
-// Capture uses this to decide whether there is an export worth reading. It must
-// not use a single metric's capability as a proxy for the whole export: a
-// partial export makes some signals available and others not, and each signal's
-// own state is settled when it is extracted.
-func (c CapabilityReport) AnySource() bool {
-	for _, src := range c.Capabilities {
-		if src != SourceNone {
-			return true
-		}
-	}
-	return false
 }
 
 // CaptureOpts carries optional configuration for a capture session.
@@ -130,34 +118,34 @@ type Attribution struct {
 	SkillName string `json:"skill_name"`
 }
 
-// TokenResult is a typed MetricResult for token counts.
+// TokenResult is the metric result for token counts.
 // Value is a pointer so omitempty works — nil means no value (unknown/error states).
 type TokenResult struct {
 	RawMetricResult
 	Value *TokenCounts `json:"value,omitempty"`
 }
 
-// ToolCallResult is a typed MetricResult for tool call entries.
+// ToolCallResult is the metric result for tool call entries.
 // Value is a pointer so omitempty works — nil means no value (unknown/error states).
 type ToolCallResult struct {
 	RawMetricResult
 	Value []ToolCallEntry `json:"value,omitempty"`
 }
 
-// ActivationResult is a typed MetricResult for skill activation events.
+// ActivationResult is the metric result for skill activation events.
 type ActivationResult struct {
 	RawMetricResult
 	Value []ActivationEntry `json:"value,omitempty"`
 }
 
-// TimingResult is a typed MetricResult for timing data.
+// TimingResult is the metric result for timing data.
 // Value is a pointer so omitempty works — nil means no value (unknown/error states).
 type TimingResult struct {
 	RawMetricResult
 	Value *TimingData `json:"value,omitempty"`
 }
 
-// AttributionResult is a typed MetricResult for attribution data.
+// AttributionResult is the metric result for attribution data.
 type AttributionResult struct {
 	RawMetricResult
 	Value *AttributionData `json:"value,omitempty"`

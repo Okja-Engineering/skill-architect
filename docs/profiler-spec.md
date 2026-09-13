@@ -1,6 +1,6 @@
 # Profiler adapter interface spec (F03)
 
-**Status:** spec · **Date:** 2026-09-10 · **Architecture:** Option C — adapter-per-harness with capability negotiation
+**Status:** spec · **Date:** 2026-09-13 · **Architecture:** Option C — adapter-per-harness with capability negotiation
 
 ## Purpose
 
@@ -90,11 +90,6 @@ type CapabilityReport struct {
     Capabilities map[MetricName]MetricSource `json:"capabilities"`
 }
 
-// AnySource reports whether probing found any telemetry source at all. Capture
-// uses it to decide whether there is an export worth reading; no adapter may use
-// a single metric's capability as a proxy for the whole export.
-func (c CapabilityReport) AnySource() bool
-
 type MetricSource string
 
 const (
@@ -107,7 +102,7 @@ const (
 )
 ```
 
-**Capability vs result:** `CapabilityReport` says what the adapter *can* produce. A metric result says what it *did* produce for a specific session. An adapter may declare `tokens: "otel"` in its capability report but return `MetricError` for a specific session if OTel was misconfigured.
+**Capability vs result:** `CapabilityReport` says what the adapter *can* produce. A metric result says what it *did* produce for a specific session. An adapter may declare `tokens: "otel"` in its capability report but return `MetricError` for a specific session if the export it names turns out to be unreadable.
 
 ### ProfilerAdapter interface
 
@@ -122,7 +117,8 @@ type ProfilerAdapter interface {
 
     // Capture reads telemetry for a specific session and produces a Profile.
     // sessionID is harness-specific (Claude Code session ID, Cursor conversation ID, etc.).
-    // opts carries optional configuration (OTel endpoint, export file path, API credentials).
+    // opts carries optional configuration (session export path, API credentials,
+    // and the snapshot id and skill dir recorded in the profile).
     Capture(sessionID string, opts CaptureOpts) (Profile, error)
 }
 
@@ -207,33 +203,36 @@ type Attribution struct {
 **Telemetry surface:** OTel export via `CLAUDE_CODE_ENABLE_TELEMETRY=1` + `OTEL_*` env vars.
 
 **Probe logic:**
-1. If `OtelExportFile` is set and the file exists, parse it. For each metric category, set `otel` only if the file contains the corresponding signal:
-   - `claude_code.token.usage` metric → `tokens: otel`
-   - `claude_code.tool_decision` log events → `tool_calls: otel`
-   - `claude_code.api_request` log events → `timing: otel`
-   If the file is empty, malformed, or missing the relevant signal, that capability stays `none`.
-2. Skill activation and attribution are always `none` for Claude Code: its OTel surface has no activation event and no output-to-skill mapping. The `skill.name` attribute on token and cost metrics is not read yet.
+1. Probe resolves the export file exactly as capture does — one read, one parse, one extractor per signal — and reports a capability as `otel` only when that extractor produced a value:
+   - a `claude_code.token.usage` metric carrying a recognised `token_type` and a numeric value → `tokens: otel`
+   - `claude_code.tool_decision` log events carrying a `tool_name` → `tool_calls: otel`
+   - `claude_code.api_request` log events carrying a parseable RFC 3339 timestamp → `timing: otel`
+   If the file is absent, unreadable, malformed, missing the signal, or carrying the signal with nothing readable inside it, that capability stays `none`. Availability is a fact about a value in hand, not about a name matched in a file — a probe that reports structure is how it comes to advertise data the capture cannot deliver.
+2. Skill activation and attribution are always `none` for Claude Code: it emits no skill activation event, and this adapter reads none of the skill-level attributes it does emit.
 
 **Capture logic:**
-1. Probe first. If `AnySource()` is false there is nothing to read: every metric is `unknown` with the fallback reason below, and capture stops. Otherwise read the export file.
-2. Extract `claude_code.token.usage` metrics → `TokenCounts`.
-3. Extract `claude_code.tool_decision` log events → `ToolCallEntry` list.
-4. Extract timing from `claude_code.api_request` log events → `TimingData`.
-5. Steps 2–4 settle their own signal independently: `present` with `Source: "otel"` when the export carries that signal, `unknown` naming the missing signal when it does not. A partial export never discards the signals it does carry.
+1. Resolve the export file once. That resolution owns failure classification for all three OTel signals: no file configured → each is `unknown` with the fallback reason below; file unreadable or unparseable → each is `error` naming the failure; otherwise the parsed export goes to the extractors.
+2. Extract `claude_code.token.usage` metrics → `TokenCounts`, summing only those carrying a recognised `token_type` and a numeric value.
+3. Extract `claude_code.tool_decision` log events → `ToolCallEntry` list, one per event carrying a `tool_name`. `ToolCallEntry.Success` records the permission decision (`decision == "approved"`), not the execution outcome — the adapter reads no completion signal. Separating the two is a schema change tracked for 0.5.0.
+4. Extract timing from `claude_code.api_request` log events → `TimingData` spanning the earliest to the latest parseable timestamp, so `end_time >= start_time` and `total_ms >= 0` whatever order the exporter wrote the events in.
+5. Steps 2–4 settle their own signal independently: `present` with `Source: "otel"` when the extractor read at least one usable value, `unknown` naming what was missing or unreadable when it did not. A partial export never discards the signals it does carry.
 6. `SkillActivation` → `unknown` with reason "Claude Code has no skill-level activation events".
-7. `Attribution` → `unknown` with reason "Claude Code does not attribute outputs to skills".
-8. Serialize to `Profile` JSON.
+7. `Attribution` → `unknown` with reason "this adapter does not read Claude Code's skill attribution attributes".
+8. The profile's `capability` block is derived from the same resolution, so probe and capture cannot disagree about what the export yielded.
+9. Serialize to `Profile` JSON.
 
-**Fallback:** If no export file is configured, or the file is missing, unreadable, malformed, or carries none of the three signals, all metrics are `unknown` with reason "OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile." The adapter reads only the file it is given — it does not inspect `CLAUDE_CODE_ENABLE_TELEMETRY` or the `OTEL_*` env vars itself.
+**Fallback:** With no export file configured, `tokens`, `tool_calls`, and `timing` are `unknown` with reason "OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile." A file that is configured but missing, unreadable, or malformed is a different case and must not borrow that reason: those three are `error`, naming the read or parse failure, because the caller did supply a file and "not configured" would send them to fix the one thing that is not wrong. A file that parses but carries nothing readable for a signal leaves that signal `unknown`, naming what was missing. `skill_activation` and `attribution` are `unknown` with their own reasons (steps 6 and 7 above) in every one of these cases — they are a property of the harness and of this adapter, not of the export. The adapter reads only the file it is given: it does not inspect `CLAUDE_CODE_ENABLE_TELEMETRY` or the `OTEL_*` env vars itself.
 
 ## Acceptance criteria (Slice 1)
 
 1. Metric result serialization: a `present` result includes value and source; an `unknown` result includes reason and no value key; an `error` result includes reason and no value key.
-2. `CapabilityReport` for Claude Code is per signal: `tokens`, `tool_calls`, and `timing` are each `otel` only when the export file actually contains that signal, and `none` otherwise; `skill_activation` and `attribution` are always `none`. An export carrying all three therefore reports `tokens: otel`, `tool_calls: otel`, `timing: otel`.
-3. `CapabilityReport` for Claude Code without OTel: all metrics `none`. Same for an export file that is empty, malformed, or carries none of the three signals.
+2. `CapabilityReport` for Claude Code is per signal: `tokens`, `tool_calls`, and `timing` are each `otel` only when the export file yields a readable value for that signal, and `none` otherwise; `skill_activation` and `attribution` are always `none`. An export yielding all three therefore reports `tokens: otel`, `tool_calls: otel`, `timing: otel`.
+3. `CapabilityReport` for Claude Code without OTel: all metrics `none`. Same for an export file that is empty, malformed, carries none of the three signals, or carries one with nothing readable inside it — a `token.usage` metric with an unrecognised `token_type` or a non-numeric value, a `tool_decision` with no `tool_name`, an `api_request` with no parseable timestamp.
 4. A Claude Code session whose export carries all three signals produces a profile where tokens, tool_calls, and timing are `present`; skill_activation and attribution are `unknown` with reason.
-5. A session with no OTel produces a profile where all metrics are `unknown` with the reason quoted under **Fallback** above, which begins "OTel export not configured."
+5. A session with no OTel export file produces a profile where `tokens`, `tool_calls`, and `timing` are `unknown` with the reason quoted under **Fallback** above, which begins "OTel export not configured"; `skill_activation` and `attribution` are `unknown` with their own reasons, as they are in every other case.
 6. Profile JSON round-trips: `Marshal → Unmarshal → Marshal` is identical.
 7. Profile `schema` field is `"skill-architect/profile/v1"`.
 8. Profile `snapshot_hash` matches the input.
-9. Probe and capture agree: every signal the capability report marks available is `present` in the profile with that source, and every signal it marks `none` is `unknown` with a reason. This holds for partial exports — an export with tool calls and timing but no token metric captures both, with tokens `unknown`.
+9. Probe and capture agree: every signal the capability report marks available is `present` in the profile with that source and carries a value, and every signal it marks `none` is not `present`, carries a reason, and carries no value. This holds for partial exports — an export with tool calls and timing but no token metric captures both, with tokens `unknown`.
+10. A `present` signal means a value was read. An export carrying a signal's structure with nothing readable inside it yields `unknown` with a reason, never `present` with a zero value.
+11. An export file that is supplied but cannot be read or parsed yields `error` for `tokens`, `tool_calls`, and `timing`, each naming the read or parse failure. `MetricError` is reachable and covered by tests.
