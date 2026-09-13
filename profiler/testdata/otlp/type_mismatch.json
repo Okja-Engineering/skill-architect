@@ -1,0 +1,11 @@
+{
+  "resourceMetrics": {
+    "scopeMetrics": [
+      {
+        "metrics": [
+          { "name": "claude_code.token.usage" }
+        ]
+      }
+    ]
+  }
+}

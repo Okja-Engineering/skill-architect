@@ -1,0 +1,48 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "claude-code" } }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": { "name": "com.anthropic.claude_code.events", "version": "2.1.221" },
+          "logRecords": [
+            {
+              "timeUnixNano": "1789332595460000000",
+              "body": { "stringValue": "claude_code.tool_result" },
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "tool_result" } },
+                { "key": "tool_name", "value": { "stringValue": "Read" } },
+                { "key": "tool_use_id", "value": { "stringValue": "toolu_01AAAA" } },
+                { "key": "success", "value": { "stringValue": "true" } }
+              ]
+            },
+            {
+              "timeUnixNano": "1789332595560000000",
+              "body": "claude_code.tool_result",
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "tool_result" } },
+                { "key": "tool_name", "value": { "stringValue": "Bash" } },
+                { "key": "tool_use_id", "value": { "stringValue": "toolu_01BBBB" } },
+                { "key": "success", "value": { "stringValue": "true" } }
+              ]
+            },
+            {
+              "timeUnixNano": "1789332595660000000",
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "tool_result" } },
+                { "key": "tool_name", "value": { "stringValue": "Write" } },
+                { "key": "tool_use_id", "value": { "stringValue": "toolu_01CCCC" } },
+                { "key": "success", "value": { "stringValue": "false" } },
+                { "key": "error_type", "value": { "stringValue": "Error:ENOENT" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

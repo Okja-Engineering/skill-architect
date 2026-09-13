@@ -1,0 +1,4 @@
+{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"timeUnixNano":"1789332595100000000","body":{"stringValue":"claude_code.api_request"},"attributes":[{"key":"event.name","value":{"stringValue":"api_request"}}]}]}]}]}
+{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"timeUnixNano":"1789332595700000000","body":{"stringValue":"claude_code.api_request"},"attributes":[{"key":"event.name","value":{"stringValue":"api_request"}}]}]}]}]}
+{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"timeUnixNano":"1789332596272000000","body":{"stringValue":"claude_code.api_request"},"attributes":[{"key":"event.name","value":{"stringValue":"api_request"}}]}]}]}]}
+{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"timeUnixNano":"178933259

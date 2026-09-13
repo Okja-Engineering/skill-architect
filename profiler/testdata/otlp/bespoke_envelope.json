@@ -1,0 +1,13 @@
+{
+  "metrics": [
+    { "name": "claude_code.token.usage", "attributes": { "token_type": "input" }, "value": 1500 },
+    { "name": "claude_code.token.usage", "attributes": { "token_type": "output" }, "value": 800 },
+    { "name": "claude_code.token.usage", "attributes": { "token_type": "cache_read" }, "value": 200 },
+    { "name": "claude_code.token.usage", "attributes": { "token_type": "reasoning" }, "value": 350 }
+  ],
+  "logs": [
+    { "event_name": "claude_code.api_request", "timestamp": "2026-09-10T22:00:00Z" },
+    { "event_name": "claude_code.tool_decision", "attributes": { "tool_name": "Bash", "decision": "approved" }, "timestamp": "2026-09-10T22:00:05Z" },
+    { "event_name": "claude_code.api_request", "timestamp": "2026-09-10T22:00:15Z" }
+  ]
+}

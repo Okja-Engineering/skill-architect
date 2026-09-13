@@ -1,0 +1,33 @@
+{
+  "resourceLogs": [
+    {
+      "scopeLogs": [
+        {
+          "logRecords": [
+            {
+              "timeUnixNano": "1789332595460000000",
+              "body": { "stringValue": "claude_code.tool_result" },
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "tool_result" } },
+                { "key": "tool_name", "value": { "stringValue": "Write" } },
+                { "key": "tool_use_id", "value": { "stringValue": "toolu_01AAAA" } },
+                { "key": "success", "value": { "stringValue": "false" } },
+                { "key": "error_type", "value": { "stringValue": "Error:ENOENT" } }
+              ]
+            },
+            {
+              "timeUnixNano": "1789332595660000000",
+              "body": { "stringValue": "claude_code.tool_result" },
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "tool_result" } },
+                { "key": "tool_name", "value": { "stringValue": "Edit" } },
+                { "key": "tool_use_id", "value": { "stringValue": "toolu_01BBBB" } },
+                { "key": "duration_ms", "value": { "intValue": 160 } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

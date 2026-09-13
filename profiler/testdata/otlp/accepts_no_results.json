@@ -1,0 +1,34 @@
+{
+  "resourceLogs": [
+    {
+      "scopeLogs": [
+        {
+          "logRecords": [
+            {
+              "timeUnixNano": "1789332595300000000",
+              "body": { "stringValue": "claude_code.tool_decision" },
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "tool_decision" } },
+                { "key": "tool_name", "value": { "stringValue": "Read" } },
+                { "key": "tool_use_id", "value": { "stringValue": "toolu_01AAAA" } },
+                { "key": "decision", "value": { "stringValue": "accept" } },
+                { "key": "source", "value": { "stringValue": "config" } }
+              ]
+            },
+            {
+              "timeUnixNano": "1789332595400000000",
+              "body": { "stringValue": "claude_code.tool_decision" },
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "tool_decision" } },
+                { "key": "tool_name", "value": { "stringValue": "Bash" } },
+                { "key": "tool_use_id", "value": { "stringValue": "toolu_01BBBB" } },
+                { "key": "decision", "value": { "stringValue": "accept" } },
+                { "key": "source", "value": { "stringValue": "user_temporary" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
