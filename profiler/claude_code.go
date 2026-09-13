@@ -234,7 +234,8 @@ func eventName(r otlpLogRecord) string {
 
 func extractTokenCounts(export otlpExport) TokenResult {
 	acc := tokenAccumulator{}
-	var seen, points, read, unreadableTemporality int
+	var seen, points, read int
+	var c tokenPointCounters
 
 	for m := range export.metrics(otelTokenUsageMetric) {
 		seen++
@@ -253,7 +254,7 @@ func extractTokenCounts(export otlpExport) TokenResult {
 			// costs a number nobody could have trusted and states so in the
 			// reason, rather than silently over- or under-counting the session.
 			if !temporalityOK || (temporality != temporalityDelta && temporality != temporalityCumulative) {
-				unreadableTemporality++
+				c.unreadableTemporality++
 				continue
 			}
 
@@ -261,10 +262,16 @@ func extractTokenCounts(export otlpExport) TokenResult {
 			// only on this one; another metric's type contributes nothing.
 			tokenType, ok := dp.Attributes.String("type")
 			if !ok || !isTokenType(tokenType) {
+				c.unrecognisedType++
 				continue
 			}
-			value, ok := dp.value()
-			if !ok {
+			value, kind := dp.count()
+			switch kind {
+			case valueUnreadable:
+				c.unreadableValue++
+				continue
+			case valueNotACount:
+				c.notACount++
 				continue
 			}
 			timeNanos, hasTime := jsonInt64(dp.TimeUnixNano)
@@ -279,30 +286,75 @@ func extractTokenCounts(export otlpExport) TokenResult {
 	case points == 0:
 		return UnknownTokenResult("no readable " + otelTokenUsageMetric + " metric in OTel export: it carried no sum data points")
 	case read == 0:
-		var clauses []string
-		if points > unreadableTemporality {
-			clauses = append(clauses, "no data point carried both a recognised type attribute ("+
-				tokenTypeInput+"/"+tokenTypeOutput+"/"+tokenTypeCacheRead+"/"+tokenTypeCacheCreation+
-				") and a numeric asDouble or asInt value")
-		}
-		if unreadableTemporality > 0 {
-			clauses = append(clauses, fmt.Sprintf("%d data points declared an aggregationTemporality that is neither %d (delta) nor %d (cumulative)",
-				unreadableTemporality, temporalityDelta, temporalityCumulative))
-		}
-		return UnknownTokenResult("no readable " + otelTokenUsageMetric + " metric in OTel export: " + strings.Join(clauses, "; "))
+		return UnknownTokenResult("no readable " + otelTokenUsageMetric + " metric in OTel export: " + c.reason())
 	}
+	return PresentTokenResult(tokenCounts(acc.reduce()), string(SourceOtel))
+}
 
-	// camelCase attribute values in, snake_case profile keys out. Reasoning has
-	// no source in Claude Code's surface (see TokenCounts) and stays
-	// unpopulated, so its key is absent from the profile rather than reported
-	// as a measured zero.
-	totals := acc.reduce()
-	return PresentTokenResult(TokenCounts{
-		Input:         clampToInt(totals[tokenTypeInput]),
-		Output:        clampToInt(totals[tokenTypeOutput]),
-		CacheRead:     clampToInt(totals[tokenTypeCacheRead]),
-		CacheCreation: clampToInt(totals[tokenTypeCacheCreation]),
-	}, string(SourceOtel))
+// tokenPointCounters is what the walk observed over claude_code.token.usage
+// data points, and the only thing the reason is built from — so a reason cannot
+// state a number the walk did not count. At most one defect is counted per data
+// point, in the order the walk tests them, so no point is counted twice.
+//
+// The reason is composed from the counters rather than fused into one sentence
+// naming several defects at once, for the same reason the tool-call reason is:
+// a sentence that names four independent defects is true of none of the inputs
+// that carry only one of them.
+type tokenPointCounters struct {
+	unreadableTemporality int
+	unrecognisedType      int
+	unreadableValue       int
+	notACount             int
+}
+
+func (c tokenPointCounters) reason() string {
+	clauses := make([]string, 0, 4)
+	add := func(n int, rest string) {
+		if n > 0 {
+			clauses = append(clauses, quantity(n, "data point")+" "+rest)
+		}
+	}
+	add(c.unreadableTemporality, fmt.Sprintf("declared an aggregationTemporality that is neither %d (delta) nor %d (cumulative)",
+		temporalityDelta, temporalityCumulative))
+	add(c.unrecognisedType, "carried no recognised type attribute ("+
+		tokenTypeInput+"/"+tokenTypeOutput+"/"+tokenTypeCacheRead+"/"+tokenTypeCacheCreation+")")
+	add(c.unreadableValue, "carried no asDouble or asInt value that reads as a number")
+	add(c.notACount, "carried a value that is not a token count: a count is a whole number from 0 to 9223372036854775807")
+	return strings.Join(clauses, "; ")
+}
+
+// quantity renders a count with its noun, agreeing in number: "1 data point",
+// "3 data points". Every clause in this file is built through it, so no reason
+// can tell the reader about "1 data points".
+func quantity(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+// tokenCounts carries the totals that were read into the profile's counts:
+// camelCase attribute values in, snake_case keys out. A token type no data
+// point carried is left unset, so its key is absent from the profile rather
+// than reported as a measured zero — and a type that was read as zero keeps its
+// key, because a read zero is a measurement. Reasoning has no source in Claude
+// Code's surface at all (see TokenCounts) and is never set.
+func tokenCounts(totals map[string]int64) TokenCounts {
+	var counts TokenCounts
+	for _, m := range []struct {
+		wireType string
+		count    **int
+	}{
+		{tokenTypeInput, &counts.Input},
+		{tokenTypeOutput, &counts.Output},
+		{tokenTypeCacheRead, &counts.CacheRead},
+		{tokenTypeCacheCreation, &counts.CacheCreation},
+	} {
+		if total, ok := totals[m.wireType]; ok {
+			*m.count = Count(clampToInt(total))
+		}
+	}
+	return counts
 }
 
 func isTokenType(s string) bool {

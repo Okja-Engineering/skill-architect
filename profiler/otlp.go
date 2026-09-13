@@ -91,11 +91,19 @@ type otlpAttr struct {
 // otlpAttrValue is the AnyValue an attribute carries. Pointers and raw bytes,
 // because "absent" and "the zero value" are different answers, and because a
 // semantically numeric attribute arrives as any of the three.
+//
+// The three composite kinds are decoded but never interpreted. They are here
+// because a series is defined by its whole attribute set: an attribute this
+// layer has no use for still tells two series apart, and a kind it does not
+// decode at all is a kind every value of which looks identical.
 type otlpAttrValue struct {
 	StringValue *string         `json:"stringValue"`
 	BoolValue   *bool           `json:"boolValue"`
 	IntValue    json.RawMessage `json:"intValue"`
 	DoubleValue json.RawMessage `json:"doubleValue"`
+	ArrayValue  json.RawMessage `json:"arrayValue"`
+	KvlistValue json.RawMessage `json:"kvlistValue"`
+	BytesValue  json.RawMessage `json:"bytesValue"`
 }
 
 // otlpExport is every batch in one capture file, in file order. A capture is a
@@ -325,13 +333,22 @@ func jsonInt64(raw json.RawMessage) (int64, bool) {
 
 // jsonFloat64 reads a float from a JSON number or a numeric string. Float
 // arithmetic touches asDouble and doubleValue and nothing else.
+//
+// Only a real number reads. JSON has no literal for NaN or infinity, but
+// strconv.ParseFloat accepts "NaN", "Inf" and "Infinity" from a quoted string,
+// and none of them is a number any arithmetic downstream survives — so none of
+// them is a value that was read. An overflowing literal is already refused:
+// ParseFloat reports a range error for it rather than returning silently.
 func jsonFloat64(raw json.RawMessage) (float64, bool) {
 	s, ok := numericText(raw)
 	if !ok {
 		return 0, false
 	}
 	f, err := strconv.ParseFloat(s, 64)
-	return f, err == nil
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, false
+	}
+	return f, true
 }
 
 // numericText is the digits a numeric leaf carries, quoted or not.
@@ -413,34 +430,102 @@ func (a otlpAttrs) Bool(key string) (bool, bool) {
 
 // seriesKey identifies the time series a data point belongs to. OTel defines a
 // series by its full attribute set, so two token counts that differ only by
-// model are two series and must not be merged into one. Sorted by key and
-// joined with the value as it arrived, so the key is stable however the
+// model are two series and must not be merged into one.
+//
+// Each key and each value goes in with its byte length in front of it, so the
+// concatenation is unambiguous and no attribute can spell a key that belongs to
+// a different attribute set. A separator character is a character a value can
+// carry — a tool name, a prompt, a model id — and therefore one an export can
+// forge a foreign series key with. Sorted, so the key is stable however the
 // exporter ordered the attributes.
 func (a otlpAttrs) seriesKey() string {
 	parts := make([]string, 0, len(a))
 	for _, at := range a {
-		parts = append(parts, at.Key+"\x01"+at.Value.text())
+		parts = append(parts, lengthPrefixed(at.Key)+lengthPrefixed(at.Value.identity()))
 	}
 	sort.Strings(parts)
-	return strings.Join(parts, "\x00")
+	return strings.Join(parts, "")
 }
 
-// text is the attribute's value as it arrived on the wire, for identity only.
-func (v otlpAttrValue) text() string {
+// lengthPrefixed writes s behind its byte length, which is what lets the parts
+// above be concatenated without escaping anything.
+func lengthPrefixed(s string) string {
+	return strconv.Itoa(len(s)) + ":" + s
+}
+
+// identity is the attribute's value as a canonical string, tagged with the kind
+// it arrived as. It exists for series identity and for nothing else.
+//
+// The tag is what makes it injective over AnyValue. Without one, the string
+// "5" and the integer 5 are the same value, an absent value and an empty
+// string are the same value, and every kind this layer does not read is the
+// same empty string — so two series differing only in an arrayValue merged into
+// one, and a session's tokens were reported as a fraction of themselves.
+//
+// The scalar kinds are canonicalised rather than kept verbatim, because the
+// OTLP JSON encoding lets one 64-bit integer arrive as 5 or as "5" and those
+// are one series, not two. A composite is compacted but not otherwise
+// normalised: the order of a composite's members is part of its value.
+func (v otlpAttrValue) identity() string {
 	switch {
 	case v.StringValue != nil:
-		return *v.StringValue
+		return "s" + *v.StringValue
 	case v.BoolValue != nil:
-		return strconv.FormatBool(*v.BoolValue)
+		return "b" + strconv.FormatBool(*v.BoolValue)
 	case len(v.IntValue) > 0:
-		return string(v.IntValue)
+		if n, ok := jsonInt64(v.IntValue); ok {
+			return "i" + strconv.FormatInt(n, 10)
+		}
+		return "i?" + compactJSON(v.IntValue)
 	case len(v.DoubleValue) > 0:
-		return string(v.DoubleValue)
+		if f, ok := jsonFloat64(v.DoubleValue); ok {
+			return "d" + strconv.FormatFloat(f, 'g', -1, 64)
+		}
+		return "d?" + compactJSON(v.DoubleValue)
+	case len(v.ArrayValue) > 0:
+		return "a" + compactJSON(v.ArrayValue)
+	case len(v.KvlistValue) > 0:
+		return "k" + compactJSON(v.KvlistValue)
+	case len(v.BytesValue) > 0:
+		return "y" + compactJSON(v.BytesValue)
 	}
-	return ""
+	// No kind was set at all, which is not the same answer as any of them.
+	return "-"
 }
 
-// value reads a data point's number.
+// compactJSON is raw with its insignificant whitespace removed, so a
+// pretty-printed capture and a compact one identify the same series.
+func compactJSON(raw json.RawMessage) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return string(raw)
+	}
+	return buf.String()
+}
+
+// valueKind says how a data point's value read: as a count, as a number that
+// cannot be one, or not as a number at all.
+//
+// The middle answer exists because it is a different defect with a different
+// cause, and the caller names it in its own clause. Folding it into "read" is
+// what let a number outside the range of a count reach a profile as one;
+// folding it into "unreadable" would send the reader looking for a missing
+// value they do have.
+type valueKind int
+
+const (
+	valueUnreadable valueKind = iota // no asDouble or asInt that reads as a number
+	valueNotACount                   // a number, but not one a count can be
+	valueRead
+)
+
+// maxCountPlusOne is 2^63, the first value an int64 cannot hold. float64 cannot
+// represent MaxInt64 itself — it rounds up to exactly this — so this is the
+// only bound a rounded float can be compared against exactly.
+const maxCountPlusOne = float64(1 << 63)
+
+// count reads a data point's value as a count of things, which is what a
+// monotonic sum carries and the only kind of sum this layer is asked for.
 //
 // asDouble first: Claude Code creates every counter through one helper that
 // never sets a value type, and the OTel JS SDK defaults to DOUBLE, so even an
@@ -449,11 +534,28 @@ func (v otlpAttrValue) text() string {
 //
 // Round, never truncate: a float64 standing in for an integral count can land a
 // hair low, and 1522.7 tokens were 1523 tokens.
-func (p otlpDataPoint) value() (int64, bool) {
+//
+// A count is never negative and never larger than an int64 holds. A value
+// outside that range decoded, but it is not a count, and Go leaves the
+// conversion of an out-of-range float to an integer type up to the
+// architecture: assimilating one made the same export read as MaxInt64 on arm64
+// and MinInt64 on amd64. It is refused here, where the caller can count it and
+// say so, rather than converted into whichever answer the machine gives.
+func (p otlpDataPoint) count() (int64, valueKind) {
 	if f, ok := jsonFloat64(p.AsDouble); ok {
-		return int64(math.Round(f)), true
+		r := math.Round(f)
+		if r < 0 || r >= maxCountPlusOne {
+			return 0, valueNotACount
+		}
+		return int64(r), valueRead
 	}
-	return jsonInt64(p.AsInt)
+	if n, ok := jsonInt64(p.AsInt); ok {
+		if n < 0 {
+			return 0, valueNotACount
+		}
+		return n, valueRead
+	}
+	return 0, valueUnreadable
 }
 
 // Aggregation temporality, from the OTLP proto enum.

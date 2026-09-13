@@ -89,18 +89,30 @@ type ProfilerAdapter interface {
 }
 
 // TokenCounts holds per-session token usage.
+//
+// Every count is a pointer because "the export said nothing about this" and
+// "the export said zero" are different answers, and a profile that turns the
+// first into the second reports a measurement nobody made — a cache-only
+// export claiming the session used no input and no output tokens. A count that
+// was not read has no key in the JSON at all; a count read as zero has its key,
+// with 0 in it. The key names are schema v1 and unchanged.
 type TokenCounts struct {
-	Input         int `json:"input"`
-	Output        int `json:"output"`
-	CacheRead     int `json:"cache_read,omitempty"`
-	CacheCreation int `json:"cache_creation,omitempty"`
+	Input         *int `json:"input,omitempty"`
+	Output        *int `json:"output,omitempty"`
+	CacheRead     *int `json:"cache_read,omitempty"`
+	CacheCreation *int `json:"cache_creation,omitempty"`
 	// Reasoning has no source in Claude Code's OTel surface: its token.usage
 	// type attribute is exactly input, output, cacheRead and cacheCreation.
-	// Left unpopulated there, so omitempty drops the key rather than reporting
-	// a zero that was never measured. The field is harness-agnostic and stays
-	// for an adapter that does have the signal.
-	Reasoning int `json:"reasoning,omitempty"`
+	// Left unpopulated there, so its key is absent rather than reporting a zero
+	// that was never measured. The field is harness-agnostic and stays for an
+	// adapter that does have the signal.
+	Reasoning *int `json:"reasoning,omitempty"`
 }
+
+// Count is a token count a caller read, including a measured zero. Counts are
+// pointers so an unread one can be told from a zero one; this is how a caller
+// says "I read this".
+func Count(n int) *int { return &n }
 
 // ToolCallEntry records a single tool invocation.
 type ToolCallEntry struct {

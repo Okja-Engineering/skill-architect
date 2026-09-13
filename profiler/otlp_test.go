@@ -45,9 +45,7 @@ func TestOTLP_LeadingByteOrderMarkIsStripped(t *testing.T) {
 		t.Fatalf("tokens state = %q (reason %q), want present — a BOM is not a parse failure",
 			profile.Tokens.State, profile.Tokens.Reason)
 	}
-	if want := (TokenCounts{Input: 1523}); *profile.Tokens.Value != want {
-		t.Errorf("tokens = %+v, want %+v", *profile.Tokens.Value, want)
-	}
+	assertTokenJSON(t, profile.Tokens.Value, `{"input":1523}`)
 }
 
 // One object per line is the framing both documented capture routes produce,
@@ -63,9 +61,8 @@ func TestOTLP_ConcatenatedObjectsNeedNoNewline(t *testing.T) {
 	if profile.Tokens.Value == nil {
 		t.Fatalf("tokens value is nil (state %q, reason %q)", profile.Tokens.State, profile.Tokens.Reason)
 	}
-	if want := (TokenCounts{Input: 300}); *profile.Tokens.Value != want {
-		t.Errorf("tokens = %+v, want %+v — both objects are batches of the same capture", *profile.Tokens.Value, want)
-	}
+	// Both objects are batches of the same capture.
+	assertTokenJSON(t, profile.Tokens.Value, `{"input":300}`)
 }
 
 // A top-level value that is not an object is a JSON file, not an OTLP export.

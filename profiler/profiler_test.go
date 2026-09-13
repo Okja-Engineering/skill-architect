@@ -14,7 +14,7 @@ import (
 // --- Acceptance criterion 1: MetricResult serialization ---
 
 func TestMetricResultSerialization_Present(t *testing.T) {
-	r := PresentTokenResult(TokenCounts{Input: 100, Output: 50}, "otel")
+	r := PresentTokenResult(TokenCounts{Input: Count(100), Output: Count(50)}, "otel")
 	data, err := json.Marshal(r)
 	if err != nil {
 		t.Fatal(err)
@@ -32,9 +32,9 @@ func TestMetricResultSerialization_Present(t *testing.T) {
 	if parsed.Value == nil {
 		t.Fatal("value is nil for present result")
 	}
-	if parsed.Value.Input != 100 || parsed.Value.Output != 50 {
-		t.Errorf("value = %+v, want Input=100 Output=50", parsed.Value)
-	}
+	// Counts survive the round trip as counts, and the two the caller never
+	// set stay unset rather than arriving as zeros.
+	assertTokenJSON(t, parsed.Value, `{"input":100,"output":50}`)
 	if parsed.Reason != "" {
 		t.Errorf("reason = %q, want empty for present", parsed.Reason)
 	}
@@ -160,19 +160,10 @@ func TestCapture_ClaudeCode_WithOtelData(t *testing.T) {
 	if profile.Tokens.State != MetricPresent {
 		t.Errorf("tokens state = %q (reason %q), want present", profile.Tokens.State, profile.Tokens.Reason)
 	}
-	if profile.Tokens.Value == nil {
-		t.Fatal("tokens value is nil")
-	}
-	want := TokenCounts{Input: 1523, Output: 412, CacheRead: 20480, CacheCreation: 3072}
-	if *profile.Tokens.Value != want {
-		t.Errorf("tokens = %+v, want %+v", *profile.Tokens.Value, want)
-	}
-	// Claude Code has no reasoning token type, so the field stays unpopulated
-	// and its key is absent from the profile.
-	if profile.Tokens.Value.Reasoning != 0 {
-		t.Errorf("tokens reasoning = %d, want 0 — Claude Code emits no reasoning token type",
-			profile.Tokens.Value.Reasoning)
-	}
+	// All four token types, and no reasoning key: Claude Code has no reasoning
+	// token type, so nothing was read for it and the profile says nothing.
+	assertTokenJSON(t, profile.Tokens.Value,
+		`{"input":1523,"output":412,"cache_read":20480,"cache_creation":3072}`)
 	if profile.Tokens.Source != "otel" {
 		t.Errorf("tokens source = %q, want otel", profile.Tokens.Source)
 	}
@@ -811,14 +802,10 @@ func TestTokens_OnlyReadableMetricsAreCounted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.Tokens.Value == nil {
-		t.Fatalf("tokens value is nil (state %q, reason %q)", profile.Tokens.State, profile.Tokens.Reason)
-	}
 	// 1522.7 rounds to 1523; truncation would lose a token that was counted.
-	want := TokenCounts{Input: 1523}
-	if *profile.Tokens.Value != want {
-		t.Errorf("tokens = %+v, want %+v — only the readable point counts, rounded", *profile.Tokens.Value, want)
-	}
+	// The unreadable output point leaves its key out, rather than reporting a
+	// zero for a count the export never delivered.
+	assertTokenJSON(t, profile.Tokens.Value, `{"input":1523}`)
 	if profile.Tokens.Reason != "" {
 		t.Errorf("tokens reason = %q, want empty — a present result carries no reason", profile.Tokens.Reason)
 	}
@@ -831,26 +818,19 @@ func TestTokens_TemporalityDecidesSumOrSupersede(t *testing.T) {
 	cases := []struct {
 		name    string
 		fixture string
-		want    TokenCounts
+		want    string
 	}{
-		{"delta sums across batches", "multi_batch_delta.ndjson", TokenCounts{Input: 600}},
+		{"delta sums across batches", "multi_batch_delta.ndjson", `{"input":600}`},
 		// The series reports a running total: 900 is the total, not 500+900.
 		// A second series on another model is a different series and adds.
-		{"cumulative keeps the last value per series", "cumulative.ndjson", TokenCounts{Input: 1150}},
+		{"cumulative keeps the last value per series", "cumulative.ndjson", `{"input":1150}`},
+		// Both enum names, as the standard protobuf JSON mapping emits them.
+		{"the temporality enum spelled out by name", "temporality_enum_names.json", `{"input":100,"output":900}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			adapter := ClaudeCodeAdapter{OtelExportFile: fixture(tc.fixture)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if profile.Tokens.Value == nil {
-				t.Fatalf("tokens value is nil (state %q, reason %q)", profile.Tokens.State, profile.Tokens.Reason)
-			}
-			if *profile.Tokens.Value != tc.want {
-				t.Errorf("tokens = %+v, want %+v", *profile.Tokens.Value, tc.want)
-			}
+			profile := capturedProfile(t, tc.fixture)
+			assertTokenJSON(t, profile.Tokens.Value, tc.want)
 		})
 	}
 }
@@ -864,14 +844,8 @@ func TestOTLP_NumbersAndStringsBothDecode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.Tokens.Value == nil {
-		t.Fatalf("tokens value is nil (state %q, reason %q)", profile.Tokens.State, profile.Tokens.Reason)
-	}
 	// asInt as a quoted string and as a bare number.
-	want := TokenCounts{Input: 1523, Output: 412}
-	if *profile.Tokens.Value != want {
-		t.Errorf("tokens = %+v, want %+v", *profile.Tokens.Value, want)
-	}
+	assertTokenJSON(t, profile.Tokens.Value, `{"input":1523,"output":412}`)
 	// timeUnixNano as an unquoted number.
 	if profile.Timing.State != MetricPresent {
 		t.Errorf("timing state = %q (reason %q), want present", profile.Timing.State, profile.Timing.Reason)
@@ -947,18 +921,9 @@ func TestToolCalls_EntriesRecordExecutionOutcomes(t *testing.T) {
 // walk that indexes [0] loses most of the file. The `type` attribute is read
 // only on claude_code.token.usage, because other metrics carry their own.
 func TestTokens_EveryResourceAndScopeIsWalked(t *testing.T) {
-	adapter := ClaudeCodeAdapter{OtelExportFile: fixture("tokens_only.json")}
-	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if profile.Tokens.Value == nil {
-		t.Fatalf("tokens value is nil (state %q, reason %q)", profile.Tokens.State, profile.Tokens.Reason)
-	}
-	want := TokenCounts{Input: 1523, Output: 412, CacheRead: 20480, CacheCreation: 3072}
-	if *profile.Tokens.Value != want {
-		t.Errorf("tokens = %+v, want %+v", *profile.Tokens.Value, want)
-	}
+	profile := capturedProfile(t, "tokens_only.json")
+	assertTokenJSON(t, profile.Tokens.Value,
+		`{"input":1523,"output":412,"cache_read":20480,"cache_creation":3072}`)
 }
 
 // Values, not just states, survive a partial export — the concrete regression
