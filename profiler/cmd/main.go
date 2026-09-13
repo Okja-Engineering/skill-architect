@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/auraprix/skill-architect/profiler"
+	"github.com/Okja-Engineering/skill-architect/profiler"
 )
 
 // Usage:
