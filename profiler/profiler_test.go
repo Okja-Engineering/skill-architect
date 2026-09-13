@@ -406,3 +406,118 @@ func TestNoAttributionValueInJSONForUnknown(t *testing.T) {
 		t.Error("unknown attribution result should not have a 'value' key in JSON")
 	}
 }
+
+// --- Probe/Capture consistency: the adapter contract ---
+//
+// The invariant: Probe advertises, per signal, what the adapter can produce
+// from a given export. Capture must deliver exactly that. Every signal Probe
+// reports available (source != "none") must be "present" in the profile with
+// that source; every signal Probe reports "none" must be "unknown" with a
+// reason. A partial export must not cause the signals it does carry to be
+// discarded.
+//
+// Pinned to the contract, not to any particular gating implementation.
+func TestCaptureDeliversEverySignalProbeAdvertises(t *testing.T) {
+	const tokenMetric = `{"name": "claude_code.token.usage", "attributes": {"token_type": "input"}, "value": 1500}`
+	const toolLog = `{"event_name": "claude_code.tool_decision", "attributes": {"tool_name": "Bash", "decision": "approved"}, "timestamp": "2026-09-10T22:00:05Z"}`
+	const apiLog = `{"event_name": "claude_code.api_request", "timestamp": "2026-09-10T22:00:00Z"}`
+
+	cases := []struct {
+		name   string
+		export string
+	}{
+		{"empty export", `{}`},
+		{"tokens only", `{"metrics": [` + tokenMetric + `]}`},
+		{"tool calls only", `{"logs": [` + toolLog + `]}`},
+		{"timing only", `{"logs": [` + apiLog + `]}`},
+		{"tool calls and timing, no token metric", `{"logs": [` + toolLog + `, ` + apiLog + `]}`},
+		{"all signals", `{"metrics": [` + tokenMetric + `], "logs": [` + toolLog + `, ` + apiLog + `]}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			otelFile := filepath.Join(t.TempDir(), "otel.json")
+			if err := os.WriteFile(otelFile, []byte(tc.export), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			adapter := ClaudeCodeAdapter{OtelExportFile: otelFile}
+			report := adapter.Probe()
+			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			captured := map[MetricName]RawMetricResult{
+				MetricTokens:    profile.Tokens.RawMetricResult,
+				MetricToolCalls: profile.ToolCalls.RawMetricResult,
+				MetricTiming:    profile.Timing.RawMetricResult,
+			}
+
+			for _, metric := range []MetricName{MetricTokens, MetricToolCalls, MetricTiming} {
+				got := captured[metric]
+				advertised := report.Capabilities[metric]
+				if advertised == SourceNone {
+					if got.State != MetricUnknown {
+						t.Errorf("%s: probe advertised none, capture state = %q, want %q", metric, got.State, MetricUnknown)
+					}
+					if got.Reason == "" {
+						t.Errorf("%s: unknown result must carry a reason", metric)
+					}
+					continue
+				}
+				if got.State != MetricPresent {
+					t.Errorf("%s: probe advertised %q, capture state = %q (reason %q), want %q",
+						metric, advertised, got.State, got.Reason, MetricPresent)
+				}
+				if got.Source != string(advertised) {
+					t.Errorf("%s: capture source = %q, want %q", metric, got.Source, advertised)
+				}
+			}
+		})
+	}
+}
+
+// Values, not just states, survive a partial export — the concrete regression
+// behind the contract test above.
+func TestCapture_ClaudeCode_PartialExport_KeepsToolCallsAndTiming(t *testing.T) {
+	otelFile := filepath.Join(t.TempDir(), "otel.json")
+	otelData := `{
+		"logs": [
+			{"event_name": "claude_code.api_request", "timestamp": "2026-09-10T22:00:00Z"},
+			{"event_name": "claude_code.tool_decision", "attributes": {"tool_name": "Bash", "decision": "approved"}, "timestamp": "2026-09-10T22:00:05Z"},
+			{"event_name": "claude_code.api_request", "timestamp": "2026-09-10T22:00:15Z"}
+		]
+	}`
+	if err := os.WriteFile(otelFile, []byte(otelData), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := ClaudeCodeAdapter{OtelExportFile: otelFile}
+	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(profile.ToolCalls.Value) != 1 {
+		t.Fatalf("tool_calls count = %d, want 1 (state %q, reason %q)",
+			len(profile.ToolCalls.Value), profile.ToolCalls.State, profile.ToolCalls.Reason)
+	}
+	if profile.ToolCalls.Value[0].Name != "Bash" {
+		t.Errorf("tool_calls[0] name = %q, want Bash", profile.ToolCalls.Value[0].Name)
+	}
+	if profile.Timing.Value == nil {
+		t.Fatalf("timing value is nil (state %q, reason %q)", profile.Timing.State, profile.Timing.Reason)
+	}
+	if profile.Timing.Value.TotalMs != 15000 {
+		t.Errorf("timing total_ms = %d, want 15000", profile.Timing.Value.TotalMs)
+	}
+
+	// The one signal that genuinely is absent stays honest.
+	if profile.Tokens.State != MetricUnknown {
+		t.Errorf("tokens state = %q, want %q", profile.Tokens.State, MetricUnknown)
+	}
+	if profile.Tokens.Value != nil {
+		t.Errorf("tokens value = %+v, want nil when no token metric was exported", profile.Tokens.Value)
+	}
+}
