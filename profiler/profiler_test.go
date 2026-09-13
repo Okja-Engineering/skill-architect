@@ -988,3 +988,107 @@ func TestCapture_ClaudeCode_PartialExport_KeepsToolCallsAndTiming(t *testing.T) 
 		t.Errorf("tokens value = %+v, want nil when no token metric was exported", profile.Tokens.Value)
 	}
 }
+
+// --- What may reach a profile: representability, series identity, absence ---
+
+// capturedProfile runs the adapter over a fixture and fails the test if the
+// adapter itself refuses the call, which is never what these cases are about.
+func capturedProfile(t *testing.T, name string) Profile {
+	t.Helper()
+	adapter := ClaudeCodeAdapter{OtelExportFile: fixture(name)}
+	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return profile
+}
+
+// assertTokenJSON compares the captured counts with the JSON the profile
+// carries, because absence is the assertion: a count no data point carried has
+// no key at all, and a count read as zero has one whose value is 0.
+func assertTokenJSON(t *testing.T, got *TokenCounts, want string) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("tokens value is nil, want %s", want)
+	}
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != want {
+		t.Errorf("tokens JSON =\n  %s\nwant\n  %s", data, want)
+	}
+}
+
+// A token count is a whole number of tokens: finite, not negative, and small
+// enough to be an int64. A data point carrying anything else carried no count,
+// and the reader must say so rather than substitute what the conversion
+// happens to produce — which Go leaves up to the architecture, so the same
+// capture read on two machines produced two different profiles.
+func TestTokens_AValueThatIsNotACountIsRefused(t *testing.T) {
+	profile := capturedProfile(t, "value_not_a_count.json")
+
+	if profile.Tokens.State != MetricUnknown {
+		t.Errorf("tokens state = %q, want %q — no data point carried a count",
+			profile.Tokens.State, MetricUnknown)
+	}
+	if profile.Tokens.Value != nil {
+		data, _ := json.Marshal(profile.Tokens.Value)
+		t.Errorf("tokens value = %s, want none — every point was out of the range of a count", data)
+	}
+	if want := "4 data points carried a value that is not a token count"; !strings.Contains(profile.Tokens.Reason, want) {
+		t.Errorf("tokens reason = %q, want it to name %q", profile.Tokens.Reason, want)
+	}
+	if profile.Capability.Capabilities[MetricTokens] != SourceNone {
+		t.Errorf("probe advertised tokens = %q with no readable count in the export",
+			profile.Capability.Capabilities[MetricTokens])
+	}
+}
+
+// OTel identifies a time series by its whole attribute set, not by the subset
+// this adapter happens to read as text. Two series that merge are one session's
+// tokens reported as a fraction of themselves.
+func TestTokens_SeriesDifferingOnlyByANonStringAttributeDoNotMerge(t *testing.T) {
+	profile := capturedProfile(t, "array_attribute_series.ndjson")
+
+	// Two cumulative series, 100 and 200, distinguished only by an arrayValue
+	// attribute. Merged, the later point supersedes the earlier and the total
+	// is 200; kept apart, they are two running totals and add.
+	assertTokenJSON(t, profile.Tokens.Value, `{"input":300}`)
+}
+
+// A count the export did not carry is not a zero. The profile omits it, so a
+// reader — and F04 — can tell "the session used no output tokens" from "this
+// export said nothing about output tokens". A count that was read as zero is a
+// measurement and keeps its key.
+func TestTokens_AnUnreadCountIsAbsentAndAReadZeroIsZero(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fixture string
+		want    string
+	}{
+		{
+			name:    "a cache-only export says nothing about input or output",
+			fixture: "cache_only.json",
+			want:    `{"cache_read":20480}`,
+		},
+		{
+			name:    "a count read as zero is reported as zero",
+			fixture: "zero_token_count.json",
+			want:    `{"input":0,"cache_creation":0}`,
+		},
+		{
+			name:    "an unreadable point leaves its type absent, not zero",
+			fixture: "as_double_rounding.json",
+			want:    `{"input":1523}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := capturedProfile(t, tc.fixture)
+			if profile.Tokens.State != MetricPresent {
+				t.Fatalf("tokens state = %q (reason %q), want present", profile.Tokens.State, profile.Tokens.Reason)
+			}
+			assertTokenJSON(t, profile.Tokens.Value, tc.want)
+		})
+	}
+}
