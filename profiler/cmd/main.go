@@ -32,11 +32,24 @@ func main() {
 	}
 }
 
+// parseFlags parses a subcommand's flags and exits 1 if they do not.
+//
+// ContinueOnError rather than ExitOnError, because ExitOnError exits 2 — the
+// status capture uses for "this capture read nothing", which is the one a
+// wrapping script is meant to act on. A mistyped flag and an unusable export
+// behind the same number is a status nobody can branch on, so the CLI picks its
+// own: 1 for anything the caller can fix by retyping the command.
+func parseFlags(fs *flag.FlagSet, args []string) {
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+}
+
 func cmdProbe(args []string) {
-	fs := flag.NewFlagSet("probe", flag.ExitOnError)
+	fs := flag.NewFlagSet("probe", flag.ContinueOnError)
 	harness := fs.String("harness", "", "harness name (claude_code)")
 	otelFile := fs.String("otel-file", "", "path to OTel export file")
-	fs.Parse(args)
+	parseFlags(fs, args)
 
 	adapter := getAdapter(*harness, *otelFile)
 	if adapter == nil {
@@ -54,14 +67,14 @@ func cmdProbe(args []string) {
 }
 
 func cmdCapture(args []string) {
-	fs := flag.NewFlagSet("capture", flag.ExitOnError)
+	fs := flag.NewFlagSet("capture", flag.ContinueOnError)
 	harness := fs.String("harness", "", "harness name (claude_code)")
 	sessionID := fs.String("session", "", "session ID")
 	snapshotHash := fs.String("snapshot", "", "snapshot hash (git SHA or content hash)")
 	skillDir := fs.String("skill-dir", "", "path to the skill being profiled")
 	otelFile := fs.String("otel-file", "", "path to OTel export file")
 	exportFile := fs.String("export-file", "", "path to a non-OTel session export (e.g. Devin ATIF); reserved — no shipped adapter reads it, and passing it is an error")
-	fs.Parse(args)
+	parseFlags(fs, args)
 
 	if *sessionID == "" || *snapshotHash == "" || *skillDir == "" {
 		fmt.Fprintln(os.Stderr, "required: --session, --snapshot, --skill-dir")

@@ -102,3 +102,33 @@ func TestCapture_ExitStatusSaysWhetherAnythingWasRead(t *testing.T) {
 		})
 	}
 }
+
+// Exit 2 has to mean one thing, or a script branching on it cannot act. The
+// flag package exits 2 of its own accord on an unrecognised flag, which would
+// put "you typed the flag wrong" and "the capture read nothing" behind the same
+// status — and the second is the one a wrapper is supposed to retry or report.
+func TestUsageErrorsExitOneSoThatTwoMeansOneThing(t *testing.T) {
+	bin := buildProfiler(t)
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"no command", nil},
+		{"an unknown command", []string{"frobnicate"}},
+		{"an unknown flag on capture", []string{"capture", "--bogus-flag"}},
+		{"an unknown flag on probe", []string{"probe", "--bogus-flag"}},
+		{"an unknown harness", []string{"capture", "--harness", "nope",
+			"--session", "s", "--snapshot", "h", "--skill-dir", "/d"}},
+		{"a missing required flag", []string{"capture", "--harness", "claude_code"}},
+		{"a flag no adapter reads", []string{"capture", "--harness", "claude_code",
+			"--session", "s", "--snapshot", "h", "--skill-dir", "/d", "--export-file", "s.json"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(bin, tc.args...)
+			out, _ := cmd.CombinedOutput()
+			if got := cmd.ProcessState.ExitCode(); got != 1 {
+				t.Errorf("exit status = %d, want 1 — a usage error is not a capture that read nothing\n%s", got, out)
+			}
+		})
+	}
+}
