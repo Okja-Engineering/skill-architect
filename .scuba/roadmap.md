@@ -1,5 +1,5 @@
 # skill-architect — roadmap
-**Updated** 2026-09-13 · `chief-of-staff` · mirror `scuba-state/imagineux-gmail-com@<pending>`
+**Updated** 2026-09-13 · `chief-of-staff` · mirror `scuba-state/imagineux-gmail-com@56c02b4` (pushed & SHA-verified)
 
 ## Now active
 _One or two lines per currently-moving thread — what's happening right now._
