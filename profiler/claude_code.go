@@ -7,8 +7,9 @@ import (
 	"time"
 )
 
-// OTel signal names emitted by Claude Code. Probe's detection and Capture's
-// extraction must agree on these, so they are named once.
+// OTel signal names emitted by Claude Code. Named once and read once: the same
+// extractor decides both what the probe can advertise and what the capture
+// returns, so there is no second copy of a name to drift.
 const (
 	otelTokenUsageMetric = "claude_code.token.usage"
 	otelToolDecisionLog  = "claude_code.tool_decision"
@@ -22,131 +23,143 @@ const (
 // (or a file-based exporter), not a live network endpoint, to keep the adapter
 // self-contained and testable without a running collector.
 //
-// Skill activation and attribution are always unknown for Claude Code. Its OTel
-// surface has no skill activation event and no output-to-skill mapping; the
-// skill.name attribute it does attach to token and cost metrics is not read
-// yet, so claiming either signal would be inventing it.
+// Skill activation and attribution are always unknown for Claude Code: it emits
+// no skill activation event, and this adapter reads none of the skill-level
+// attributes Claude Code does attach elsewhere in its OTel surface. Reporting
+// either signal would mean inventing it.
 type ClaudeCodeAdapter struct {
 	// OtelExportFile is the path to a JSON file containing OTel-exported data.
-	// Required for both Probe and Capture to report OTel capabilities.
+	// It is the adapter's only input: Probe and Capture both resolve this one
+	// path, and nothing else supplies one.
 	OtelExportFile string
 }
 
 // Name returns the harness identifier.
 func (a ClaudeCodeAdapter) Name() string { return "claude_code" }
 
-// Probe inspects the environment and returns what metrics this adapter can produce.
-// OTel is reported as available only when an export file exists and contains
-// the relevant signals; empty or malformed files report "none".
-func (a ClaudeCodeAdapter) Probe() CapabilityReport {
-	caps := map[MetricName]MetricSource{
-		MetricTokens:          SourceNone,
-		MetricToolCalls:       SourceNone,
-		MetricSkillActivation: SourceNone,
-		MetricTiming:          SourceNone,
-		MetricAttribution:     SourceNone,
+// otelSignals is one export file resolved into the three signals it carries.
+//
+// Probe and Capture both derive from this single resolution, so "the adapter can
+// produce this signal" and "the adapter produced this signal" are by construction
+// the same question, answered by the same code. Two separate predicates — one
+// scanning for structure, one extracting values — are what let the probe
+// advertise data the capture then discarded.
+type otelSignals struct {
+	Tokens    TokenResult
+	ToolCalls ToolCallResult
+	Timing    TimingResult
+}
+
+// resolve reads and parses the export file once and settles all three signals.
+//
+// It owns file resolution and failure classification for this adapter; nothing
+// below it re-decides either, so all three signals share one error path:
+//
+//   - no file configured — unknown, naming what to configure;
+//   - file unreadable or unparseable — error, naming the failure. The export was
+//     supplied, so "not configured" would send the caller to fix the one thing
+//     that is not wrong;
+//   - parsed — each extractor settles its own signal from what it can read.
+func (a ClaudeCodeAdapter) resolve() otelSignals {
+	if a.OtelExportFile == "" {
+		return unknownSignals("OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile.")
 	}
 
-	if a.OtelExportFile != "" {
-		if _, err := os.Stat(a.OtelExportFile); err == nil {
-			if tokens, toolCalls, timing := hasOtelSignals(a.OtelExportFile); tokens || toolCalls || timing {
-				if tokens {
-					caps[MetricTokens] = SourceOtel
-				}
-				if toolCalls {
-					caps[MetricToolCalls] = SourceOtel
-				}
-				if timing {
-					caps[MetricTiming] = SourceOtel
-				}
-			}
-		}
+	data, err := os.ReadFile(a.OtelExportFile)
+	if err != nil {
+		return erroredSignals(fmt.Sprintf("failed to read OTel export file: %v", err))
 	}
 
-	// Claude Code has no skill-level activation or attribution events.
-	// These remain "none" regardless of OTel configuration.
+	var export claudeCodeOtelExport
+	if err := json.Unmarshal(data, &export); err != nil {
+		return erroredSignals(fmt.Sprintf("failed to parse OTel export JSON: %v", err))
+	}
 
+	return otelSignals{
+		Tokens:    extractTokenCounts(export),
+		ToolCalls: extractToolCalls(export),
+		Timing:    extractTiming(export),
+	}
+}
+
+// unknownSignals and erroredSignals settle every signal the same way, for the
+// failures that belong to the export as a whole rather than to one signal.
+
+func unknownSignals(reason string) otelSignals {
+	return otelSignals{
+		Tokens:    UnknownTokenResult(reason),
+		ToolCalls: UnknownToolCallResult(reason),
+		Timing:    UnknownTimingResult(reason),
+	}
+}
+
+func erroredSignals(reason string) otelSignals {
+	return otelSignals{
+		Tokens:    ErrorTokenResult(reason),
+		ToolCalls: ErrorToolCallResult(reason),
+		Timing:    ErrorTimingResult(reason),
+	}
+}
+
+// capabilityReport derives the capability report from resolved signals, so a
+// capability is advertised exactly when a value was read for it.
+func (a ClaudeCodeAdapter) capabilityReport(sig otelSignals) CapabilityReport {
 	return CapabilityReport{
-		Harness:      a.Name(),
-		AdapterVer:   AdapterVersion,
-		ProbedAt:     time.Now().UTC().Format(time.RFC3339),
-		Capabilities: caps,
+		Harness:    a.Name(),
+		AdapterVer: AdapterVersion,
+		ProbedAt:   time.Now().UTC().Format(time.RFC3339),
+		Capabilities: map[MetricName]MetricSource{
+			MetricTokens:    sourceOf(sig.Tokens.RawMetricResult),
+			MetricToolCalls: sourceOf(sig.ToolCalls.RawMetricResult),
+			MetricTiming:    sourceOf(sig.Timing.RawMetricResult),
+			// This adapter reads no skill-level attributes, so it can offer no
+			// activation or attribution signal whatever the OTel configuration.
+			MetricSkillActivation: SourceNone,
+			MetricAttribution:     SourceNone,
+		},
 	}
+}
+
+// sourceOf reports where a signal's value was read from, or "none" when no value
+// was read. Availability is a fact about a value in hand, not about structure
+// spotted in a file.
+func sourceOf(r RawMetricResult) MetricSource {
+	if r.State != MetricPresent {
+		return SourceNone
+	}
+	return MetricSource(r.Source)
+}
+
+// Probe inspects the environment and returns what metrics this adapter can
+// produce. A capability is "otel" only when the export file yielded a value for
+// that signal; a missing, unreadable, malformed, or signal-less file reports
+// "none".
+func (a ClaudeCodeAdapter) Probe() CapabilityReport {
+	return a.capabilityReport(a.resolve())
 }
 
 // Capture reads telemetry for a specific Claude Code session and produces a Profile.
 func (a ClaudeCodeAdapter) Capture(sessionID string, opts CaptureOpts) (Profile, error) {
-	cap := a.Probe()
-	now := time.Now().UTC().Format(time.RFC3339)
+	sig := a.resolve()
 
-	profile := Profile{
+	return Profile{
 		Schema:       ProfileSchema,
-		ProfiledAt:   now,
+		ProfiledAt:   time.Now().UTC().Format(time.RFC3339),
 		Harness:      a.Name(),
 		SessionID:    sessionID,
 		SnapshotHash: opts.SnapshotHash,
 		SkillDir:     opts.SkillDir,
-		Capability:   cap,
-	}
+		Capability:   a.capabilityReport(sig),
 
-	// Skill activation and attribution are always unknown for Claude Code.
-	profile.SkillActivation = UnknownActivationResult("Claude Code has no skill-level activation events")
-	profile.Attribution = UnknownAttributionResult("Claude Code does not attribute outputs to skills")
+		Tokens:    sig.Tokens,
+		ToolCalls: sig.ToolCalls,
+		Timing:    sig.Timing,
 
-	// Only when probing found no telemetry source at all is every signal
-	// unknown. A partial export still yields the signals it carries; each
-	// extractor below settles its own signal's state.
-	if !cap.AnySource() {
-		noOtelReason := "OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile."
-		profile.Tokens = UnknownTokenResult(noOtelReason)
-		profile.ToolCalls = UnknownToolCallResult(noOtelReason)
-		profile.Timing = UnknownTimingResult(noOtelReason)
-		return profile, nil
-	}
-
-	// Read OTel export file.
-	exportFile := a.OtelExportFile
-	if exportFile == "" {
-		exportFile = opts.ExportFile
-	}
-
-	if exportFile == "" {
-		errReason := "OTel enabled but no export file path provided. Set OtelExportFile or opts.ExportFile."
-		profile.Tokens = ErrorTokenResult(errReason)
-		profile.ToolCalls = UnknownToolCallResult(errReason)
-		profile.Timing = UnknownTimingResult(errReason)
-		return profile, nil
-	}
-
-	data, err := os.ReadFile(exportFile)
-	if err != nil {
-		errReason := fmt.Sprintf("failed to read OTel export file: %v", err)
-		profile.Tokens = ErrorTokenResult(errReason)
-		profile.ToolCalls = UnknownToolCallResult(errReason)
-		profile.Timing = UnknownTimingResult(errReason)
-		return profile, nil
-	}
-
-	// Parse the OTel export data.
-	var otelData claudeCodeOtelExport
-	if err := json.Unmarshal(data, &otelData); err != nil {
-		errReason := fmt.Sprintf("failed to parse OTel export JSON: %v", err)
-		profile.Tokens = ErrorTokenResult(errReason)
-		profile.ToolCalls = UnknownToolCallResult(errReason)
-		profile.Timing = UnknownTimingResult(errReason)
-		return profile, nil
-	}
-
-	// Extract token counts from metrics.
-	profile.Tokens = extractTokenCounts(otelData)
-
-	// Extract tool calls from log events.
-	profile.ToolCalls = extractToolCalls(otelData)
-
-	// Extract timing from API request log events.
-	profile.Timing = extractTiming(otelData)
-
-	return profile, nil
+		// Claude Code emits no skill activation event, and this adapter reads
+		// none of the skill-level attributes it does emit.
+		SkillActivation: UnknownActivationResult("Claude Code has no skill-level activation events"),
+		Attribution:     UnknownAttributionResult("this adapter does not read Claude Code's skill attribution attributes"),
+	}, nil
 }
 
 // claudeCodeOtelExport is the JSON structure written by a file-based OTel exporter
@@ -168,111 +181,132 @@ type otelLog struct {
 	Timestamp  string         `json:"timestamp"`
 }
 
+// Each extractor is the single predicate for its signal: present only when it
+// read at least one usable value, unknown with a reason naming why not. A metric
+// or event with the right name but nothing readable inside it is evidence that
+// the harness was running, not evidence of a value.
+
 func extractTokenCounts(data claudeCodeOtelExport) TokenResult {
 	var tc TokenCounts
-	found := false
+	seen, read := 0, 0
 	for _, m := range data.Metrics {
-		if m.Name == otelTokenUsageMetric {
-			found = true
-			tokenType, _ := m.Attributes["token_type"].(string)
-			val := toInt(m.Value)
-			switch tokenType {
-			case "input":
-				tc.Input += val
-			case "output":
-				tc.Output += val
-			case "cache_read":
-				tc.CacheRead += val
-			case "cache_creation":
-				tc.CacheCreation += val
-			case "reasoning", "reasoning_output":
-				tc.Reasoning += val
-			}
+		if m.Name != otelTokenUsageMetric {
+			continue
 		}
+		seen++
+		val, ok := toInt(m.Value)
+		if !ok {
+			continue
+		}
+		switch getString(m.Attributes, "token_type") {
+		case "input":
+			tc.Input += val
+		case "output":
+			tc.Output += val
+		case "cache_read":
+			tc.CacheRead += val
+		case "cache_creation":
+			tc.CacheCreation += val
+		case "reasoning", "reasoning_output":
+			tc.Reasoning += val
+		default:
+			continue
+		}
+		read++
 	}
-	if !found {
-		return UnknownTokenResult("no claude_code.token.usage metric found in OTel export")
+	switch {
+	case seen == 0:
+		return UnknownTokenResult("no " + otelTokenUsageMetric + " metric found in OTel export")
+	case read == 0:
+		return UnknownTokenResult("no readable " + otelTokenUsageMetric + " metric in OTel export: none carried both a recognised token_type and a numeric value")
 	}
 	return PresentTokenResult(tc, string(SourceOtel))
 }
 
 func extractToolCalls(data claudeCodeOtelExport) ToolCallResult {
 	var calls []ToolCallEntry
+	seen := 0
 	for _, log := range data.Logs {
-		if log.EventName == otelToolDecisionLog {
-			entry := ToolCallEntry{
-				Name:      getString(log.Attributes, "tool_name"),
-				Timestamp: log.Timestamp,
-				Success:   getString(log.Attributes, "decision") == "approved",
-			}
-			calls = append(calls, entry)
+		if log.EventName != otelToolDecisionLog {
+			continue
 		}
+		seen++
+		name := getString(log.Attributes, "tool_name")
+		if name == "" {
+			continue
+		}
+		calls = append(calls, ToolCallEntry{
+			Name:      name,
+			Timestamp: log.Timestamp,
+			// Success carries the permission decision, not the execution
+			// outcome: tool_decision says whether the call was approved, and
+			// this adapter reads no completion signal. Separating the two is a
+			// schema change, tracked for 0.5.0.
+			Success: getString(log.Attributes, "decision") == "approved",
+		})
 	}
-	if len(calls) == 0 {
-		return UnknownToolCallResult("no claude_code.tool_decision log events found in OTel export")
+	switch {
+	case seen == 0:
+		return UnknownToolCallResult("no " + otelToolDecisionLog + " log events found in OTel export")
+	case len(calls) == 0:
+		return UnknownToolCallResult("no readable " + otelToolDecisionLog + " log events in OTel export: none carried a tool_name")
 	}
 	return PresentToolCallResult(calls, string(SourceOtel))
 }
 
 func extractTiming(data claudeCodeOtelExport) TimingResult {
+	var first, last time.Time
 	var start, end string
+	seen, have := 0, false
 	for _, log := range data.Logs {
-		if log.EventName == otelAPIRequestLog {
-			if start == "" {
-				start = log.Timestamp
-			}
-			end = log.Timestamp
+		if log.EventName != otelAPIRequestLog {
+			continue
 		}
+		seen++
+		t := parseTime(log.Timestamp)
+		if t.IsZero() {
+			continue
+		}
+		// The span runs from the earliest event to the latest, not from the
+		// first line to the last: an exporter is free to write events out of
+		// order, and a session must not end before it starts.
+		if !have || t.Before(first) {
+			first, start = t, log.Timestamp
+		}
+		if !have || t.After(last) {
+			last, end = t, log.Timestamp
+		}
+		have = true
 	}
-	if start == "" {
-		return UnknownTimingResult("no claude_code.api_request log events found in OTel export")
+	switch {
+	case seen == 0:
+		return UnknownTimingResult("no " + otelAPIRequestLog + " log events found in OTel export")
+	case !have:
+		return UnknownTimingResult("no readable " + otelAPIRequestLog + " log events in OTel export: none carried a parseable RFC 3339 timestamp")
 	}
-	td := TimingData{StartTime: start, EndTime: end}
-	if t1, e1 := parseTime(start), parseTime(end); !t1.IsZero() && !e1.IsZero() {
-		td.TotalMs = e1.Sub(t1).Milliseconds()
-	}
-	return PresentTimingResult(td, string(SourceOtel))
+	return PresentTimingResult(TimingData{
+		StartTime: start,
+		EndTime:   end,
+		TotalMs:   last.Sub(first).Milliseconds(),
+	}, string(SourceOtel))
 }
 
-func hasOtelSignals(file string) (tokens, toolCalls, timing bool) {
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return false, false, false
-	}
-	var otelData claudeCodeOtelExport
-	if err := json.Unmarshal(data, &otelData); err != nil {
-		return false, false, false
-	}
-	for _, m := range otelData.Metrics {
-		if m.Name == otelTokenUsageMetric {
-			tokens = true
-			break
-		}
-	}
-	for _, log := range otelData.Logs {
-		switch log.EventName {
-		case otelToolDecisionLog:
-			toolCalls = true
-		case otelAPIRequestLog:
-			timing = true
-		}
-	}
-	return tokens, toolCalls, timing
-}
-
-func toInt(v any) int {
+// toInt reads a numeric JSON value. The second return distinguishes "the value
+// was zero" from "the value was not a number" — the difference between a count
+// that was read and a count that was invented.
+func toInt(v any) (int, bool) {
 	switch n := v.(type) {
 	case int:
-		return n
+		return n, true
 	case int64:
-		return int(n)
+		return int(n), true
 	case float64:
-		return int(n)
+		return int(n), true
 	case json.Number:
-		i, _ := n.Int64()
-		return int(i)
+		i, err := n.Int64()
+		return int(i), err == nil
 	}
-	return 0
+	return 0, false
 }
 
 func getString(m map[string]any, key string) string {

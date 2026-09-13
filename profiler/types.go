@@ -231,6 +231,11 @@ func UnknownToolCallResult(reason string) ToolCallResult {
 	return ToolCallResult{RawMetricResult: RawMetricResult{State: MetricUnknown, Reason: reason}}
 }
 
+// ErrorToolCallResult creates a ToolCallResult with state "error".
+func ErrorToolCallResult(reason string) ToolCallResult {
+	return ToolCallResult{RawMetricResult: RawMetricResult{State: MetricError, Reason: reason}}
+}
+
 // --- ActivationResult constructors ---
 
 // PresentActivationResult creates an ActivationResult with state "present".
@@ -259,6 +264,11 @@ func PresentTimingResult(v TimingData, source string) TimingResult {
 // UnknownTimingResult creates a TimingResult with state "unknown".
 func UnknownTimingResult(reason string) TimingResult {
 	return TimingResult{RawMetricResult: RawMetricResult{State: MetricUnknown, Reason: reason}}
+}
+
+// ErrorTimingResult creates a TimingResult with state "error".
+func ErrorTimingResult(reason string) TimingResult {
+	return TimingResult{RawMetricResult: RawMetricResult{State: MetricError, Reason: reason}}
 }
 
 // --- AttributionResult constructors ---
