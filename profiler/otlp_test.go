@@ -253,48 +253,68 @@ func TestOTLP_IntegerLeafRefusesWhatIsNotADecimalInteger(t *testing.T) {
 // The key is internal and never shown to anyone, so these cases pin identity
 // rather than any particular encoding.
 func TestOTLP_SeriesKeyIsTheAttributeSetNotItsText(t *testing.T) {
-	distinct := []struct {
-		name string
-		a, b string
-	}{
-		{"a value that was not read is not the empty string",
-			`[{"key":"m","value":{}}]`,
-			`[{"key":"m","value":{"stringValue":""}}]`},
-		{"two different array values",
-			`[{"key":"tool.names","value":{"arrayValue":{"values":[{"stringValue":"Read"}]}}}]`,
-			`[{"key":"tool.names","value":{"arrayValue":{"values":[{"stringValue":"Bash"}]}}}]`},
-		{"two different kvlist values",
-			`[{"key":"m","value":{"kvlistValue":{"values":[{"key":"a","value":{"stringValue":"1"}}]}}}]`,
-			`[{"key":"m","value":{"kvlistValue":{"values":[{"key":"a","value":{"stringValue":"2"}}]}}}]`},
-		{"two different byte values",
-			`[{"key":"m","value":{"bytesValue":"YQ=="}}]`,
-			`[{"key":"m","value":{"bytesValue":"Yg=="}}]`},
-		{"an array value and a kvlist value",
-			`[{"key":"m","value":{"arrayValue":{"values":[]}}}]`,
-			`[{"key":"m","value":{"kvlistValue":{"values":[]}}}]`},
-		{"a string and the integer that prints the same",
-			`[{"key":"m","value":{"stringValue":"5"}}]`,
-			`[{"key":"m","value":{"intValue":5}}]`},
-		{"a string and the boolean that prints the same",
-			`[{"key":"m","value":{"stringValue":"true"}}]`,
-			`[{"key":"m","value":{"boolValue":true}}]`},
-		// An attribute key or value is arbitrary text and may carry whatever
-		// byte the key encoding separates fields with. A key those bytes can
-		// forge is a key two unrelated exports share.
-		{"a value carrying the key/value separator, against the split it forges",
-			`[{"key":"m","value":{"stringValue":"a\u0001b"}}]`,
-			`[{"key":"m\u0001a","value":{"stringValue":"b"}}]`},
-		{"a value carrying the pair separator, against the pair it forges",
-			`[{"key":"m","value":{"stringValue":"a\u0000z\u0001v"}}]`,
-			`[{"key":"m","value":{"stringValue":"a"}},{"key":"z","value":{"stringValue":"v"}}]`},
+	// Every entry is a different attribute set, so every key must be
+	// different. Asserting injectivity over a corpus rather than pair by pair
+	// is what makes the test independent of how the key is built: the corpus
+	// carries values that spell the separator bytes a joining encoding would
+	// use, the length prefixes a length-prefixed one would use, and the kind
+	// tags either would need — so a key any of them can forge is a collision
+	// this test finds without knowing which one is in use.
+	corpus := []string{
+		`[]`,
+		// Absent, empty, and present: three answers, not one.
+		`[{"key":"m","value":{}}]`,
+		`[{"key":"m","value":{"stringValue":""}}]`,
+		`[{"key":"m","value":{"stringValue":"a"}}]`,
+		`[{"key":"m","value":{"stringValue":"b"}}]`,
+
+		// A scalar and the string that prints the same way.
+		`[{"key":"m","value":{"stringValue":"5"}}]`,
+		`[{"key":"m","value":{"intValue":5}}]`,
+		`[{"key":"m","value":{"intValue":6}}]`,
+		`[{"key":"m","value":{"doubleValue":5}}]`,
+		`[{"key":"m","value":{"boolValue":true}}]`,
+		`[{"key":"m","value":{"stringValue":"true"}}]`,
+
+		// Strings that spell what a tagged encoding writes for another kind.
+		`[{"key":"m","value":{"stringValue":"i5"}}]`,
+		`[{"key":"m","value":{"stringValue":"s5"}}]`,
+		`[{"key":"m","value":{"stringValue":"btrue"}}]`,
+
+		// The composite kinds, which this layer never interprets and still has
+		// to tell apart.
+		`[{"key":"m","value":{"arrayValue":{"values":[{"stringValue":"Read"}]}}}]`,
+		`[{"key":"m","value":{"arrayValue":{"values":[{"stringValue":"Bash"}]}}}]`,
+		`[{"key":"m","value":{"arrayValue":{"values":[]}}}]`,
+		`[{"key":"m","value":{"kvlistValue":{"values":[]}}}]`,
+		`[{"key":"m","value":{"kvlistValue":{"values":[{"key":"a","value":{"stringValue":"1"}}]}}}]`,
+		`[{"key":"m","value":{"kvlistValue":{"values":[{"key":"a","value":{"stringValue":"2"}}]}}}]`,
+		`[{"key":"m","value":{"bytesValue":"YQ=="}}]`,
+		`[{"key":"m","value":{"bytesValue":"Yg=="}}]`,
+
+		// Forgeries: a key or value carrying the bytes an encoding joins with,
+		// beside the attribute set it would otherwise be indistinguishable
+		// from. A tool name, a model id and a prompt are all arbitrary text.
+		`[{"key":"m","value":{"stringValue":"a\u0001b"}}]`,
+		`[{"key":"m\u0001a","value":{"stringValue":"b"}}]`,
+		`[{"key":"m","value":{"stringValue":"a\u0001sb"}}]`,
+		`[{"key":"m\u0001sa","value":{"stringValue":"b"}}]`,
+		`[{"key":"m","value":{"stringValue":"a\u0000z\u0001v"}}]`,
+		`[{"key":"m","value":{"stringValue":"a\u0000z\u0001sv"}}]`,
+		`[{"key":"m","value":{"stringValue":"a"}},{"key":"z","value":{"stringValue":"v"}}]`,
+		`[{"key":"m","value":{"stringValue":"1:a"}}]`,
+		`[{"key":"1:m","value":{"stringValue":"a"}}]`,
+		`[{"key":"m","value":{"stringValue":"a"}},{"key":"1:z","value":{"stringValue":"v"}}]`,
 	}
-	for _, tc := range distinct {
-		t.Run("distinct/"+tc.name, func(t *testing.T) {
-			if a, b := attrs(t, tc.a).seriesKey(), attrs(t, tc.b).seriesKey(); a == b {
-				t.Errorf("%s and %s share the series key %q — two series would merge into one",
-					tc.a, tc.b, a)
-			}
-		})
+	keyed := make(map[string]string, len(corpus))
+	for _, wire := range corpus {
+		key := attrs(t, wire).seriesKey()
+		if before, collides := keyed[key]; collides {
+			t.Errorf("two different attribute sets share the series key %q, so they would merge into one series:\n  %s\n  %s",
+				key, before, wire)
+			continue
+		}
+		keyed[key] = wire
 	}
 
 	same := []struct {
