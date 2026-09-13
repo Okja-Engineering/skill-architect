@@ -244,7 +244,7 @@ func extractTokenCounts(export otlpExport) TokenResult {
 			// data points to visit.
 			continue
 		}
-		temporality, temporalityOK := m.Sum.temporality()
+		temporality, temporalityState := m.Sum.temporality()
 		for _, dp := range m.Sum.DataPoints {
 			points++
 
@@ -253,8 +253,20 @@ func extractTokenCounts(export otlpExport) TokenResult {
 			// instruction to guess at. The point is refused and counted, which
 			// costs a number nobody could have trusted and states so in the
 			// reason, rather than silently over- or under-counting the session.
-			if !temporalityOK || (temporality != temporalityDelta && temporality != temporalityCumulative) {
+			//
+			// Three ways to get here, counted apart because they are three
+			// different things to look at in the capture: the sum declared no
+			// temporality, it declared one that does not read, or it declared
+			// one that reads as neither delta nor cumulative.
+			switch {
+			case temporalityState == temporalityAbsent:
+				c.absentTemporality++
+				continue
+			case temporalityState == temporalityUnreadable:
 				c.unreadableTemporality++
+				continue
+			case temporality != temporalityDelta && temporality != temporalityCumulative:
+				c.otherTemporality++
 				continue
 			}
 
@@ -301,20 +313,24 @@ func extractTokenCounts(export otlpExport) TokenResult {
 // a sentence that names four independent defects is true of none of the inputs
 // that carry only one of them.
 type tokenPointCounters struct {
+	absentTemporality     int
 	unreadableTemporality int
+	otherTemporality      int
 	unrecognisedType      int
 	unreadableValue       int
 	notACount             int
 }
 
 func (c tokenPointCounters) reason() string {
-	clauses := make([]string, 0, 4)
+	clauses := make([]string, 0, 6)
 	add := func(n int, rest string) {
 		if n > 0 {
 			clauses = append(clauses, quantity(n, "data point")+" "+rest)
 		}
 	}
-	add(c.unreadableTemporality, fmt.Sprintf("declared an aggregationTemporality that is neither %d (delta) nor %d (cumulative)",
+	add(c.absentTemporality, "carried no aggregationTemporality")
+	add(c.unreadableTemporality, "carried an aggregationTemporality that could not be read")
+	add(c.otherTemporality, fmt.Sprintf("declared an aggregationTemporality that is neither %d (delta) nor %d (cumulative)",
 		temporalityDelta, temporalityCumulative))
 	add(c.unrecognisedType, "carried no recognised type attribute ("+
 		tokenTypeInput+"/"+tokenTypeOutput+"/"+tokenTypeCacheRead+"/"+tokenTypeCacheCreation+")")
@@ -446,21 +462,19 @@ type toolCallCounters struct {
 
 func (c toolCallCounters) reason() string {
 	clauses := make([]string, 0, 5)
-	for _, cl := range []struct {
-		n    int
-		text string
-	}{
-		{c.unnamedResults, "%d " + otelToolResultLog + " events carried no tool_name"},
-		{c.unreadableOutcomes, "%d " + otelToolResultLog + " events carried no readable success value"},
-		{c.accepts, "%d " + otelToolDecisionLog + " events were accepts, and only " + otelToolResultLog +
-			" reports an outcome — the export may have been captured before those tools completed"},
-		{c.undecided, "%d " + otelToolDecisionLog + " events carried no recognised decision"},
-		{c.unnamedRejects, "%d " + otelToolDecisionLog + " events recorded a reject with no tool_name"},
-	} {
-		if cl.n > 0 {
-			clauses = append(clauses, fmt.Sprintf(cl.text, cl.n))
+	add := func(n int, noun, rest string) {
+		if n > 0 {
+			clauses = append(clauses, quantity(n, noun)+rest)
 		}
 	}
+	add(c.unnamedResults, otelToolResultLog+" event", " carried no tool_name")
+	add(c.unreadableOutcomes, otelToolResultLog+" event", " carried no readable success value")
+	// "accepted …" rather than "… were accepts", so the clause reads the same
+	// whether one accept or five are being reported.
+	add(c.accepts, "accepted "+otelToolDecisionLog+" event", ", and only "+otelToolResultLog+
+		" reports an outcome — the export may have been captured before those tools completed")
+	add(c.undecided, otelToolDecisionLog+" event", " carried no recognised decision")
+	add(c.unnamedRejects, otelToolDecisionLog+" event", " recorded a reject with no tool_name")
 	return strings.Join(clauses, "; ")
 }
 

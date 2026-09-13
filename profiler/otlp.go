@@ -43,17 +43,40 @@ import (
 // from the same struct because a capture may carry either, and route (b) may
 // put both in one file; which top-level field is present says which it is.
 
+// otlpBatch holds the envelope keys as pointers, because "the export did not
+// carry this key" and "the export carried it with nothing under it" are
+// different answers. The first is a file that is not an OTLP export; the second
+// is an OTLP export of a session that emitted nothing yet, and telling its
+// owner their file is not OTLP/JSON sends them to fix their exporter protocol
+// when nothing is wrong with it.
 type otlpBatch struct {
-	ResourceMetrics []struct {
-		ScopeMetrics []struct {
-			Metrics []otlpMetric `json:"metrics"`
-		} `json:"scopeMetrics"`
-	} `json:"resourceMetrics"`
-	ResourceLogs []struct {
-		ScopeLogs []struct {
-			LogRecords []otlpLogRecord `json:"logRecords"`
-		} `json:"scopeLogs"`
-	} `json:"resourceLogs"`
+	ResourceMetrics *[]otlpResourceMetrics `json:"resourceMetrics"`
+	ResourceLogs    *[]otlpResourceLogs    `json:"resourceLogs"`
+}
+
+type otlpResourceMetrics struct {
+	ScopeMetrics []otlpScopeMetrics `json:"scopeMetrics"`
+}
+
+type otlpScopeMetrics struct {
+	Metrics []otlpMetric `json:"metrics"`
+}
+
+type otlpResourceLogs struct {
+	ScopeLogs []otlpScopeLogs `json:"scopeLogs"`
+}
+
+type otlpScopeLogs struct {
+	LogRecords []otlpLogRecord `json:"logRecords"`
+}
+
+// entries is the slice a pointer envelope field holds, or none. Absent and
+// empty walk the same way; only hasEnvelope cares which one arrived.
+func entries[T any](p *[]T) []T {
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 // otlpMetric is one metric. Sum is nil for a gauge or a histogram — a shape a
@@ -112,12 +135,14 @@ type otlpAttrValue struct {
 // no separator at all are the same input to this reader.
 type otlpExport []otlpBatch
 
-// hasEnvelope reports whether any batch carried an OTLP envelope. A file that
-// parses as JSON but has neither resourceMetrics nor resourceLogs is not a
-// broken export; it is not an export.
+// hasEnvelope reports whether any batch named an OTLP envelope — the key, not
+// entries under it. A file that parses as JSON but names neither
+// resourceMetrics nor resourceLogs is not a broken export; it is not an export.
+// One that names either and carries nothing under it is an export with no
+// telemetry in it, and each signal reports that for itself.
 func (e otlpExport) hasEnvelope() bool {
 	for _, b := range e {
-		if len(b.ResourceMetrics) > 0 || len(b.ResourceLogs) > 0 {
+		if b.ResourceMetrics != nil || b.ResourceLogs != nil {
 			return true
 		}
 	}
@@ -133,7 +158,11 @@ func (e otlpExport) hasEnvelope() bool {
 // not be read, the batch it was in, and where. It never quotes a Go type at
 // them.
 func readOTLP(r io.Reader) (otlpExport, error) {
-	br := bufio.NewReader(r)
+	// The count is taken under the buffered reader, so it is bytes pulled from
+	// the capture itself. When the file ends mid-object there is no offending
+	// byte to name and the length is what there is; see decodeFailure.
+	counted := &countingReader{r: r}
+	br := bufio.NewReader(counted)
 	prelude, err := skipPrelude(br)
 	if err != nil {
 		return nil, err
@@ -153,14 +182,27 @@ func readOTLP(r io.Reader) (otlpExport, error) {
 	// Batch indices are 1-based: batch 1 is the first object in the file, which
 	// is what someone counting lines in their capture will call it.
 	for batchIdx := 1; dec.More(); batchIdx++ {
-		start := prelude + dec.InputOffset()
 		var b otlpBatch
 		if err := dec.Decode(&b); err != nil {
-			return nil, decodeFailure(err, batchIdx, prelude, start)
+			return nil, decodeFailure(err, batchIdx, prelude, counted.n)
 		}
 		export = append(export, b)
 	}
 	return export, nil
+}
+
+// countingReader counts the bytes pulled from the capture file. It is the only
+// thing that knows how long the file was, which is the one place a failure with
+// no offset of its own can honestly point at.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // skipPrelude consumes a UTF-8 byte-order mark and any leading whitespace, and
@@ -216,14 +258,21 @@ func nonObjectKind(head []byte) string {
 
 // decodeFailure turns a decoder error into the reason for it. Each arm reads
 // the error's type, never its message, where that message names Go types.
-func decodeFailure(err error, batchIdx int, prelude, start int64) error {
+//
+// One convention for every byte offset it reports: the 0-based offset, in the
+// capture file, of the first byte the decoder could not accept. The reader has
+// that file open in an editor, so an offset into anything else — the stream
+// after the prelude was consumed, the batch's own start — is an offset they
+// cannot use.
+func decodeFailure(err error, batchIdx int, prelude, fileLen int64) error {
 	var syntaxErr *json.SyntaxError
 	var typeErr *json.UnmarshalTypeError
 	switch {
 	case errors.As(err, &syntaxErr):
-		// SyntaxError names characters, not types, and carries an absolute
-		// offset into the stream the decoder read.
-		return malformedJSON(prelude+syntaxErr.Offset, batchIdx, syntaxErr.Error())
+		// SyntaxError names characters, not types. Its Offset is the number of
+		// bytes read when the error was found, so the offending byte is the one
+		// before it, and prelude puts that back in the file's frame.
+		return malformedJSON(max(prelude+syntaxErr.Offset-1, 0), batchIdx, syntaxErr.Error())
 	case errors.As(err, &typeErr):
 		// Field is the JSON path of the value that did not fit, built from the
 		// struct tags above. typeErr.Error() would print the Go type it did not
@@ -234,9 +283,12 @@ func decodeFailure(err error, batchIdx int, prelude, start int64) error {
 		}
 		return fmt.Errorf("OTel export does not fit the OTLP schema: a value in batch %d is not the expected type", batchIdx)
 	case errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF):
-		// The object began and the file ended. The decoder has no offset for
-		// it, so the batch's own start is what there is to name.
-		return malformedJSON(start, batchIdx, "unexpected end of JSON input")
+		// The object began and the file ended. There is no offending byte in
+		// the file — the byte the decoder wanted is the one past the end — so
+		// the file's length is the honest place to point at. The batch's own
+		// start would send the reader to a batch that is fine as far as it
+		// goes.
+		return malformedJSON(fileLen, batchIdx, "unexpected end of JSON input")
 	}
 	// Anything left is the file failing under us, not its contents.
 	return fmt.Errorf("failed to read OTel export file: %v", err)
@@ -264,7 +316,7 @@ func malformedJSON(offset int64, batchIdx int, detail string) error {
 func (e otlpExport) metrics(name string) iter.Seq[otlpMetric] {
 	return func(yield func(otlpMetric) bool) {
 		for _, b := range e {
-			for _, rm := range b.ResourceMetrics {
+			for _, rm := range entries(b.ResourceMetrics) {
 				for _, sm := range rm.ScopeMetrics {
 					for _, m := range sm.Metrics {
 						if m.Name != name {
@@ -284,7 +336,7 @@ func (e otlpExport) metrics(name string) iter.Seq[otlpMetric] {
 func (e otlpExport) logRecords() iter.Seq[otlpLogRecord] {
 	return func(yield func(otlpLogRecord) bool) {
 		for _, b := range e {
-			for _, rl := range b.ResourceLogs {
+			for _, rl := range entries(b.ResourceLogs) {
 				for _, sl := range rl.ScopeLogs {
 					for _, r := range sl.LogRecords {
 						if !yield(r) {
@@ -564,28 +616,43 @@ const (
 	temporalityCumulative = 2
 )
 
+// temporalityState says how a sum's aggregationTemporality read. Absent and
+// unreadable are separate answers because they are separate things to go and
+// look at in a capture, and because a sum that declared nothing did not declare
+// a wrong temporality.
+type temporalityState int
+
+const (
+	temporalityAbsent     temporalityState = iota // no aggregationTemporality field at all
+	temporalityUnreadable                         // present, but neither an enum value nor an enum name
+	temporalityDeclared                           // a value was read; what it means is the caller's business
+)
+
 // temporality reads the sum's aggregation temporality. The OTLP JSON encoding
 // mandates the integer enum, but a producer going through the standard protobuf
 // JSON mapping emits the name instead, and a collector may quote the digit. All
-// three read; anything else does not, and the caller decides what an unreadable
-// temporality costs rather than this layer guessing.
-func (s otlpSum) temporality() (int64, bool) {
+// three read; anything else does not, and the caller decides what each answer
+// costs rather than this layer guessing.
+func (s otlpSum) temporality() (int64, temporalityState) {
+	if len(s.AggregationTemporality) == 0 {
+		return 0, temporalityAbsent
+	}
 	if n, ok := jsonInt64(s.AggregationTemporality); ok {
-		return n, true
+		return n, temporalityDeclared
 	}
 	name, ok := jsonString(s.AggregationTemporality)
 	if !ok {
-		return 0, false
+		return 0, temporalityUnreadable
 	}
 	switch name {
 	case "AGGREGATION_TEMPORALITY_UNSPECIFIED":
-		return 0, true
+		return 0, temporalityDeclared
 	case "AGGREGATION_TEMPORALITY_DELTA":
-		return temporalityDelta, true
+		return temporalityDelta, temporalityDeclared
 	case "AGGREGATION_TEMPORALITY_CUMULATIVE":
-		return temporalityCumulative, true
+		return temporalityCumulative, temporalityDeclared
 	}
-	return 0, false
+	return 0, temporalityUnreadable
 }
 
 // --- Accumulating counter data points ---
