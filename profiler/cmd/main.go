@@ -96,6 +96,37 @@ func cmdCapture(args []string) {
 		os.Exit(1)
 	}
 	fmt.Println(string(out))
+	os.Exit(captureExitCode(profile))
+}
+
+// captureExitCode is what a script wrapping `capture` branches on.
+//
+// 2 when the capture read nothing and something failed: the export was supplied
+// and could not be used, so the profile carries reasons and no values. Exiting
+// 0 there tells the wrapper the capture succeeded, and a row of zeros gets
+// stored as a result.
+//
+// 0 otherwise — including a profile that is entirely unknown because no
+// telemetry was configured. That is an answer about the session, not a failure
+// of this run, and a caller who wants to insist on telemetry can read the
+// states out of the profile.
+//
+// The profile is printed either way. When the status is non-zero, the reasons
+// in it are the whole point.
+func captureExitCode(p profiler.Profile) int {
+	read, failed := 0, 0
+	for _, state := range p.SignalStates() {
+		switch state {
+		case profiler.MetricPresent:
+			read++
+		case profiler.MetricError:
+			failed++
+		}
+	}
+	if failed > 0 && read == 0 {
+		return 2
+	}
+	return 0
 }
 
 // captureFlagError reports why the selected adapter cannot honour the flags it

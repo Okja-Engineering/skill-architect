@@ -198,6 +198,20 @@ type Profile struct {
 	Attribution     AttributionResult `json:"attribution"`
 }
 
+// SignalStates is the state of every signal in the profile, keyed by the name
+// the capability report uses. It is the one place the profile's five results
+// are enumerated together, so a caller asking "did this capture read anything"
+// cannot walk four of them and believe it walked the set.
+func (p Profile) SignalStates() map[MetricName]MetricState {
+	return map[MetricName]MetricState{
+		MetricTokens:          p.Tokens.State,
+		MetricToolCalls:       p.ToolCalls.State,
+		MetricSkillActivation: p.SkillActivation.State,
+		MetricTiming:          p.Timing.State,
+		MetricAttribution:     p.Attribution.State,
+	}
+}
+
 // ProfileSchema is the version string embedded in every profile.
 const ProfileSchema = "skill-architect/profile/v1"
 

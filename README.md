@@ -78,6 +78,13 @@ telemetry, they come back `unknown` instead: that includes well-formed JSON with
 `resourceMetrics` or `resourceLogs`, which is reported as not being an OTLP export rather
 than as a broken one.
 
+`capture` exits **2** when every signal came back `error` and none was read — a supplied
+export that could not be used — and **0** otherwise, including a profile that is entirely
+`unknown` because no telemetry was configured. The profile is written to stdout either
+way, so a non-zero status still gives you the reasons. Scripts that store capture output
+should check the status: exiting 0 after reading nothing is how a broken `--otel-file`
+path becomes a row of zeros in a comparison.
+
 `skill_activation` and `attribution` are always `none`. Claude Code emits no skill
 activation event. It does attach a `skill.name` attribute to `claude_code.token.usage`,
 `claude_code.cost.usage` and `claude_code.api_request`, marking the skill active for that
