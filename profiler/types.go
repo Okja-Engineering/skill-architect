@@ -160,14 +160,18 @@ type TokenResult struct {
 	Value *TokenCounts `json:"value,omitempty"`
 }
 
-// ToolCallResult is the metric result for tool call entries.
-// Value is a pointer so omitempty works — nil means no value (unknown/error states).
+// ToolCallResult is the metric result for tool call entries. Value is a slice,
+// and omitempty drops its key when it is nil or empty — which is the same thing
+// here, because a result with no entries is never present.
 type ToolCallResult struct {
 	RawMetricResult
 	Value []ToolCallEntry `json:"value,omitempty"`
 }
 
-// ActivationResult is the metric result for skill activation events.
+// ActivationResult is the metric result for skill activation events. Value is a
+// slice, like ToolCallResult's, and has no Error constructor: skill activation
+// is a property of the harness and of this adapter, not of any export, so no
+// export can fail it.
 type ActivationResult struct {
 	RawMetricResult
 	Value []ActivationEntry `json:"value,omitempty"`
@@ -180,7 +184,9 @@ type TimingResult struct {
 	Value *TimingData `json:"value,omitempty"`
 }
 
-// AttributionResult is the metric result for attribution data.
+// AttributionResult is the metric result for attribution data. Value is a
+// pointer so omitempty drops the key for unknown states, and there is no Error
+// constructor for the same reason ActivationResult has none.
 type AttributionResult struct {
 	RawMetricResult
 	Value *AttributionData `json:"value,omitempty"`

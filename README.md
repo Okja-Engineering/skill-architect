@@ -61,8 +61,8 @@ only when the export yields a value the adapter can actually read:
 
 | Capability | Reported `otel` when the export carries |
 |---|---|
-| `tokens` | a `claude_code.token.usage` metric whose sum data points carry a `type` attribute of `input`, `output`, `cacheRead` or `cacheCreation` and a numeric `asDouble` or `asInt` value |
-| `tool_calls` | `claude_code.tool_result` events carrying a tool name and a readable `success` value, plus `claude_code.tool_decision` events recording a reject |
+| `tokens` | a `claude_code.token.usage` sum that declares an `aggregationTemporality` of 1 or 2, with a data point carrying a `type` attribute of `input`, `output`, `cacheRead` or `cacheCreation` and a value that is a token count — a whole number from 0 to 2⁶³−1, from `asDouble` or `asInt` |
+| `tool_calls` | `claude_code.tool_result` events carrying a tool name and a readable `success` value, **or** `claude_code.tool_decision` events recording a reject with a tool name. Either alone is enough |
 | `timing` | `claude_code.api_request` events carrying a parseable timestamp |
 
 Anything else is `none`, and `capture` delivers exactly what `probe` advertised, because
@@ -73,17 +73,28 @@ reason, rather than discarding the run.
 A file you supplied is never reported as "unconfigured". If it cannot be read as an
 OTLP/JSON export — unreadable, empty, not a JSON object at the top level, malformed, or
 carrying a value that does not fit the OTLP schema — all three OTel signals come back
-`error`, naming the failure and the batch and byte it was at. If it parses but carries no
-telemetry, they come back `unknown` instead: that includes well-formed JSON with no
-`resourceMetrics` or `resourceLogs`, which is reported as not being an OTLP export rather
-than as a broken one.
+`error`, naming the failure. Malformed JSON is the one of those five that has a place in
+the file to point at, and it names the batch (1-based) and the byte: the 0-based offset of
+the first byte the decoder could not accept, or the file's length when the file ended
+mid-object. If it parses but carries no telemetry, the signals come back `unknown`
+instead: JSON with neither a `resourceMetrics` nor a `resourceLogs` key is reported as not
+being an OTLP export rather than as a broken one, and an export that has the key with
+nothing under it gets a per-signal "none of mine is in here" reason.
 
-`capture` exits **2** when every signal came back `error` and none was read — a supplied
-export that could not be used — and **0** otherwise, including a profile that is entirely
-`unknown` because no telemetry was configured. The profile is written to stdout either
+A token count the export said nothing about is **absent** from the profile rather than
+reported as `0`: a cache-only export gives you `cache_read` and no `input` or `output`
+key, because "nothing was said about output tokens" is not "no output tokens". A count
+read as zero keeps its key, with `0` in it. No key names changed; the profile schema is
+still `skill-architect/profile/v1`.
+
+`capture` exits **2** when nothing was read and at least one signal came back `error` — a
+supplied export that could not be used — and **0** otherwise, including a profile that is
+entirely `unknown` because no telemetry was configured. The profile is written to stdout either
 way, so a non-zero status still gives you the reasons. Scripts that store capture output
 should check the status: exiting 0 after reading nothing is how a broken `--otel-file`
-path becomes a row of zeros in a comparison.
+path becomes a row of zeros in a comparison. Every usage error — an unknown command or
+harness, a missing required flag, an unrecognised flag, `--export-file` — exits **1**, so
+2 means the capture and nothing else.
 
 `skill_activation` and `attribution` are always `none`. Claude Code emits no skill
 activation event. It does attach a `skill.name` attribute to `claude_code.token.usage`,
@@ -111,8 +122,6 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 export OTEL_METRIC_EXPORT_INTERVAL=2000   # default 60000 — too slow for a short run
 export OTEL_LOGS_EXPORT_INTERVAL=1000     # default 5000
-export OTEL_LOG_TOOL_DETAILS=1            # exposes tool parameters on tool_result /
-                                          # tool_decision events; this adapter reads none
 claude -p "…"
 ```
 
@@ -174,8 +183,18 @@ That is not JSON at all, and it is not the OTLP envelope either. Nothing can par
 Two things to know about the resulting file. If the collector or receiver is stopped
 mid-write, the last line is a partial object: the profiler reports `error` naming that
 batch and offset and uses nothing from the earlier ones, so restart cleanly or delete the
-partial last line and retry. And a real capture carries `user.email`, `organization.id`
-and `session.id` — scrub it before pasting into an issue.
+partial last line and retry.
+
+**A capture identifies you.** Every metric data point and every log record carries
+`user.email`, `user.id`, `user.account_id`, `user.account_uuid`, `organization.id` and
+`session.id`, and that list is what was observed on one version — treat it as the floor,
+not the whole of it, and read the file before you share it. `prompt` and `response` are
+`<REDACTED>` by default, and the recipe above does nothing to change that.
+
+Leave `OTEL_LOG_TOOL_DETAILS` unset. It is not needed — this adapter reads nothing it
+adds — and setting it widens the export to include tool parameters, untruncated commands
+and full error text. Anthropic's docs suggest it for other purposes; for capturing a
+profile it only puts more of your session in a file you may end up pasting somewhere.
 
 A bundled receiver subcommand is 0.5.0; `--otel-file` is the only input today.
 
@@ -224,11 +243,15 @@ claude plugin install skill-architect@skill-architect
 
 `claude plugin list` then shows `skill-architect@skill-architect` at version 0.4.1.
 
-| Agent | Command |
-|---|---|
-| Devin | `devin plugins install Okja-Engineering/skill-architect` |
-| Codex | Install from the local plugin directory or marketplace entry (see [Codex plugin docs](https://www.codex-docs.com/en/docs/build-plugins)) |
-| Cursor | Copy or symlink the plugin directory to your Cursor plugins folder (see [Cursor plugin docs](https://cursor.com/docs/plugins)) |
+The three below are **not verified in this release** — nobody ran them against a clean
+install, unlike the Claude Code route above. They are what each agent's documentation
+describes; if one is wrong, the manual copy under "Local checkout" works everywhere.
+
+| Agent | Command | Status |
+|---|---|---|
+| Devin | `devin plugins install Okja-Engineering/skill-architect` | not verified; check the exact source form against Devin's own docs, since this release found that `.` and `./` are not interchangeable for Claude Code |
+| Codex | Install from the local plugin directory or marketplace entry (see [Codex plugin docs](https://www.codex-docs.com/en/docs/build-plugins)) | not verified |
+| Cursor | Copy or symlink the plugin directory to your Cursor plugins folder (see [Cursor plugin docs](https://cursor.com/docs/plugins)) | not verified |
 
 All native plugins use the same namespace:
 
@@ -240,10 +263,10 @@ All native plugins use the same namespace:
 ### Local checkout
 
 ```bash
-# Devin
+# Devin — not verified in this release
 devin plugins install .
 
-# Claude Code (from inside the repo)
+# Claude Code (from inside the repo) — verified live against a clean install
 claude plugin marketplace add ./
 claude plugin install skill-architect@skill-architect
 ```

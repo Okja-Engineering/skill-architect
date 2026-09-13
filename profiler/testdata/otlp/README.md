@@ -1,12 +1,15 @@
 # OTLP/JSON fixtures for the Claude Code adapter
 
 Every file here is an input to `ClaudeCodeAdapter`, read through `--otel-file`.
-They are real OTLP/JSON: one `ExportMetricsServiceRequest` or
+Most are real OTLP/JSON: one `ExportMetricsServiceRequest` or
 `ExportLogsServiceRequest` object per JSON object, exactly what a local OTLP
 receiver (README route (a)) or the collector's `file` exporter (route (b))
-writes. `.json` files hold a single object, pretty-printed for review; `.ndjson`
-files hold one object per line, which is the framing both capture routes
-produce.
+writes. `.ndjson` files hold one object per line, which is the framing both
+capture routes produce. `.json` files hold a single object, pretty-printed for
+review — except for the four that exist to be unreadable, which are whatever
+their failure needs them to be: `empty.json` is zero bytes, `no_envelope.json`
+is `{}`, `malformed.json` is one truncated line, and `top_level_array.json` is
+an array rather than an object.
 
 JSON has no comments, so what is real and what is constructed is recorded here.
 
@@ -51,7 +54,7 @@ Session ids and user ids here are placeholders. A real capture carries
 | `zero_token_count.json` | A count read as zero is a measurement, not an absence: `input: 0` and `cache_creation: 0` are both in the profile. |
 | `gauge_not_sum.json` | `claude_code.token.usage` arriving as a `gauge` instead of a `sum`: counted as seen, carries no sum data points, no panic. |
 | `accept_then_result.json` | An accepted `tool_decision` and its `tool_result` on one `tool_use_id` yield exactly one entry. The two entry sources are disjoint, so no de-duplication is needed. |
-| `tool_failure.json` | `success: "false"` is a listed call that failed; a `tool_result` with no `success` key at all is not a call that failed — it is not listed, and it is counted in the reason instead. |
+| `tool_failure.json` | `success: "false"` is a listed call that failed; a `tool_result` with no `success` key at all is not a call that failed — it is not listed at all. It is counted, but the count goes nowhere here: the other call was read, so the result is `present`, and a `present` result carries no reason in profile/v1. The count only reaches a reason when nothing was read (see `unreadable_tool_events.json`). |
 | `unreadable_tool_events.json` | One defect of each kind (no `tool_name`, no readable `success`, an unrecognised `decision`), so the `calls == 0` reason names all three with the count the walk observed. |
 | `accepts_no_results.json` | Accepts with no results yet — an export captured mid-run. The reason says that, and does not claim the events carried no tool name. |
 | `unnamed_reject.json` | A rejected `tool_decision` with no `tool_name`: not an entry, and the reason names it rather than falling through to an empty clause list. |
@@ -64,7 +67,7 @@ Session ids and user ids here are placeholders. A real capture carries
 | `untimed_api_request.json` | An `api_request` with no `timeUnixNano`. The `event.timestamp` attribute beside it duplicates the record field in RFC 3339, and is deliberately not a second time source: timing is `unknown`, naming what was unreadable. |
 | `out_of_order.ndjson` | Timing is a span over `api_request` records, not file order: batches arrive newest-first and `total_ms` is still positive. |
 | `unknown_events.json` | Only `hook_registered` and `user_prompt`. Unknown event names are ignored silently: all three signals `unknown`, never `error`. |
-| `malformed.json` | Truncated mid-object in the first and only batch: `error`, naming the byte offset, with no mid-write advice (there were no earlier batches to lose). |
+| `malformed.json` | Truncated mid-object in the first and only batch: `error` naming byte 87, which is the file's length — the file ended, so the byte the decoder wanted is the one past the end. No mid-write advice, because there were no earlier batches to lose. |
 | `truncated_final_line.ndjson` | Three complete batches and a partial fourth line, as a collector killed mid-write leaves behind: `error` naming batch 4 and the offset, plus what to do about it. Earlier batches are not used — a swallowed parse error is how the adapter used to lie. |
 | `type_mismatch.json` | `resourceMetrics` as an object where the schema wants an array: `error`, naming the JSON path, never a Go type name. |
 | `top_level_array.json` | A JSON array of export objects — a plausible mistake, and not OTLP: `error` saying so in those words. |

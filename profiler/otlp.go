@@ -437,8 +437,13 @@ func nanoTime(raw json.RawMessage) (time.Time, bool) {
 }
 
 // bodyName reads a log record's body as a name. The body is an AnyValue, and
-// three shapes all occur in practice: an object carrying stringValue, a bare
-// JSON string, and no body at all. None of them is a reason to fail the record.
+// three shapes are handled: an object carrying stringValue, which is the one
+// observed on the wire from Claude Code v2.1.221; a bare JSON string, which the
+// OTLP JSON encoding permits and a collector may re-serialise to; and no body
+// at all, which attribute cardinality limits can produce. Only the first has
+// been seen; the other two are read because they cost one branch each and the
+// alternative is losing a record over a formatting difference. None of them is
+// a reason to fail the record.
 func bodyName(raw json.RawMessage) (string, bool) {
 	if s, ok := jsonString(raw); ok {
 		return s, true
