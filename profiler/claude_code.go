@@ -22,8 +22,10 @@ const (
 // (or a file-based exporter), not a live network endpoint, to keep the adapter
 // self-contained and testable without a running collector.
 //
-// Skill activation and attribution are always unknown for Claude Code — it has
-// no skill-level events in its OTel surface, only tool_decision (tool-level).
+// Skill activation and attribution are always unknown for Claude Code. Its OTel
+// surface has no skill activation event and no output-to-skill mapping; the
+// skill.name attribute it does attach to token and cost metrics is not read
+// yet, so claiming either signal would be inventing it.
 type ClaudeCodeAdapter struct {
 	// OtelExportFile is the path to a JSON file containing OTel-exported data.
 	// Required for both Probe and Capture to report OTel capabilities.

@@ -212,7 +212,7 @@ type Attribution struct {
    - `claude_code.tool_decision` log events → `tool_calls: otel`
    - `claude_code.api_request` log events → `timing: otel`
    If the file is empty, malformed, or missing the relevant signal, that capability stays `none`.
-2. Skill activation and attribution are always `none` for Claude Code (no skill-level events in OTel).
+2. Skill activation and attribution are always `none` for Claude Code: its OTel surface has no activation event and no output-to-skill mapping. The `skill.name` attribute on token and cost metrics is not read yet.
 
 **Capture logic:**
 1. Probe first. If `AnySource()` is false there is nothing to read: every metric is `unknown` with the fallback reason below, and capture stops. Otherwise read the export file.
