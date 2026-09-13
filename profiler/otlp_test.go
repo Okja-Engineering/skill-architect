@@ -5,6 +5,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -285,6 +287,85 @@ func TestOTLP_SeriesKeyIsTheAttributeSetNotItsText(t *testing.T) {
 			if a, b := attrs(t, tc.a).seriesKey(), attrs(t, tc.b).seriesKey(); a != b {
 				t.Errorf("%s keys as %q and %s as %q — one series would split in two",
 					tc.a, a, tc.b, b)
+			}
+		})
+	}
+}
+
+// --- Byte offsets ---
+//
+// A failure reason points at a byte so the person holding the capture can open
+// the file and look at it. That only works if every reason counts bytes the
+// same way, in the file they have rather than in whatever the decoder happened
+// to be given. The convention: the 0-based offset of the first byte the decoder
+// could not accept, and for a file that simply ended, the file's length.
+
+// reasonOffset is the byte offset a malformed-JSON reason names.
+func reasonOffset(t *testing.T, reason string) int64 {
+	t.Helper()
+	m := regexp.MustCompile(`malformed JSON at byte (\d+) in batch (\d+)`).FindStringSubmatch(reason)
+	if m == nil {
+		t.Fatalf("reason %q names no byte offset", reason)
+	}
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// The offset is an offset into the file, not into the stream the decoder was
+// handed: a byte-order mark and leading whitespace are bytes the reader's
+// editor will count, so the reason has to count them too.
+func TestOTLP_AnOffsetNamesTheOffendingByteInTheFile(t *testing.T) {
+	// The only character in each of these that cannot appear where it does is
+	// the `]`, so the offset the reason names must land exactly on it.
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"no prelude", `{"resourceMetrics":]}`},
+		{"a byte-order mark", "\xef\xbb\xbf" + `{"resourceMetrics":]}`},
+		{"a byte-order mark and leading whitespace", "\xef\xbb\xbf\n  " + `{"resourceMetrics":]}`},
+		{"leading whitespace alone", "\n\n\t" + `{"resourceMetrics":]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, tc.content)}
+			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := reasonOffset(t, profile.Tokens.Reason)
+			if at < 0 || at >= int64(len(tc.content)) {
+				t.Fatalf("reason names byte %d, outside a file of %d bytes: %q",
+					at, len(tc.content), profile.Tokens.Reason)
+			}
+			if got := tc.content[at]; got != ']' {
+				t.Errorf("reason names byte %d, which is %q; the byte the decoder could not accept is the %q at %d",
+					at, string(got), "]", strings.IndexByte(tc.content, ']'))
+			}
+		})
+	}
+}
+
+// When the file simply ended, there is no offending byte in it: the byte the
+// decoder wanted is the one past the end, so the length is what there is to
+// name. Naming the batch's first byte instead sends the reader to the start of
+// a batch that is fine as far as it goes.
+func TestOTLP_AnUnexpectedEndOfFileNamesTheFileLength(t *testing.T) {
+	for _, name := range []string{"malformed.json", "truncated_final_line.ndjson"} {
+		t.Run(name, func(t *testing.T) {
+			content, err := os.ReadFile(fixture(name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile := capturedProfile(t, name)
+			if profile.Tokens.State != MetricError {
+				t.Fatalf("tokens state = %q, want error", profile.Tokens.State)
+			}
+			if at := reasonOffset(t, profile.Tokens.Reason); at != int64(len(content)) {
+				t.Errorf("reason names byte %d for a %d-byte file that ends mid-object: %q",
+					at, len(content), profile.Tokens.Reason)
 			}
 		})
 	}

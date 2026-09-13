@@ -614,13 +614,25 @@ func TestCapture_ReasonNamesWhatTheExportActuallyCarried(t *testing.T) {
 			wantIn:  []string{"OTel export does not fit the OTLP schema", "resourceMetrics", "in batch 1"},
 			wantOut: []string{"profiler.", "otlpBatch", "Go struct"}},
 
-		// File-level: parsed fine, carried no telemetry.
+		// File-level: the JSON object is not an OTLP export at all — neither
+		// envelope key is there to be empty.
 		{fixture: "no_envelope.json", metric: MetricTokens,
 			wantIn:  []string{"no resourceMetrics or resourceLogs found", "OTEL_EXPORTER_OTLP_PROTOCOL=http/json"},
 			wantOut: []string{"no claude_code.token.usage metric found"}},
 		{fixture: "bespoke_envelope.json", metric: MetricTokens,
 			wantIn:  []string{"OTel export is not OTLP/JSON", "no resourceMetrics or resourceLogs found"},
 			wantOut: []string{"no claude_code.token.usage metric found"}},
+
+		// An export that carried the envelope and no telemetry inside it is an
+		// OTLP export — an empty one. Telling its owner it is "not OTLP/JSON"
+		// sends them to fix their exporter protocol, when what they have is a
+		// session that emitted nothing yet.
+		{fixture: "empty_envelope.json", metric: MetricTokens,
+			want: "no claude_code.token.usage metric found in OTel export"},
+		{fixture: "empty_envelope.json", metric: MetricToolCalls,
+			want: "no claude_code.tool_result or claude_code.tool_decision log events found in OTel export"},
+		{fixture: "empty_envelope.json", metric: MetricTiming,
+			want: "no claude_code.api_request log events found in OTel export"},
 
 		// Per signal: the counters the walk kept.
 		{fixture: "unknown_events.json", metric: MetricTokens,
@@ -631,10 +643,25 @@ func TestCapture_ReasonNamesWhatTheExportActuallyCarried(t *testing.T) {
 			want: "no claude_code.api_request log events found in OTel export"},
 		{fixture: "gauge_not_sum.json", metric: MetricTokens,
 			want: "no readable claude_code.token.usage metric in OTel export: it carried no sum data points"},
+		// Absent, unreadable, and declared-but-neither are three different
+		// things to go and look at in a capture, so they are three clauses. A
+		// sum that declared nothing did not declare a wrong temporality.
 		{fixture: "unreadable_temporality.json", metric: MetricTokens,
-			wantIn: []string{"no readable claude_code.token.usage metric in OTel export:",
-				"2 data points declared an aggregationTemporality that is neither 1 (delta) nor 2 (cumulative)"},
-			wantOut: []string{"no data point carried both a recognised type attribute"}},
+			want: "no readable claude_code.token.usage metric in OTel export: " +
+				"1 data point carried an aggregationTemporality that could not be read; " +
+				"1 data point declared an aggregationTemporality that is neither 1 (delta) nor 2 (cumulative)",
+			wantOut: []string{"carried no aggregationTemporality"}},
+		{fixture: "absent_temporality.json", metric: MetricTokens,
+			want: "no readable claude_code.token.usage metric in OTel export: " +
+				"1 data point carried no aggregationTemporality",
+			wantOut: []string{"declared an aggregationTemporality"}},
+		{fixture: "unrecognised_token_type.json", metric: MetricTokens,
+			want: "no readable claude_code.token.usage metric in OTel export: " +
+				"2 data points carried no recognised type attribute (input/output/cacheRead/cacheCreation)"},
+		{fixture: "value_not_a_count.json", metric: MetricTokens,
+			want: "no readable claude_code.token.usage metric in OTel export: " +
+				"4 data points carried a value that is not a token count: " +
+				"a count is a whole number from 0 to 9223372036854775807"},
 		{fixture: "untimed_api_request.json", metric: MetricTiming,
 			want: "no readable claude_code.api_request log events in OTel export: none carried a parseable timeUnixNano"},
 
@@ -643,16 +670,16 @@ func TestCapture_ReasonNamesWhatTheExportActuallyCarried(t *testing.T) {
 		// observed.
 		{fixture: "unreadable_tool_events.json", metric: MetricToolCalls,
 			want: "no tool call outcomes in OTel export: " +
-				"1 claude_code.tool_result events carried no tool_name; " +
-				"1 claude_code.tool_result events carried no readable success value; " +
-				"1 claude_code.tool_decision events carried no recognised decision"},
+				"1 claude_code.tool_result event carried no tool_name; " +
+				"1 claude_code.tool_result event carried no readable success value; " +
+				"1 claude_code.tool_decision event carried no recognised decision"},
 		{fixture: "accepts_no_results.json", metric: MetricToolCalls,
 			want: "no tool call outcomes in OTel export: " +
-				"2 claude_code.tool_decision events were accepts, and only claude_code.tool_result " +
+				"2 accepted claude_code.tool_decision events, and only claude_code.tool_result " +
 				"reports an outcome — the export may have been captured before those tools completed"},
 		{fixture: "unnamed_reject.json", metric: MetricToolCalls,
 			want: "no tool call outcomes in OTel export: " +
-				"1 claude_code.tool_decision events recorded a reject with no tool_name"},
+				"1 claude_code.tool_decision event recorded a reject with no tool_name"},
 
 		// The mandate boundary: skill.name is carried verbatim for a
 		// user-defined skill, and the adapter says it does not read it — not
