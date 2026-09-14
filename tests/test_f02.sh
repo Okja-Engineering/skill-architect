@@ -433,6 +433,137 @@ assert "audit-report, policy source passes but the license is missing: summary.p
 assert "audit-report, policy source passes but the license is missing: PL001 is in the findings" \
   "$(echo "$output" | jq -e '.policy.findings[] | select(.rule == "PL001")' >/dev/null 2>&1 && echo true || echo false)"
 
+# --- Every source is read only as far as its shape has been proven ---
+#
+# `jq -e .` proves a source parsed and nothing more. The merge then indexes
+# `.passed`, `.errors` and `.warnings` out of the spec source and
+# `.overallScore.percentage` out of the quality source — fields of a shape
+# nothing had checked. A source that parses without carrying them takes jq down
+# inside the final merge and the composer exits 5 with no report at all, or,
+# over a stream of documents, exits 2 from `--argjson` with jq's usage dump on
+# stderr. Both are outside the {0, 3} this file's header documents, and both are
+# the opposite of the promise the file is built around: the report still
+# generates, and names the source it could not read.
+#
+# This is the same split the policy table above walks, at the two sources one
+# level up, and it is closed the same way. The contract is one sentence in all
+# three places: a source is proven to carry the shape about to be read out of it
+# — one document, of the type being indexed — or it is a source this report
+# could not read. What that shape is differs per source, because what is read
+# out of them differs.
+#
+# A source stub is the symlink farm above minus the tool, with a directory in
+# front of it holding a script that emits a canned payload. Nothing is deleted,
+# moved or uninstalled.
+
+source_stub_path() {
+  local tool="$1"
+  local name="$2"
+  local payload="$3"
+  local dir="$mask_root/stub-$tool-$name"
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir"
+    printf '%s' "$payload" > "$dir/payload"
+    printf '#!/usr/bin/env bash\ncat "$(dirname "$0")/payload"\nexit 0\n' > "$dir/$tool"
+    chmod +x "$dir/$tool"
+  fi
+  echo "$dir:$(masked_path "$tool")"
+}
+
+# The spec source is read as `.passed`, `.errors` and `.warnings` of one
+# document, so one document that is an object is the whole of what has to hold.
+spec_names=()
+spec_payloads=()
+spec_readable=()
+spec_case() {
+  spec_names+=("$1")
+  spec_payloads+=("$2")
+  spec_readable+=("$3")
+}
+
+spec_case conforming    '{"passed": true, "errors": 0, "warnings": 0}'   yes
+spec_case top-number    '0'                                             no
+spec_case top-array     '[1, 2]'                                        no
+spec_case top-string    '"a verdict"'                                   no
+spec_case top-boolean   'true'                                          no
+spec_case top-null      'null'                                          no
+spec_case two-documents '{"passed": true} {"passed": false}'            no
+spec_case not-json      'not json at all'                               no
+
+for i in "${!spec_names[@]}"; do
+  vname="${spec_names[$i]}"
+  run_on_path "$(source_stub_path skill-validator "$vname" "${spec_payloads[$i]}")" \
+    "$REPORT" tests/fixtures/f01/valid-full
+
+  assert "audit-report, spec source $vname: exits inside the documented set" \
+    "$([[ $code -eq 0 || $code -eq 3 ]] && echo true || echo false)"
+  assert "audit-report, spec source $vname: a report is still produced" \
+    "$([[ $code -eq 0 ]] && echo "$output" | jq -e '.summary.passed != null' >/dev/null 2>&1 && echo true || echo false)"
+
+  if [[ "${spec_readable[$i]}" == "yes" ]]; then
+    assert "audit-report, spec source $vname: is read, so the report carries the source's verdict" \
+      "$(echo "$output" | jq -e '.spec.passed == true and .summary.spec_passed == true and .spec_error == null' >/dev/null 2>&1 && echo true || echo false)"
+  else
+    assert "audit-report, spec source $vname: the source is not read" \
+      "$(echo "$output" | jq -e '.spec == null' >/dev/null 2>&1 && echo true || echo false)"
+    assert "audit-report, spec source $vname: no field is read out of a source it could not read" \
+      "$(echo "$output" | jq -e '.summary.spec_errors == null and .summary.spec_warnings == null' >/dev/null 2>&1 && echo true || echo false)"
+    assert "audit-report, spec source $vname: does not claim the skill passed over a source it could not read" \
+      "$([[ "$(echo "$output" | jq -r '.summary.spec_passed' 2>/dev/null)" == "false" && "$(echo "$output" | jq -r '.summary.passed' 2>/dev/null)" == "false" ]] && echo true || echo false)"
+  fi
+done
+
+# The quality source is read two levels in — `.overallScore.percentage` and
+# `.overallScore.letterGrade` — so proving the top level and then indexing
+# `.overallScore` would be the same defect one level down. The claim reaches as
+# far as the read reaches, and no further: a source with no `overallScore` at
+# all is read, and leaves the score null, because that is what the read yields.
+quality_names=()
+quality_payloads=()
+quality_readable=()
+quality_case() {
+  quality_names+=("$1")
+  quality_payloads+=("$2")
+  quality_readable+=("$3")
+}
+
+quality_case conforming    '{"overallScore": {"percentage": 80, "letterGrade": "B-"}}' yes
+quality_case score-absent  '{"categories": []}'                                        yes
+quality_case score-number  '{"overallScore": 80}'                                      no
+quality_case score-string  '{"overallScore": "B-"}'                                    no
+quality_case score-array   '{"overallScore": [80]}'                                    no
+quality_case top-boolean   'true'                                                      no
+quality_case top-number    '7'                                                         no
+quality_case top-array     '[]'                                                        no
+quality_case two-documents '{"overallScore": {}} {"overallScore": {}}'                 no
+quality_case not-json      'not json at all'                                           no
+
+for i in "${!quality_names[@]}"; do
+  qname="${quality_names[$i]}"
+  run_on_path "$(source_stub_path skillscore "$qname" "${quality_payloads[$i]}")" \
+    "$REPORT" tests/fixtures/f01/valid-full
+
+  assert "audit-report, quality source $qname: exits inside the documented set" \
+    "$([[ $code -eq 0 || $code -eq 3 ]] && echo true || echo false)"
+  assert "audit-report, quality source $qname: a report is still produced" \
+    "$([[ $code -eq 0 ]] && echo "$output" | jq -e '.summary.passed != null' >/dev/null 2>&1 && echo true || echo false)"
+  # Quality is a score, not a verdict. However this source turns out, the
+  # verdict over a skill that passes is still a pass.
+  assert "audit-report, quality source $qname: the verdict is the quality source's to inform, not to decide" \
+    "$([[ "$(echo "$output" | jq -r '.summary.passed' 2>/dev/null)" == "true" ]] && echo true || echo false)"
+
+  if [[ "${quality_readable[$i]}" == "yes" ]]; then
+    assert "audit-report, quality source $qname: is read, so no quality_error is raised" \
+      "$(echo "$output" | jq -e '.quality != null and .quality_error == null' >/dev/null 2>&1 && echo true || echo false)"
+  else
+    assert "audit-report, quality source $qname: the source is not read, and is named" \
+      "$(echo "$output" | jq -e '.quality == null and .quality_error != null' >/dev/null 2>&1 && echo true || echo false)"
+    assert "audit-report, quality source $qname: no score is read out of a source it could not read" \
+      "$(echo "$output" | jq -e '.summary.quality_score == null and .summary.quality_grade == null' >/dev/null 2>&1 && echo true || echo false)"
+  fi
+done
+
+
 echo
 echo "$pass passed, $fail failed"
 if [[ "$fail" -gt 0 ]]; then

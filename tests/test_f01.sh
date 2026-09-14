@@ -523,6 +523,16 @@ shape_case element-no-rule         '{"passed": false, "findings": [{"level": "fa
 shape_case element-rule-number     '{"passed": false, "findings": [{"level": "fail", "rule": 123, "message": "m"}]}'   dep dep
 shape_case element-no-message      '{"passed": false, "findings": [{"level": "fail", "rule": "PT001"}]}'               dep dep
 
+# Every element, not merely some element. Each row above breaks the shape in an
+# array where *no* element conforms, so a predicate asking "does some element
+# conform?" answers the same as one asking "do all of them?", and no row can
+# tell the two apart. A conforming element beside a non-conforming one in the
+# same array separates them: the weaker question reads the payload as the
+# documented shape and hands it to a reader that then indexes `.level` of a
+# number — the exact defect the predicate exists to close, reopened.
+shape_case element-mixed-false     "{\"passed\": false, \"findings\": [$F_FAIL, 42]}"   dep dep
+shape_case element-mixed-true      "{\"passed\": true, \"findings\": [$F_UNVER, 42]}"   dep dep
+
 # One document is the contract. A stream of them is not, whichever position the
 # conforming one holds in it.
 shape_case trailing-garbage        '{"passed": true, "findings": []} {"x": 1}'                             dep dep
@@ -677,6 +687,70 @@ assert "guard: json_string emits valid JSON for control characters beside multi-
   "$(echo "$guard_mixed_out" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
 assert "guard: json_string round-trips control characters beside multi-byte ones exactly" \
   "$([[ "$(echo "$guard_mixed_out" | jq -r . 2>/dev/null)" == "$guard_mixed" ]] && echo true || echo false)"
+
+# The decision and the format have to be the same question. `\u00xx` can spell
+# an ordinal below 0x80 and nothing else, so the arm that emits it may never be
+# reached with an ordinal it cannot spell — and deciding by character class
+# rather than by ordinal is what let the two disagree. Under a UTF-8 locale
+# `[[:cntrl:]]` matches a byte at or above 0x80, both an invalid UTF-8 byte and
+# the valid C1 controls U+0080-U+009F, while bash reports that byte as a
+# *negative* ordinal: the format then emitted sixteen hex digits where it
+# promised four, and the message stopped saying what it was given. That is the
+# same corruption as the ordinal test this replaced, one input class short of
+# closed, and it is invisible to a check that only asks whether the payload
+# parses — `￿` is a legal escape and the rest of the digits are literal
+# text.
+#
+# So the invariant is pinned directly — no escape this encoder emits is wider
+# than four hex digits — and beside it the consequence that makes it matter:
+# the same bytes in, the same bytes out, whatever locale the encoder ran under.
+
+utf8_locale=""
+for lcand in en_US.UTF-8 en_US.utf8 C.UTF-8 C.utf8; do
+  if [[ "$(LC_ALL="$lcand" locale charmap 2>/dev/null)" == "UTF-8" ]]; then
+    utf8_locale="$lcand"
+    break
+  fi
+done
+assert "guard: a UTF-8 locale is available to drive the encoder under" \
+  "$([[ -n "$utf8_locale" ]] && echo true || echo false)"
+
+enc_names=(invalid-byte-80 invalid-byte-ff c1-control-nel c1-control-9f ascii-control del multi-byte)
+# Each witness ends in a character that is not a hex digit. A JSON escape
+# carries no terminator, so `\u0001b` is five hex digits after the `\u` by
+# inspection and four by construction, and a width check over it would be
+# reading the text after the escape as part of it.
+enc_inputs=($'a\x80z' $'a\xffz' $'a\xc2\x85z' $'a\xc2\x9fz' $'a\x01z' $'a\x7fz' $'caf\xc3\xa9 \xf0\x9f\x98\x80')
+
+for ei in "${!enc_names[@]}"; do
+  ename="${enc_names[$ei]}"
+  enc_c="$(LC_ALL=C bash -c 'source "$1"; json_string "$2"' _ "$GUARD" "${enc_inputs[$ei]}" 2>/dev/null || true)"
+  enc_u="$(LC_ALL="$utf8_locale" bash -c 'source "$1"; json_string "$2"' _ "$GUARD" "${enc_inputs[$ei]}" 2>/dev/null || true)"
+
+  assert "guard: json_string on $ename emits no escape wider than four hex digits, under C" \
+    "$(printf '%s' "$enc_c" | grep -qE '\\u[0-9a-fA-F]{5}' && echo false || echo true)"
+  assert "guard: json_string on $ename emits no escape wider than four hex digits, under $utf8_locale" \
+    "$(printf '%s' "$enc_u" | grep -qE '\\u[0-9a-fA-F]{5}' && echo false || echo true)"
+  assert "guard: json_string on $ename encodes identically under C and $utf8_locale" \
+    "$([[ "$enc_c" == "$enc_u" ]] && echo true || echo false)"
+done
+
+# The two ends of the class, stated as behaviour rather than as byte counts.
+# U+0085 is valid UTF-8 and a control character, and JSON asks for neither of
+# those to be escaped, so it has to survive the encoder intact. A byte that is
+# not valid UTF-8 at all is not the encoder's to interpret either: the header
+# promises everything outside the three escaped classes is passed through
+# exactly as it arrived.
+
+enc_c1_msg=$'before \xc2\x85 after'
+enc_c1_out="$(LC_ALL="$utf8_locale" bash -c 'source "$1"; json_string "$2"' _ "$GUARD" "$enc_c1_msg" 2>/dev/null || true)"
+assert "guard: json_string round-trips the C1 control U+0085 exactly under a UTF-8 locale" \
+  "$([[ "$(printf '%s' "$enc_c1_out" | jq -r . 2>/dev/null)" == "$enc_c1_msg" ]] && echo true || echo false)"
+
+enc_raw_msg=$'a\x80z'
+enc_raw_out="$(LC_ALL="$utf8_locale" bash -c 'source "$1"; json_string "$2"' _ "$GUARD" "$enc_raw_msg" 2>/dev/null || true)"
+assert "guard: json_string passes an invalid UTF-8 byte through unchanged under a UTF-8 locale" \
+  "$([[ "$enc_raw_out" == "\"$enc_raw_msg\"" ]] && echo true || echo false)"
 
 # The detail — a failed tool's own output — is the one thing the guard relays
 # verbatim, and it is exactly the thing that would corrupt the payload if it
