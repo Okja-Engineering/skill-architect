@@ -76,7 +76,7 @@ For a unified machine-readable report combining all three sources (spec, quality
 "$skill_root/scripts/audit-report.sh" "$target_skill"
 ```
 
-The report nests the full output of each source under `spec`, `quality`, and `policy`, with a top-level `summary` for quick pass/fail checks. Parse with `jq`:
+The report nests the full output of each source under `spec`, `quality`, and `policy`, with a top-level `summary` for quick pass/fail checks. A source the report could not read is named in `spec_error`, `quality_error` or `policy_error` rather than being treated as a source with nothing to report, and an unread `spec` or `policy` leaves `summary.passed` false. Parse with `jq`:
 
 ```bash
 "$skill_root/scripts/audit-report.sh" "$target_skill" | jq '.summary.passed'

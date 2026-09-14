@@ -4,14 +4,24 @@
 # We add: license requirement (house policy, not spec).
 # Exit codes: 0=pass, 1=spec failure, 2=policy failure, 3=execution error.
 # Execution errors are reported as DEP001 (a required tool is absent) or
-# DEP002 (skill-validator returned a status this script cannot interpret).
-# This script has no --json mode, so both reach the caller on stderr.
+# DEP002 (skill-validator returned a status this script cannot interpret), and
+# a verdict-guard.sh that would not load is a third, reported before either ID
+# exists to name it. This script has no --json mode, so all of them reach the
+# caller on stderr.
 # Spec validation requires skill-validator.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+verdict_guard="$script_dir/verdict-guard.sh"
+# The guard is the one dependency it cannot announce itself, so loading it is
+# checked before and after — see its header for why an unchecked source would
+# exit with a status that means a verdict was computed.
+bash -n "$verdict_guard" 2>/dev/null \
+  || { echo "ERROR: cannot load $verdict_guard: missing or malformed; no verdict was computed" >&2; exit 3; }
 # shellcheck source=verdict-guard.sh
-source "$script_dir/verdict-guard.sh"
+source "$verdict_guard"
+declare -F cannot_compute >/dev/null && declare -F require_tool >/dev/null \
+  || { echo "ERROR: $verdict_guard defines no guards; no verdict was computed" >&2; exit 3; }
 
 if [[ $# -ne 1 ]]; then
   echo "Usage: check-frontmatter.sh <skill-dir>" >&2

@@ -7,14 +7,26 @@
 # Composes them with jq and requires it: without jq there is no report to
 # generate, so it says which tool is missing and exits 3 (DEP001) rather than
 # dying part-way through with the shell's own "command not found".
-# skill-validator and skillscore stay soft: the report still generates and
-# names in-band the source it could not read.
+# Every source stays soft: the report still generates and names in-band, as
+# spec_error, quality_error or policy_error, the source it could not read. The
+# two sources that carry a verdict are never read as sources with nothing to
+# say — an unread spec or policy source leaves summary.passed false. Quality is
+# a score rather than a verdict, so quality_error leaves the score null and the
+# verdict alone.
 # Exit codes: 0=report generated, 3=execution error.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+verdict_guard="$script_dir/verdict-guard.sh"
+# The guard is the one dependency it cannot announce itself, so loading it is
+# checked before and after — see its header for why an unchecked source would
+# exit with a status that means a verdict was computed.
+bash -n "$verdict_guard" 2>/dev/null \
+  || { echo "ERROR: cannot load $verdict_guard: missing or malformed; no verdict was computed" >&2; exit 3; }
 # shellcheck source=verdict-guard.sh
-source "$script_dir/verdict-guard.sh"
+source "$verdict_guard"
+declare -F cannot_compute >/dev/null && declare -F require_tool >/dev/null \
+  || { echo "ERROR: $verdict_guard defines no guards; no verdict was computed" >&2; exit 3; }
 
 skill_dir=""
 for arg in "$@"; do
@@ -68,12 +80,26 @@ else
 fi
 
 # --- Source 3: House-policy checks (PL002-PL005, PT001-PT002) via check-structure.sh ---
+# Unlike the two sources above, this one has a stdout contract: it carries a
+# payload and nothing else, with every diagnostic on stderr. So its stdout is
+# captured alone — merging the two channels turned the passed:false payload it
+# emits when it cannot reach a verdict into unparseable text — and its
+# diagnostics pass through to our stderr, where they belong.
+#
+# And an unreadable policy source is not a skill with no policy findings. It is
+# a source this report could not read: it is named, and the report does not
+# claim a pass over it.
 policy_findings="[]"
+policy_error=""
 if [[ -x "$script_dir/check-structure.sh" ]]; then
-  struct_raw="$("$script_dir/check-structure.sh" --json "$skill_dir" 2>&1)" || true
-  if echo "$struct_raw" | jq -e . >/dev/null 2>&1; then
+  struct_raw="$("$script_dir/check-structure.sh" --json "$skill_dir")" || true
+  if echo "$struct_raw" | jq -e '(.findings | type) == "array"' >/dev/null 2>&1; then
     policy_findings=$(echo "$struct_raw" | jq -c '.findings')
+  else
+    policy_error="check-structure.sh --json did not produce a readable payload"
   fi
+else
+  policy_error="check-structure.sh is not present or not executable at $script_dir"
 fi
 
 # --- PL001: license check (inline — avoids double-running skill-validator) ---
@@ -100,12 +126,14 @@ jq -n \
   --argjson policy_findings "$policy_findings" \
   --arg spec_error "$spec_error" \
   --arg quality_error "$quality_error" \
+  --arg policy_error "$policy_error" \
   '{
     skill: $skill,
     timestamp: $timestamp,
     summary: {
       passed: (
         ($spec | if . == null then false else .passed end)
+        and $policy_error == ""
         and ([($policy_findings[] | select(.level == "fail"))] | length == 0)
       ),
       spec_passed: ($spec | if . == null then false else .passed end),
@@ -123,5 +151,6 @@ jq -n \
     quality_error: (if $quality_error == "" then null else $quality_error end),
     policy: {
       findings: $policy_findings
-    }
+    },
+    policy_error: (if $policy_error == "" then null else $policy_error end)
   }'

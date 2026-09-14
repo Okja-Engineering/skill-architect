@@ -5,10 +5,28 @@
 # interpret, it says so and exits 3 (execution error) instead of letting the
 # failure read as a clean pass.
 #
-# Source this from a check script:
+# Source this from a check script, checking the load on both sides:
 #
 #   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-#   source "$script_dir/verdict-guard.sh"
+#   verdict_guard="$script_dir/verdict-guard.sh"
+#   bash -n "$verdict_guard" 2>/dev/null \
+#     || { echo "ERROR: cannot load $verdict_guard: ..." >&2; exit 3; }
+#   source "$verdict_guard"
+#   declare -F cannot_compute >/dev/null && declare -F require_tool >/dev/null \
+#     || { echo "ERROR: $verdict_guard defines no guards: ..." >&2; exit 3; }
+#
+# This file is the one dependency require_tool cannot announce: if it is not
+# there, nothing is there to do the announcing. An unchecked `source` of a
+# missing file aborts the calling script with status 1, and of a malformed one
+# with status 2 — statuses every caller's contract reserves for a spec, path or
+# policy verdict it actually computed. A file that loads but defines nothing is
+# worse still: the caller runs to completion and only discovers the guard is
+# gone on the path where it needed it. So the caller syntax-checks the file
+# before sourcing it and confirms the guards exist afterwards, and reports
+# either failure the way it reports every other unmet precondition — exit 3, no
+# verdict. That exit carries no payload: the arguments have not been parsed yet,
+# so the caller does not know whether a payload was even asked for, and the
+# thing that builds payloads is the thing that is missing.
 
 # json_string <text>
 #

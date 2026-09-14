@@ -9,14 +9,23 @@
 # plus an "error" key on the exit-3 payload naming why no verdict was reached.
 # --json builds its verdict with jq and requires it.
 # In --json mode stdout is the payload channel: it carries a payload or it
-# carries nothing, and every diagnostic goes to stderr. The two exits that
-# carry no payload are a usage error and an unresolvable target, where there
-# is no skill to render a verdict about.
+# carries nothing, and every diagnostic goes to stderr. Three exits carry no
+# payload: a usage error and an unresolvable target, where there is no skill to
+# render a verdict about, and a verdict-guard.sh that would not load, where
+# there is nothing left to build a payload with.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+verdict_guard="$script_dir/verdict-guard.sh"
+# The guard is the one dependency it cannot announce itself, so loading it is
+# checked before and after — see its header for why an unchecked source would
+# exit with a status that means a verdict was computed.
+bash -n "$verdict_guard" 2>/dev/null \
+  || { echo "ERROR: cannot load $verdict_guard: missing or malformed; no verdict was computed" >&2; exit 3; }
 # shellcheck source=verdict-guard.sh
-source "$script_dir/verdict-guard.sh"
+source "$verdict_guard"
+declare -F cannot_compute >/dev/null && declare -F require_tool >/dev/null \
+  || { echo "ERROR: $verdict_guard defines no guards; no verdict was computed" >&2; exit 3; }
 
 json_output=false
 skill_dir=""

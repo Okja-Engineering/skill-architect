@@ -253,11 +253,27 @@ reporting a result it did not compute.
 
 The same rule covers the case where every tool is present but one of them answers
 with something the caller cannot interpret. `check-structure.sh` exits 3 with a
-`DEP002` finding when `check-paths.sh` returns an unenumerated status or a payload
-it cannot read, and `check-frontmatter.sh` does the same on stderr for
-`skill-validator`. `DEP001` and `DEP002` are the only rule IDs an exit 3 emits, and
+`DEP002` finding when `check-paths.sh` returns an unenumerated status, a payload it
+cannot read, or a payload that contradicts the status it arrived with; and
+`check-frontmatter.sh` does the same on stderr for `skill-validator`. `DEP001` and
+`DEP002` are the only rule IDs an exit 3 emits, and
 [`skills/skill-audit/SKILL.md`](skills/skill-audit/SKILL.md) lists them beside the
 `PL`/`PT` findings for a `--json` consumer.
+
+That rule has to survive composition, so `audit-report.sh` applies it to its own
+sources. It reads `check-structure.sh` on stdout alone, where the payload is, so a
+`DEP002` payload reaches the report as a finding instead of being lost among the
+diagnostics; and when a source produces nothing it can read, it names the source in
+`spec_error` or `policy_error` and leaves `summary.passed` false rather than
+reporting a skill with nothing wrong with it. `quality_error` is the exception, by
+design: quality is a score, not a verdict, so an unread `skillscore` leaves
+`quality_score` null and the verdict alone.
+
+The scripts share `skills/skill-audit/scripts/verdict-guard.sh`, which is the one
+dependency they cannot announce through the guard itself. Each checks that it loads
+before relying on it, so a missing or damaged copy exits 3 with `cannot load
+verdict-guard.sh` and no payload, rather than aborting with the 1 or 2 that mean a
+spec, path or policy verdict was actually computed.
 
 Building the profiler additionally needs Go, at the version declared in
 [`profiler/go.mod`](profiler/go.mod).

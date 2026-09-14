@@ -5,20 +5,30 @@
 # this script covers our repository-specific policy rules (PL002-PL005, PT001-PT002).
 # Exit codes: 0=pass, 1=path failure, 2=policy failure, 3=execution error.
 # Findings carry rule IDs: PL002-PL005 and PT001-PT002 as above, DEP001 a
-# required tool is absent, DEP002 check-paths.sh returned a result this
-# script cannot interpret.
+# required tool is absent, DEP002 check-paths.sh returned a result this script
+# cannot interpret — an unenumerated exit status, a payload that is unreadable
+# or absent, or a payload that contradicts the status it arrived with.
 # Use --json for machine-readable output: {"findings": [...], "passed": bool},
 # plus an "error" key on the exit-3 payload naming why no verdict was reached.
 # --json builds its verdict with jq and requires it.
 # In --json mode stdout is the payload channel: it carries a payload or it
-# carries nothing, and every diagnostic goes to stderr. The two exits that
-# carry no payload are a usage error and an unresolvable target, where there
-# is no skill to render a verdict about.
+# carries nothing, and every diagnostic goes to stderr. Three exits carry no
+# payload: a usage error and an unresolvable target, where there is no skill to
+# render a verdict about, and a verdict-guard.sh that would not load, where
+# there is nothing left to build a payload with.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+verdict_guard="$script_dir/verdict-guard.sh"
+# The guard is the one dependency it cannot announce itself, so loading it is
+# checked before and after — see its header for why an unchecked source would
+# exit with a status that means a verdict was computed.
+bash -n "$verdict_guard" 2>/dev/null \
+  || { echo "ERROR: cannot load $verdict_guard: missing or malformed; no verdict was computed" >&2; exit 3; }
 # shellcheck source=verdict-guard.sh
-source "$script_dir/verdict-guard.sh"
+source "$verdict_guard"
+declare -F cannot_compute >/dev/null && declare -F require_tool >/dev/null \
+  || { echo "ERROR: $verdict_guard defines no guards; no verdict was computed" >&2; exit 3; }
 
 json_output=false
 skill_dir=""
@@ -96,10 +106,41 @@ case $path_code in
   *) cannot_compute DEP002 "check-paths.sh exited with unexpected status $path_code" "$json_output" ;;
 esac
 
+# The child's verdict, derived once. Everything below reads this rather than
+# testing $path_code again, so our own exit status and the findings we merged
+# cannot drift into a payload that reports a pass beside a failing finding.
+path_passed=true
+[[ $path_code -eq 0 ]] || path_passed=false
+
 if $json_output; then
-  # Merge path findings into our findings array.
-  path_findings=$(echo "$path_json" | jq -c '.findings[]') \
-    || cannot_compute DEP002 "check-paths.sh --json did not produce a readable payload" true
+  # A child payload is usable only if it is there, parses into the documented
+  # shape, and tells the same story as the status it arrived with. Silence is
+  # not a payload and neither is a contradiction: reading either as zero
+  # findings is the same silent pass as reading garbage as zero findings.
+  #
+  # One pass over the payload answers both questions. "true" or "false" is the
+  # child's own verdict, read from the payload rather than inferred; anything
+  # else — a parse failure, no output at all, a shape we do not recognise —
+  # means there was no verdict there to read.
+  child_passed=$(echo "$path_json" | jq -r '
+    if (.passed | type) == "boolean" and (.findings | type) == "array" then
+      if .passed and ([.findings[] | select(.level == "fail")] | length) == 0
+      then "true" else "false" end
+    else "unreadable" end' 2>/dev/null) || child_passed=unreadable
+
+  case "$child_passed" in
+    true|false)
+      [[ "$child_passed" == "$path_passed" ]] \
+        || cannot_compute DEP002 "check-paths.sh --json payload contradicts its exit status $path_code" true
+      ;;
+    *)
+      cannot_compute DEP002 "check-paths.sh --json did not produce a readable payload" true
+      ;;
+  esac
+
+  # Merge path findings into our findings array. The read-back needs no guard of
+  # its own: the payload has already been shown to hold a findings array.
+  path_findings=$(echo "$path_json" | jq -c '.findings[]')
   if [[ -n "$path_findings" ]]; then
     while IFS= read -r pf; do
       level=$(echo "$pf" | jq -r '.level')
@@ -112,7 +153,7 @@ else
   echo "$path_output"
 fi
 
-if [[ $path_code -eq 1 && $fail -eq 0 ]]; then
+if [[ "$path_passed" == "false" && $fail -eq 0 ]]; then
   fail=1
 fi
 
