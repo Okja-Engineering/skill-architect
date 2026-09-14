@@ -58,11 +58,41 @@ type otlpBatch struct {
 }
 
 type otlpResourceMetrics struct {
+	Resource     otlpResource       `json:"resource"`
 	ScopeMetrics []otlpScopeMetrics `json:"scopeMetrics"`
 }
 
+// otlpResource is the entity the metrics under it were exported from — a
+// process, a container, a service instance — and it is part of what identifies
+// every series in them.
+//
+// A resource is its attribute set and nothing else, so an entry that carries no
+// resource at all and one that carries a resource with no attributes are one
+// resource rather than two. Telling those apart would split a cumulative series
+// in two and report a session's tokens twice, which is the opposite of the
+// undercount that merging distinct resources causes; neither is a guess worth
+// making when the data model already says what a resource is. schemaUrl, which
+// sits beside the resource rather than in it, is left out for the same reason:
+// it declares which version of the semantic conventions the attributes follow,
+// not a different origin.
+type otlpResource struct {
+	Attributes otlpAttrs `json:"attributes"`
+}
+
 type otlpScopeMetrics struct {
+	Scope   otlpScope    `json:"scope"`
 	Metrics []otlpMetric `json:"metrics"`
+}
+
+// otlpScope is the instrumentation scope that recorded the metrics under it:
+// the meter's name, its version and its attributes, which is what OTel
+// identifies a scope by. One process can hold several — a harness and a
+// subagent library, or two versions of one library — and their series are
+// distinct even where every data-point attribute matches.
+type otlpScope struct {
+	Name       string    `json:"name"`
+	Version    string    `json:"version"`
+	Attributes otlpAttrs `json:"attributes"`
 }
 
 type otlpResourceLogs struct {
@@ -94,11 +124,16 @@ type otlpSum struct {
 	DataPoints             []otlpDataPoint `json:"dataPoints"`
 }
 
+// otlpDataPoint is one point of a sum. startTimeUnixNano is when the run it
+// belongs to began, and it is what tells a cumulative counter that restarted
+// from one that kept counting: two points of one series carrying different
+// starts are two runs, and the capture holds both.
 type otlpDataPoint struct {
-	Attributes   otlpAttrs       `json:"attributes"`
-	TimeUnixNano json.RawMessage `json:"timeUnixNano"`
-	AsDouble     json.RawMessage `json:"asDouble"`
-	AsInt        json.RawMessage `json:"asInt"`
+	Attributes        otlpAttrs       `json:"attributes"`
+	StartTimeUnixNano json.RawMessage `json:"startTimeUnixNano"`
+	TimeUnixNano      json.RawMessage `json:"timeUnixNano"`
+	AsDouble          json.RawMessage `json:"asDouble"`
+	AsInt             json.RawMessage `json:"asInt"`
 }
 
 type otlpLogRecord struct {
@@ -343,17 +378,29 @@ func malformedJSON(offset int64, batchIdx int, detail string) error {
 // Multiple resource and scope entries per object are legal and do occur. Both
 // walks iterate every level: indexing [0] silently drops the rest of the file.
 
-// metrics yields every metric with the given name, across every batch.
-func (e otlpExport) metrics(name string) iter.Seq[otlpMetric] {
-	return func(yield func(otlpMetric) bool) {
+// metrics yields every metric with the given name, across every batch, each
+// with the identity of the resource and the scope it was exported under.
+//
+// The walk is the only place that can see them: below it there is nothing left
+// of the envelope, so a caller handed the metric alone has no way to tell two
+// resources' series apart and merges them. It carries them out rather than
+// leaving that to be rediscovered.
+func (e otlpExport) metrics(name string) iter.Seq[otlpScopedMetric] {
+	return func(yield func(otlpScopedMetric) bool) {
 		for _, b := range e {
 			for _, rm := range entries(b.ResourceMetrics) {
+				resource := lengthPrefixed(rm.Resource.identity())
 				for _, sm := range rm.ScopeMetrics {
+					scope := lengthPrefixed(sm.Scope.identity())
 					for _, m := range sm.Metrics {
 						if m.Name != name {
 							continue
 						}
-						if !yield(m) {
+						scoped := otlpScopedMetric{
+							otlpMetric: m,
+							origin:     resource + scope + lengthPrefixed(m.Name),
+						}
+						if !yield(scoped) {
 							return
 						}
 					}
@@ -361,6 +408,20 @@ func (e otlpExport) metrics(name string) iter.Seq[otlpMetric] {
 			}
 		}
 	}
+}
+
+// otlpScopedMetric is one metric under the resource and scope it arrived with.
+type otlpScopedMetric struct {
+	otlpMetric
+	// origin is the first three parts of every series identity in this metric —
+	// resource, scope and metric name — already encoded. It is built once per
+	// metric because every data point under it shares it.
+	origin string
+}
+
+// series identifies the time series dp belongs to.
+func (m otlpScopedMetric) series(dp otlpDataPoint) seriesID {
+	return seriesID(m.origin + lengthPrefixed(dp.Attributes.identity()))
 }
 
 // logRecords yields every log record, across every batch, in file order.
@@ -446,16 +507,65 @@ func numericText(raw json.RawMessage) (string, bool) {
 	return s, true
 }
 
-// nanoTime reads a record's timeUnixNano: nanoseconds since the epoch, as a
-// decimal string or a bare number. The RFC 3339 event.timestamp attribute
-// beside it is deliberately not a fallback — it duplicates this field, and a
-// second time source is a branch that breeds.
+// nanoTime reads a record's timeUnixNano as an instant: nanoseconds since the
+// epoch, as a decimal string or a bare number. The RFC 3339 event.timestamp
+// attribute beside it is deliberately not a fallback — it duplicates this
+// field, and a second time source is a branch that breeds.
+//
+// It reads through readNanos rather than beside it, so the encoding rules for a
+// nanosecond timestamp — including that zero is the field's default and not an
+// instant — are stated once and hold for every timestamp in the export.
 func nanoTime(raw json.RawMessage) (time.Time, bool) {
-	n, ok := jsonInt64(raw)
-	if !ok {
+	n := readNanos(raw)
+	if !n.ok {
 		return time.Time{}, false
 	}
-	return time.Unix(0, n).UTC(), true
+	return time.Unix(0, n.nanos).UTC(), true
+}
+
+// optionalNanos is a nanosecond instant a data point may not have carried, or
+// may have carried unreadably: this file's (value, ok) convention kept as a
+// value, because a merge has to store one point's instants and compare them
+// with the next point's.
+//
+// Absent, zero and unreadable are one answer here. None of them is an instant
+// this reader can order against another, and for a timestamp — unlike a
+// temporality, where the difference sends the reader to two different places in
+// their capture — there is nothing a profile could say about which of them it
+// was.
+type optionalNanos struct {
+	nanos int64
+	ok    bool
+}
+
+// readNanos reads a nanosecond timestamp leaf, as a decimal string or a bare
+// number, the way every 64-bit integer in an OTLP/JSON export may arrive.
+//
+// Zero is not an instant. start_time_unix_nano and time_unix_nano are proto3
+// fixed64 fields with no presence, and OTLP mandates the proto3 JSON mapping,
+// whose documented deviations do not touch default values — so an absent field
+// and an explicit 0 are two encodings of one message. protojson writes "0" for
+// them with EmitUnpopulated on and omits them with it off, and a reader that
+// tells the two apart reads one series as two and reports the session at twice
+// its size. The epoch itself is not an instant any capture of a running agent
+// carries, so nothing is lost by spending it on saying "unset".
+//
+// An exponent-form number — 1.7893e18 — is refused with everything else that is
+// not a decimal integer, even where it happens to be exact. Reading it means
+// parsing through a float64, which cannot represent every nanosecond instant;
+// an approximate start time is worse than none, because it is a run identity,
+// and two points of one run that round apart would become two runs. This is a
+// deliberate departure from the proto3 JSON mapping, which does accept exponent
+// notation for integer fields — the profiler spec's conformance note records it
+// rather than claiming it is conformant. A start time that does not read is
+// cheap rather than free: the point carrying it joins the largest run instead
+// of naming one of its own (see counterSeries).
+func readNanos(raw json.RawMessage) optionalNanos {
+	n, ok := jsonInt64(raw)
+	if !ok || n == 0 {
+		return optionalNanos{}
+	}
+	return optionalNanos{nanos: n, ok: true}
 }
 
 // bodyName reads a log record's body as a name. The body is an AnyValue, and
@@ -516,17 +626,46 @@ func (a otlpAttrs) Bool(key string) (bool, bool) {
 	return false, false
 }
 
-// seriesKey identifies the time series a data point belongs to. OTel defines a
-// series by its full attribute set, so two token counts that differ only by
+// --- Series identity ---
+//
+// OTel identifies a metric stream by four things: the resource it was exported
+// from, the instrumentation scope that recorded it, the metric's name, and the
+// data point's attributes. Two points share a series only when all four match,
+// and two that do not must never merge — under cumulative temporality one
+// running total would replace another instead of adding to it, and a session's
+// tokens would be reported as a fraction of themselves.
+//
+// Every part below is encoded the same way: behind its byte length. That is
+// what lets the parts be concatenated without escaping anything, and what keeps
+// an export from forging another series' identity — a separator character is a
+// character a value can carry, because a tool name, a prompt and a model id are
+// arbitrary text.
+
+// seriesID is the identity of one time series, as those four parts encode. It
+// is internal and never shown to anyone: what matters is that it is injective,
+// not what it spells.
+type seriesID string
+
+// identity is the resource as a canonical string: its attribute set, which is
+// what a resource is.
+func (r otlpResource) identity() string {
+	return r.Attributes.identity()
+}
+
+// identity is the scope as a canonical string. Name, version and attributes are
+// what OTel identifies an instrumentation scope by, and a scope missing any of
+// them is a scope whose identity is the rest.
+func (s otlpScope) identity() string {
+	return lengthPrefixed(s.Name) + lengthPrefixed(s.Version) + lengthPrefixed(s.Attributes.identity())
+}
+
+// identity is the attribute set as a canonical string — the part of a series'
+// identity a data point carries itself. Two token counts that differ only by
 // model are two series and must not be merged into one.
 //
-// Each key and each value goes in with its byte length in front of it, so the
-// concatenation is unambiguous and no attribute can spell a key that belongs to
-// a different attribute set. A separator character is a character a value can
-// carry — a tool name, a prompt, a model id — and therefore one an export can
-// forge a foreign series key with. Sorted, so the key is stable however the
-// exporter ordered the attributes.
-func (a otlpAttrs) seriesKey() string {
+// Sorted, so the identity is stable however the exporter ordered the
+// attributes.
+func (a otlpAttrs) identity() string {
 	parts := make([]string, 0, len(a))
 	for _, at := range a {
 		parts = append(parts, lengthPrefixed(at.Key)+lengthPrefixed(at.Value.identity()))
@@ -696,85 +835,211 @@ func (s otlpSum) temporality() (int64, temporalityState) {
 
 // --- Accumulating counter data points ---
 
-// counterSeries is one time series' contribution to a counter total, under the
-// label its caller totals by.
-type counterSeries struct {
-	label      string
-	value      int64
-	timeNanos  int64
-	hasTime    bool
-	cumulative bool
-}
-
 // counterAccumulator merges counter data points across every batch in a file,
-// keyed by series.
-//
-// Temporality decides how, and the two are opposite instructions: delta points
-// are the increments since the last export and add up; cumulative points are
-// running totals, so the latest supersedes the rest. Merging per series rather
-// than per sum is what lets a capture whose batches were written minutes apart
-// still add up, and what keeps two models' counts from collapsing into one.
+// keyed by the series each belongs to. Merging per series rather than per sum
+// is what lets a capture whose batches were written minutes apart still add up,
+// and what keeps two models' counts from collapsing into one.
 //
 // The label is whatever the caller totals by — the token type, for this file's
 // only caller today. Nothing here knows what a token is: this is the format
 // layer, and a second OTLP-speaking adapter counting something else would use
 // it unchanged.
-type counterAccumulator map[string]*counterSeries
+type counterAccumulator map[seriesID]*counterSeries
+
+// counterSeries is one time series' contribution to a counter total, under the
+// label its caller totals by.
+//
+// Temporality decides what the points of a series mean, and delta and
+// cumulative are opposite instructions — add, or supersede — so a series
+// carrying both is malformed input rather than a third instruction. It is
+// refused whole (see malformed), not resolved one way: every resolution invents
+// a number the export does not contain.
+//
+// Delta points are the increments since the last export. They add up, nothing
+// in a delta series ever restarts, and a delta point's startTimeUnixNano is
+// never read — it is the start of that point's own interval, not of a run, so
+// it identifies nothing.
+//
+// Cumulative points are running totals since the instant their counter started,
+// so startTimeUnixNano says which run of the counter a point belongs to. The
+// points sharing a start are one run, and what that run holds is the greatest
+// running total any of them reported: these are counts, a count only goes up,
+// and no flush unsees a total an earlier flush carried. A point carrying a
+// different start is a counter that restarted, and its run sits beside the one
+// before it rather than replacing it, because the tokens spent before a restart
+// were still spent.
+//
+// Nothing here reads timeUnixNano. An instant could only stand in for an order
+// the values already carry, and where a capture's own flushes disagree — one
+// run reporting 900 and then 500 — standing in for it reports the series below
+// a total the export states outright, so that supplying the field which says
+// what run a point is from made the profile report fewer tokens.
+//
+// A cumulative point whose start does not read names no run, and that is the
+// case this type is shaped around. It is not a run of its own: counting it as
+// one puts it in the sum beside the runs that did name themselves, and one
+// export flush that omitted one field then reports a session at twice its size.
+// It is not free either. It came from some run — one that named itself, or one
+// nothing else in the capture observed — so what the capture guarantees is the
+// least total over every run it could have come from, and the cheapest run to
+// have carried it is the one that already reached furthest:
+//
+//	total = (runs added) + max(0, unplaced − largest run)
+//
+// Both ends of that are wrong in a direction someone has already shipped.
+// Adding the point outright invents a run. Dropping the series to the greatest
+// running total observed anywhere on it throws away the runs the point did not
+// join, which are tokens the session really spent: with runs of 100 and 20
+// beside an unplaceable 500, the 500 is a running total of the run that reached
+// 100 and the other run's 20 is still beside it, so the series holds 520 — not
+// 500, and not the 620 that invents a third run. A capture carrying no start
+// times at all has no runs to place its points against, so it holds the
+// greatest running total they reported and nothing more.
+//
+// The two halves are one rule read at two scales: a run holds the greatest
+// total its points reported, and a series holds the least total its runs can
+// account for. Taking information away — erasing a start time — can lower that
+// number and can never raise it, which is the property to check a change here
+// against.
+//
+// One assumption throughout, and it is the counter's own: these are monotonic
+// sums, whose running totals never decrease. That is what makes "the greatest
+// reported" the right reading of a run rather than a guess between flushes.
+type counterSeries struct {
+	label string
+
+	// Which of the two instructions the series' points declared. Both is
+	// malformed; the series is then refused rather than totalled.
+	sawDelta      bool
+	sawCumulative bool
+
+	// increments is a delta series' sum, which is the whole of what it
+	// contributes.
+	increments int64
+
+	// runs are the cumulative runs that named themselves: the greatest running
+	// total reported on each, keyed by the startTimeUnixNano its points carry.
+	runs map[int64]int64
+
+	// unplaced is the greatest running total reported by a cumulative point
+	// that could not name its run. A count is never negative, so zero is both
+	// "no such point was seen" and the total such a point would report, and the
+	// two need not be told apart.
+	unplaced int64
+}
+
+// counterPoint is one data point as the accumulator takes it.
+type counterPoint struct {
+	label      string
+	value      int64
+	start      optionalNanos
+	cumulative bool
+}
 
 // add folds one data point into its series.
-func (acc counterAccumulator) add(key, label string, value, timeNanos int64, hasTime, cumulative bool) {
-	cur, seen := acc[key]
-	if !seen {
-		acc[key] = &counterSeries{
-			label:      label,
-			value:      value,
-			timeNanos:  timeNanos,
-			hasTime:    hasTime,
-			cumulative: cumulative,
-		}
+func (acc counterAccumulator) add(id seriesID, p counterPoint) {
+	s := acc[id]
+	if s == nil {
+		s = &counterSeries{label: p.label}
+		acc[id] = s
+	}
+
+	if !p.cumulative {
+		s.sawDelta = true
+		s.increments = addSaturating(s.increments, p.value)
 		return
 	}
 
-	// A series that ever declares itself cumulative stays cumulative for the
-	// rest of the file. No producer mixes the two, and of the two ways to be
-	// wrong about one that does, this is the one that cannot double-count.
-	cur.cumulative = cur.cumulative || cumulative
-
-	if !cur.cumulative {
-		cur.value = addSaturating(cur.value, value)
-		if hasTime && (!cur.hasTime || timeNanos > cur.timeNanos) {
-			cur.timeNanos, cur.hasTime = timeNanos, true
+	s.sawCumulative = true
+	if !p.start.ok {
+		// The point cannot say which run it is from. It is evidence the series
+		// reached this running total and evidence of nothing else — in
+		// particular, not of a counter that restarted.
+		if p.value > s.unplaced {
+			s.unplaced = p.value
 		}
 		return
 	}
+	s.observe(p.start.nanos, p.value)
+}
 
-	// Cumulative: keep the latest point. A timed point beats an untimed one,
-	// and with no time to compare — or the same time twice — the greater value
-	// wins, which for a running total is the later one by another route.
-	switch {
-	case hasTime && cur.hasTime:
-		if timeNanos > cur.timeNanos || (timeNanos == cur.timeNanos && value > cur.value) {
-			cur.value, cur.timeNanos = value, timeNanos
-		}
-	case hasTime && !cur.hasTime:
-		cur.value, cur.timeNanos, cur.hasTime = value, timeNanos, true
-	case !hasTime && !cur.hasTime:
-		if value > cur.value {
-			cur.value = value
+// observe records a running total against the run that reported it, keeping the
+// greatest. The points of one run are running totals of each other, so the
+// greatest of them is what that run reached and every other is a prefix of it —
+// including one that arrived later carrying less, which is a capture
+// contradicting itself rather than tokens being given back.
+func (s *counterSeries) observe(start, value int64) {
+	if s.runs == nil {
+		s.runs = map[int64]int64{}
+	}
+	if value > s.runs[start] {
+		s.runs[start] = value
+	}
+}
+
+// malformed reports whether the series carried both temporalities, which is the
+// one state no total can be derived from.
+func (s *counterSeries) malformed() bool { return s.sawDelta && s.sawCumulative }
+
+// total is the series' contribution: its increments if it is a delta series,
+// and otherwise the least total its runs can account for — the runs added, plus
+// whatever an unplaceable point reported over and above the largest of them,
+// since such a point came either from one of these runs or from one nothing
+// else observed. A malformed series never reaches here — reduce drops it.
+func (s *counterSeries) total() int64 {
+	if !s.sawCumulative {
+		return s.increments
+	}
+	var sum, largest int64
+	for _, value := range s.runs {
+		sum = addSaturating(sum, value)
+		if value > largest {
+			largest = value
 		}
 	}
+	if s.unplaced > largest {
+		// The cheapest run to have carried it is the largest, which already
+		// holds `largest` of that total; only the remainder is new mass. With
+		// no runs at all, largest is zero and this is the point's own total.
+		sum = addSaturating(sum, s.unplaced-largest)
+	}
+	return sum
 }
 
 // reduce totals each label across every series it was seen on. The merge above
 // already turned each series into one number, so this adds series, never
 // points. A label no series carried is absent from the map, which is how the
 // caller tells "nothing was read for this" from "this came to zero".
+//
+// A malformed series contributes nothing, not even a key: refusing it is the
+// whole point, and a zero under its label would be a measurement it never made.
+// Refusing one series is not refusing the export — the well-formed series
+// beside it still count.
 func (acc counterAccumulator) reduce() map[string]int64 {
 	totals := make(map[string]int64, len(acc))
 	for _, s := range acc {
-		totals[s.label] = addSaturating(totals[s.label], s.value)
+		if s.malformed() {
+			continue
+		}
+		totals[s.label] = addSaturating(totals[s.label], s.total())
 	}
 	return totals
+}
+
+// refused is how many series carried both temporalities and were dropped. The
+// caller can only say what was counted here, and it can only say it when no
+// series survived: a profile/v1 present result carries no reason, so a series
+// refused beside a healthy one reduces a total the profile has no field to
+// qualify. That gap is the profile schema's, not this counter's, and it is
+// tracked for 0.5.0 with the skipped data points it belongs beside.
+func (acc counterAccumulator) refused() int {
+	var n int
+	for _, s := range acc {
+		if s.malformed() {
+			n++
+		}
+	}
+	return n
 }
 
 // addSaturating adds two counts without wrapping. Nothing a session really

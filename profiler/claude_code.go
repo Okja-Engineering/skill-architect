@@ -239,7 +239,7 @@ func eventName(r otlpLogRecord) string {
 
 func extractTokenCounts(export otlpExport) TokenResult {
 	acc := counterAccumulator{}
-	var seen, points, read int
+	var seen, points int
 	var c tokenPointCounters
 
 	for m := range export.metrics(otelTokenUsageMetric) {
@@ -291,27 +291,56 @@ func extractTokenCounts(export otlpExport) TokenResult {
 				c.notACount++
 				continue
 			}
-			timeNanos, hasTime := jsonInt64(dp.TimeUnixNano)
-			acc.add(dp.Attributes.seriesKey(), tokenType, value, timeNanos, hasTime, temporality == temporalityCumulative)
-			read++
+			// timeUnixNano is not read here. What a run holds is the greatest
+			// running total its points reported, and an instant could only
+			// stand in for an order those values already carry.
+			acc.add(m.series(dp), counterPoint{
+				label:      tokenType,
+				value:      value,
+				start:      readNanos(dp.StartTimeUnixNano),
+				cumulative: temporality == temporalityCumulative,
+			})
 		}
 	}
+
+	// A point can also be refused for the company it keeps: delta and
+	// cumulative on one series are opposite instructions, and the accumulator
+	// refuses that series whole rather than picking a winner. That is a defect
+	// of the series, not of any point in it, so it is counted here — after the
+	// walk, where the series are what is left — and the totals are what
+	// survived it, not what was read.
+	//
+	// The count reaches a reader only when nothing survived, because the reason
+	// below is built only on that path. A profile/v1 present result carries no
+	// reason at all, so a series refused beside a healthy one is a total
+	// reduced by a defect the profile has no field to name — the same gap as a
+	// skipped data point, tracked with it for 0.5.0. Inventing a channel for it
+	// inside v1 would mean a reason on a present result, which is a schema
+	// change wearing a bug fix's clothes.
+	totals := acc.reduce()
+	c.mixedTemporality = acc.refused()
 
 	switch {
 	case seen == 0:
 		return UnknownTokenResult("no " + otelTokenUsageMetric + " metric found in OTel export")
 	case points == 0:
 		return UnknownTokenResult("no readable " + otelTokenUsageMetric + " metric in OTel export: it carried no sum data points")
-	case read == 0:
+	case len(totals) == 0:
 		return UnknownTokenResult("no readable " + otelTokenUsageMetric + " metric in OTel export: " + c.reason())
 	}
-	return PresentTokenResult(tokenCounts(acc.reduce()), string(SourceOtel))
+	return PresentTokenResult(tokenCounts(totals), string(SourceOtel))
 }
 
 // tokenPointCounters is what the walk observed over claude_code.token.usage
 // data points, and the only thing the reason is built from — so a reason cannot
 // state a number the walk did not count. At most one defect is counted per data
 // point, in the order the walk tests them, so no point is counted twice.
+//
+// One counter counts series rather than data points, because one defect belongs
+// to a series rather than to any point in it: the points of a mixed-temporality
+// series are individually fine and it is their company that is malformed.
+// Reporting it as a count of points would send the reader looking for a bad
+// point that is not there.
 //
 // The reason is composed from the counters rather than fused into one sentence
 // naming several defects at once, for the same reason the tool-call reason is:
@@ -324,13 +353,21 @@ type tokenPointCounters struct {
 	unrecognisedType      int
 	unreadableValue       int
 	notACount             int
+	mixedTemporality      int // series, not data points
 }
 
 func (c tokenPointCounters) reason() string {
-	clauses := make([]string, 0, 6)
+	clauses := make([]string, 0, 7)
 	add := func(n int, rest string) {
 		if n > 0 {
 			clauses = append(clauses, quantity(n, "data point")+" "+rest)
+		}
+	}
+	// The same, for the one counter whose unit is a series. "time series" is
+	// its own plural, so it goes through quantityOf.
+	addSeries := func(n int, rest string) {
+		if n > 0 {
+			clauses = append(clauses, quantityOf(n, "time series", "time series")+" "+rest)
 		}
 	}
 	add(c.absentTemporality, "carried no aggregationTemporality")
@@ -341,17 +378,24 @@ func (c tokenPointCounters) reason() string {
 		tokenTypeInput+"/"+tokenTypeOutput+"/"+tokenTypeCacheRead+"/"+tokenTypeCacheCreation+")")
 	add(c.unreadableValue, "carried no asDouble or asInt value that reads as a number")
 	add(c.notACount, "carried a value that is not a token count: a count is a whole number from 0 to 9223372036854775807")
+	addSeries(c.mixedTemporality, fmt.Sprintf("carried both delta (%d) and cumulative (%d) aggregationTemporality points",
+		temporalityDelta, temporalityCumulative))
 	return strings.Join(clauses, "; ")
 }
 
 // quantity renders a count with its noun, agreeing in number: "1 data point",
 // "3 data points". Every clause in this file is built through it, so no reason
 // can tell the reader about "1 data points".
-func quantity(n int, noun string) string {
+func quantity(n int, noun string) string { return quantityOf(n, noun, noun+"s") }
+
+// quantityOf is quantity for a noun whose plural is not the singular plus "s" —
+// "time series" is its own plural, and a reason saying "1 time seriess" is a
+// reason nobody finishes reading.
+func quantityOf(n int, singular, plural string) string {
 	if n == 1 {
-		return fmt.Sprintf("%d %s", n, noun)
+		return fmt.Sprintf("%d %s", n, singular)
 	}
-	return fmt.Sprintf("%d %ss", n, noun)
+	return fmt.Sprintf("%d %s", n, plural)
 }
 
 // tokenCounts carries the totals that were read into the profile's counts:

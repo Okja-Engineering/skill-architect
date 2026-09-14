@@ -94,13 +94,37 @@ key, because "nothing was said about output tokens" is not "no output tokens". A
 read as zero keeps its key, with `0` in it. No key names changed; the profile schema is
 still `skill-architect/profile/v1`.
 
-Two known limits of how those counts are merged, both **fixed together in 0.4.2** and
-both confined to cumulative temporality — Claude Code's default is delta, where neither
-arises. Resource and instrumentation-scope identity are not part of the series key, so a
-capture that aggregates several resources under cumulative temporality merges their series
-and undercounts: two resources reporting 100 and 200 give 200, not 300. And
-`startTimeUnixNano` is not read, so a cumulative counter that resets inside one capture
-discards the earlier run: 100 followed by a restart at 20 gives 20, not 120.
+Counts are merged per **time series**, and a series is what OTel says it is: the resource
+the points came from, the instrumentation scope that recorded them, the metric's name, and
+the data point's whole attribute set. Two that differ anywhere are two series and never
+merge, so a capture aggregating several resources or scopes adds them up rather than
+letting one replace another — two resources reporting cumulative 100 and 200 give 300.
+Under cumulative temporality `startTimeUnixNano` says which **run** of a counter a point
+belongs to: points sharing a start are running totals of each other, so the run holds the
+greatest of them, while a point carrying a different start is a counter that restarted,
+and both runs count — 100 followed by a restart reaching 20 gives 120. `timeUnixNano` is
+not read for this: a running total only goes up, so the values carry their own order, and
+a flush reporting less than an earlier one is a capture contradicting itself rather than
+tokens given back. A point whose start time is absent, zero or unreadable cannot say which
+run it is from, but it came from one — so it is neither a run of its own nor free. It
+joins the run it is cheapest to have come from, the largest one, and raises the series
+only by what it reports over and above that run: runs of 100 and 20 beside an unplaceable
+500 give **520**, since the 500 is a running total of the run that reached 100 and the
+other run's 20 is still beside it. A capture carrying no start times at all has no runs to
+place its points against, so it holds the greatest running total they reported — which is
+what v0.4.1 reported too wherever an exporter wrote its flushes in time order, since
+v0.4.1 took the latest by `timeUnixNano`. A session whose last flush happens to omit
+`startTimeUnixNano` is reported at its size rather than at twice it. A start time of `0`
+is a start time that is absent: OTLP uses the protobuf JSON mapping, in which an explicit
+zero and an omitted field are the same message. If one series somehow carries *both* delta
+and cumulative points, no total it could contribute is in the export, so that series is
+refused rather than resolved one way — the other series in the file still count. When no
+series survives, `tokens` is `unknown` and the reason names the refusal; when a healthy
+series survives beside it, `tokens` is `present` with a total the refused series is missing
+from, and **schema v1 has no field that can say so** — a `present` result carries no
+reason. Surfacing that, with the count of skipped data points it belongs beside, is
+tracked for 0.5.0. Delta temporality — Claude Code's default — is unaffected throughout:
+increments add up whatever series they are on.
 
 `capture` exits **2** when nothing was read and at least one signal came back `error` — a
 supplied export that could not be used — and **0** otherwise, including a profile that is
