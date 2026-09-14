@@ -353,6 +353,13 @@ func (c tokenPointCounters) reason() string {
 			clauses = append(clauses, quantity(n, "data point")+" "+rest)
 		}
 	}
+	// The same, for the one counter whose unit is a series. "time series" is
+	// its own plural, so it goes through quantityOf.
+	addSeries := func(n int, rest string) {
+		if n > 0 {
+			clauses = append(clauses, quantityOf(n, "time series", "time series")+" "+rest)
+		}
+	}
 	add(c.absentTemporality, "carried no aggregationTemporality")
 	add(c.unreadableTemporality, "carried an aggregationTemporality that could not be read")
 	add(c.otherTemporality, fmt.Sprintf("declared an aggregationTemporality that is neither %d (delta) nor %d (cumulative)",
@@ -361,11 +368,8 @@ func (c tokenPointCounters) reason() string {
 		tokenTypeInput+"/"+tokenTypeOutput+"/"+tokenTypeCacheRead+"/"+tokenTypeCacheCreation+")")
 	add(c.unreadableValue, "carried no asDouble or asInt value that reads as a number")
 	add(c.notACount, "carried a value that is not a token count: a count is a whole number from 0 to 9223372036854775807")
-	if c.mixedTemporality > 0 {
-		clauses = append(clauses, quantityOf(c.mixedTemporality, "time series", "time series")+
-			fmt.Sprintf(" carried both delta (%d) and cumulative (%d) aggregationTemporality points",
-				temporalityDelta, temporalityCumulative))
-	}
+	addSeries(c.mixedTemporality, fmt.Sprintf("carried both delta (%d) and cumulative (%d) aggregationTemporality points",
+		temporalityDelta, temporalityCumulative))
 	return strings.Join(clauses, "; ")
 }
 
