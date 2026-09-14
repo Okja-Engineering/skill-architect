@@ -102,10 +102,18 @@ letting one replace another — two resources reporting cumulative 100 and 200 g
 Under cumulative temporality `startTimeUnixNano` says which **run** of a counter a point
 belongs to: points sharing a start are one running total and the latest of them stands,
 while a point carrying a different start is a counter that restarted, and both runs count
-— 100 followed by a restart reaching 20 gives 120. Points whose start time is absent or
-unreadable cannot say which run they are from, and are treated as one run of their own, so
-a capture carrying no start times merges as it always has. Delta temporality — Claude
-Code's default — is unaffected throughout: increments add up whatever series they are on.
+— 100 followed by a restart reaching 20 gives 120. A point whose start time is absent,
+zero or unreadable cannot say which run it is from, so it is not counted as a run: it sets
+a **floor** under that series — the series holds at least the largest running total any of
+its points reported — and is never added on top. A capture carrying no start times merges
+as it always has, and a session whose last flush happens to omit `startTimeUnixNano` is
+reported at its size rather than at twice it. A start time of `0` is a start time that is
+absent: OTLP uses the protobuf JSON mapping, in which an explicit zero and an omitted
+field are the same message. If one series somehow carries *both* delta and cumulative
+points, no total it could contribute is in the export, so that series is refused and named
+in the reason rather than resolved one way — the other series in the file still count.
+Delta temporality — Claude Code's default — is unaffected throughout: increments add up
+whatever series they are on.
 
 `capture` exits **2** when nothing was read and at least one signal came back `error` — a
 supplied export that could not be used — and **0** otherwise, including a profile that is
