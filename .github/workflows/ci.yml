@@ -20,7 +20,7 @@ jobs:
             | tar xz -C /usr/local/bin skill-validator
           skill-validator --version
       - name: Install skillscore
-        run: npm install -g skillscore
+        run: npm install -g skillscore@2.0.2
       - name: Run skill layout tests
         run: tests/test_skill.sh
       - name: Run end-to-end walk tests

@@ -816,25 +816,77 @@ assert "frontmatter, no SKILL.md: diagnostic is on stderr" "$(echo "$errout" | g
 # so the two sides are compared here rather than restated: every rule literal
 # the scripts can emit, against every rule ID the registry line names. Either
 # side growing without the other fails.
+#
+# Both sides read what is written rather than what is run, so both have to read
+# every form a rule ID reaches a consumer through, not only the forms that
+# happen to be literals. Three of them are not literals in the emitting script
+# at all: an ID handed to the guard is quoted at some call sites and bare at
+# others, `require_tool` raises DEP001 on behalf of every script that states a
+# tool precondition, and a script that runs a sibling with `--json` carries that
+# sibling's whole findings array out to its own consumer. A census blind to
+# those credits a script with none of the rules it actually emits, and then
+# passes while an unregistered ID reaches a `--json` consumer — which is the one
+# thing it exists to prevent.
 
 SCRIPTS_DIR=skills/skill-audit/scripts
 
-# rules_emitted_by <file...> — every rule literal these scripts can put in a
-# finding: the pipe-delimited entries they build, the IDs they hand the guard,
-# the objects they compose directly, and the IDs they print in text mode.
-rules_emitted_by() {
+# rules_emitted_directly_by <file...> — the rule IDs written in these files: the
+# pipe-delimited entries they build, the IDs they hand the guard quoted or bare,
+# the objects they compose directly, the IDs they print in text mode, and
+# DEP001 for stating a tool precondition. Each form tolerates no match, so a
+# script that emits nothing yields nothing instead of killing the suite.
+rules_emitted_directly_by() {
   {
-    grep -hoE 'findings\+=\("[a-z]+\|[A-Z][A-Z0-9]*\|' "$@" | sed -E 's/.*\|([A-Z][A-Z0-9]*)\|/\1/'
-    grep -hoE 'cannot_compute [A-Z][A-Z0-9]*' "$@" | sed -E 's/.* //'
-    grep -hoE '"rule": "[A-Z][A-Z0-9]*"' "$@" | sed -E 's/.*"([A-Z][A-Z0-9]*)"/\1/'
-    grep -hoE '\[[A-Z][A-Z0-9]*\]' "$@" | tr -d '[]'
+    grep -hoE 'findings\+=\("[a-z]+\|[A-Z][A-Z0-9]*\|' "$@" | sed -E 's/.*\|([A-Z][A-Z0-9]*)\|/\1/' || true
+    grep -hoE 'cannot_compute[[:space:]]+"?[A-Z][A-Z0-9]*' "$@" | tr -d '"' | awk '{print $NF}' || true
+    grep -hoE '"rule": "[A-Z][A-Z0-9]*"' "$@" | sed -E 's/.*"([A-Z][A-Z0-9]*)"/\1/' || true
+    grep -hoE '\[[A-Z][A-Z0-9]*\]' "$@" | tr -d '[]' || true
+    if grep -qE '^[[:space:]]*require_tool[[:space:]]' "$@"; then
+      echo DEP001
+    fi
   } | sort -u
+}
+
+# rules_of <file> <chain> — what this file can emit, directly and through every
+# sibling it runs with `--json`. check-structure.sh rebuilds each of
+# check-paths.sh's findings from variables and audit-report.sh splices
+# check-structure.sh's array in whole, so neither leaves a rule literal of the
+# child's anywhere in the parent. Relaying is transitive, so this follows the
+# chain; <chain> carries the files already on the path so a cycle cannot
+# recurse forever.
+rules_of() {
+  local file="$1"
+  local chain="$2"
+  local child
+  case " $chain " in
+    *" $file "*) return 0 ;;
+  esac
+  rules_emitted_directly_by "$file"
+  for child in "$SCRIPTS_DIR"/*.sh; do
+    if [[ "$child" == "$file" ]]; then
+      continue
+    fi
+    if grep -qE "$(basename "$child")\"? --json" "$file"; then
+      rules_of "$child" "$chain $file"
+    fi
+  done
+}
+
+rules_emitted_by() {
+  local file
+  for file in "$@"; do
+    rules_of "$file" ""
+  done | sort -u
 }
 
 emitted_rules="$(rules_emitted_by "$SCRIPTS_DIR"/*.sh)"
 registry_line="$(grep -m1 '^Exit codes:' skills/skill-audit/SKILL.md)"
+# Any rule-shaped token, not a fixed list of the prefixes in use. A whitelist
+# here would make the registry side unable to grow either: a new rule announced
+# under a new prefix would be invisible to the very line that claims to name the
+# whole set.
 registered_rules="$(printf '%s\n' "$registry_line" \
-  | grep -oE '\b(PL[0-9]{3}|PT[0-9]{3}|DEP[0-9]{3}|PATH)\b' | sort -u)"
+  | grep -oE '\b[A-Z][A-Z0-9]{2,}\b' | sort -u)"
 
 assert "SKILL.md's rule-ID line names a rule the scripts emit" "$([[ -n "$registered_rules" ]] && echo true || echo false)"
 assert "SKILL.md registers every rule ID the scripts emit, and registers no ID none of them emits" \
