@@ -672,7 +672,7 @@ assert "guard: finding message round-trips multi-byte UTF-8 exactly" \
 # Control characters and multi-byte characters in one message, straight through
 # the encoder: neither may be read as the other.
 guard_mixed=$'"\\ caf\xc3\xa9\ttab\nnewline\x01 \xf0\x9f\x98\x80 \x1f end'
-guard_mixed_out="$(bash -c 'source "$1"; json_string "$2"' _ "$GUARD" "$guard_mixed")"
+guard_mixed_out="$(bash -c 'source "$1"; json_string "$2"' _ "$GUARD" "$guard_mixed" 2>/dev/null || true)"
 assert "guard: json_string emits valid JSON for control characters beside multi-byte ones" \
   "$(echo "$guard_mixed_out" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
 assert "guard: json_string round-trips control characters beside multi-byte ones exactly" \

@@ -257,8 +257,10 @@ with something the caller cannot interpret. `check-structure.sh` exits 3 with a
 cannot read, or a payload that contradicts the status it arrived with; and
 `check-frontmatter.sh` does the same on stderr for `skill-validator`. `DEP001` and
 `DEP002` are the only rule IDs an exit 3 emits, and
-[`skills/skill-audit/SKILL.md`](skills/skill-audit/SKILL.md) lists them beside the
-`PL`/`PT` findings for a `--json` consumer.
+[`skills/skill-audit/SKILL.md`](skills/skill-audit/SKILL.md) registers them beside
+the `PL`, `PT` and `PATH` findings — the whole set these scripts emit, compared
+against the scripts themselves by `tests/test_f01.sh` so the list cannot fall
+behind what they produce.
 
 That rule has to survive composition, so `audit-report.sh` applies it to its own
 sources. It reads `check-structure.sh` on stdout alone, where the payload is, so a
@@ -271,9 +273,16 @@ design: quality is a score, not a verdict, so an unread `skillscore` leaves
 
 The scripts share `skills/skill-audit/scripts/verdict-guard.sh`, which is the one
 dependency they cannot announce through the guard itself. Each checks that it loads
-before relying on it, so a missing or damaged copy exits 3 with `cannot load
-verdict-guard.sh` and no payload, rather than aborting with the 1 or 2 that mean a
-spec, path or policy verdict was actually computed.
+before relying on it — and that it loaded *completely*, since a file that stopped
+short defines some guards and not others — so a missing, damaged or partial copy
+exits 3 with `verdict-guard.sh` named and no payload, rather than aborting with the
+1 or 2 that mean a spec, path or policy verdict was actually computed.
+
+The same guard holds the one definition of the payload shape those scripts pass
+between themselves, `{"findings": [{level, rule, message}, ...], "passed": bool}`.
+A consumer proves the whole shape, elements included, before reading any of it,
+and a payload that is not that shape is a source it could not read — never a
+source with nothing to report.
 
 Building the profiler additionally needs Go, at the version declared in
 [`profiler/go.mod`](profiler/go.mod).

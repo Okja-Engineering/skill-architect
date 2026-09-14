@@ -3,8 +3,11 @@
 # Finds executable script references (./ or $ prefixed) in code blocks
 # and markdown links, then resolves them against the filesystem.
 # Exit codes: 0=pass, 1=path failure, 3=execution error.
-# Findings carry rule IDs: PT001 missing script/reference, PT002 missing
-# markdown link, DEP001 a required tool is absent.
+# Findings carry rule IDs: at level fail, PT001 missing script/reference and
+# PT002 missing markdown link, plus DEP001 when a required tool is absent; at
+# level unverified, PATH for a reference built from a glob or a variable, which
+# cannot be resolved and so is reported without being judged — an unverified
+# finding is not a failure and does not change the exit status.
 # Use --json for machine-readable output: {"findings": [...], "passed": bool},
 # plus an "error" key on the exit-3 payload naming why no verdict was reached.
 # --json builds its verdict with jq and requires it.
@@ -24,8 +27,8 @@ bash -n "$verdict_guard" 2>/dev/null \
   || { echo "ERROR: cannot load $verdict_guard: missing or malformed; no verdict was computed" >&2; exit 3; }
 # shellcheck source=verdict-guard.sh
 source "$verdict_guard"
-declare -F cannot_compute >/dev/null && declare -F require_tool >/dev/null \
-  || { echo "ERROR: $verdict_guard defines no guards; no verdict was computed" >&2; exit 3; }
+{ declare -F verdict_guard_ready >/dev/null && verdict_guard_ready; } \
+  || { echo "ERROR: $verdict_guard did not load its guards; no verdict was computed" >&2; exit 3; }
 
 json_output=false
 skill_dir=""

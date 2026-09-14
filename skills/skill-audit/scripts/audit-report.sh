@@ -13,6 +13,11 @@
 # say — an unread spec or policy source leaves summary.passed false. Quality is
 # a score rather than a verdict, so quality_error leaves the score null and the
 # verdict alone.
+# The policy source's payload is proven to be the documented shape before any
+# of it is read, elements included, so "could not read it" covers every way it
+# can be misshapen rather than the one way this file happened to check for.
+# Rule IDs reach the report only by relay, from the policy source, except PL001
+# for a missing license, which this file checks inline and adds itself.
 # Exit codes: 0=report generated, 3=execution error.
 set -euo pipefail
 
@@ -25,8 +30,8 @@ bash -n "$verdict_guard" 2>/dev/null \
   || { echo "ERROR: cannot load $verdict_guard: missing or malformed; no verdict was computed" >&2; exit 3; }
 # shellcheck source=verdict-guard.sh
 source "$verdict_guard"
-declare -F cannot_compute >/dev/null && declare -F require_tool >/dev/null \
-  || { echo "ERROR: $verdict_guard defines no guards; no verdict was computed" >&2; exit 3; }
+{ declare -F verdict_guard_ready >/dev/null && verdict_guard_ready; } \
+  || { echo "ERROR: $verdict_guard did not load its guards; no verdict was computed" >&2; exit 3; }
 
 skill_dir=""
 for arg in "$@"; do
@@ -89,12 +94,25 @@ fi
 # And an unreadable policy source is not a skill with no policy findings. It is
 # a source this report could not read: it is named, and the report does not
 # claim a pass over it.
+#
+# The payload is proven to be the documented shape before anything is read out
+# of it, by the same predicate its producer's other consumer uses. Proving one
+# thing about it — that .findings is an array — and then reading a great deal
+# more is how the merge below came to select on .level and call startswith on
+# .rule of elements nothing had checked, and die inside jq with no report at all.
+# Everything after this line is a total read.
+#
+# The verdict is the source's own, not one re-derived from the findings it came
+# with: a source saying it failed for a reason it did not enumerate as a
+# level: "fail" finding is still a source saying it failed.
 policy_findings="[]"
+policy_passed=false
 policy_error=""
 if [[ -x "$script_dir/check-structure.sh" ]]; then
   struct_raw="$("$script_dir/check-structure.sh" --json "$skill_dir")" || true
-  if echo "$struct_raw" | jq -e '(.findings | type) == "array"' >/dev/null 2>&1; then
+  if payload_is_conforming "$struct_raw"; then
     policy_findings=$(echo "$struct_raw" | jq -c '.findings')
+    policy_passed=$(echo "$struct_raw" | jq -r '.passed')
   else
     policy_error="check-structure.sh --json did not produce a readable payload"
   fi
@@ -124,6 +142,7 @@ jq -n \
   --argjson spec "$spec_json" \
   --argjson quality "$quality_json" \
   --argjson policy_findings "$policy_findings" \
+  --argjson policy_passed "$policy_passed" \
   --arg spec_error "$spec_error" \
   --arg quality_error "$quality_error" \
   --arg policy_error "$policy_error" \
@@ -134,6 +153,7 @@ jq -n \
       passed: (
         ($spec | if . == null then false else .passed end)
         and $policy_error == ""
+        and $policy_passed
         and ([($policy_findings[] | select(.level == "fail"))] | length == 0)
       ),
       spec_passed: ($spec | if . == null then false else .passed end),

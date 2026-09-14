@@ -4,10 +4,13 @@
 # skill-validator handles spec compliance and link resolution separately;
 # this script covers our repository-specific policy rules (PL002-PL005, PT001-PT002).
 # Exit codes: 0=pass, 1=path failure, 2=policy failure, 3=execution error.
-# Findings carry rule IDs: PL002-PL005 and PT001-PT002 as above, DEP001 a
-# required tool is absent, DEP002 check-paths.sh returned a result this script
-# cannot interpret — an unenumerated exit status, a payload that is unreadable
-# or absent, or a payload that contradicts the status it arrived with.
+# Findings carry rule IDs: PL002 a missing heading, PL003 a SKILL.md over the
+# line limit, PL004 no code blocks, PL005 no list items; DEP001 a required tool
+# is absent; DEP002 check-paths.sh returned a result this script cannot read —
+# an unenumerated exit status, a payload that is not the documented shape, or a
+# payload that contradicts itself or the status it arrived with. In --json mode
+# it also relays check-paths.sh's own findings unchanged, so PT001, PT002 and
+# PATH reach a consumer through here too.
 # Use --json for machine-readable output: {"findings": [...], "passed": bool},
 # plus an "error" key on the exit-3 payload naming why no verdict was reached.
 # --json builds its verdict with jq and requires it.
@@ -27,8 +30,8 @@ bash -n "$verdict_guard" 2>/dev/null \
   || { echo "ERROR: cannot load $verdict_guard: missing or malformed; no verdict was computed" >&2; exit 3; }
 # shellcheck source=verdict-guard.sh
 source "$verdict_guard"
-declare -F cannot_compute >/dev/null && declare -F require_tool >/dev/null \
-  || { echo "ERROR: $verdict_guard defines no guards; no verdict was computed" >&2; exit 3; }
+{ declare -F verdict_guard_ready >/dev/null && verdict_guard_ready; } \
+  || { echo "ERROR: $verdict_guard did not load its guards; no verdict was computed" >&2; exit 3; }
 
 json_output=false
 skill_dir=""
@@ -113,33 +116,39 @@ path_passed=true
 [[ $path_code -eq 0 ]] || path_passed=false
 
 if $json_output; then
-  # A child payload is usable only if it is there, parses into the documented
-  # shape, and tells the same story as the status it arrived with. Silence is
-  # not a payload and neither is a contradiction: reading either as zero
-  # findings is the same silent pass as reading garbage as zero findings.
+  # Three questions about the child's result, each answered on its own and in
+  # this order: is the payload the documented shape, does it agree with itself,
+  # and does it agree with the status it arrived with. Any "no" is the same
+  # answer — there was no verdict there to read, DEP002 — but they are not the
+  # same question, and folding the first into the others is what let a misshapen
+  # payload through. Shape was asked in the expression that read the verdict,
+  # joined by an `and` that short-circuits, so it went unasked on the branch the
+  # verdict took; the read-back below then indexed elements nothing had checked
+  # and died with jq's own status.
   #
-  # One pass over the payload answers both questions. "true" or "false" is the
-  # child's own verdict, read from the payload rather than inferred; anything
-  # else — a parse failure, no output at all, a shape we do not recognise —
-  # means there was no verdict there to read.
-  child_passed=$(echo "$path_json" | jq -r '
-    if (.passed | type) == "boolean" and (.findings | type) == "array" then
-      if .passed and ([.findings[] | select(.level == "fail")] | length) == 0
-      then "true" else "false" end
-    else "unreadable" end' 2>/dev/null) || child_passed=unreadable
+  # Silence is not a payload and neither is a contradiction: reading either as
+  # zero findings is the same silent pass as reading garbage as zero findings.
 
-  case "$child_passed" in
-    true|false)
-      [[ "$child_passed" == "$path_passed" ]] \
-        || cannot_compute DEP002 "check-paths.sh --json payload contradicts its exit status $path_code" true
-      ;;
-    *)
-      cannot_compute DEP002 "check-paths.sh --json did not produce a readable payload" true
-      ;;
-  esac
+  # 1. Shape, proven before anything is read and whatever the verdict says.
+  payload_is_conforming "$path_json" \
+    || cannot_compute DEP002 "check-paths.sh --json did not produce a readable payload" true
+
+  # 2. The child's own verdict, now safe to read, against its own findings. A
+  #    payload claiming it passed while carrying a finding that says it failed
+  #    contradicts itself, and neither half can be believed over the other.
+  child_passed=$(echo "$path_json" | jq -r 'if .passed then "true" else "false" end')
+  child_has_fail=$(echo "$path_json" | jq -r 'if any(.findings[]; .level == "fail") then "true" else "false" end')
+  if [[ "$child_passed" == "true" && "$child_has_fail" == "true" ]]; then
+    cannot_compute DEP002 "check-paths.sh --json payload claims it passed beside a finding that says it failed" true
+  fi
+
+  # 3. And against the status it arrived with.
+  [[ "$child_passed" == "$path_passed" ]] \
+    || cannot_compute DEP002 "check-paths.sh --json payload contradicts its exit status $path_code" true
 
   # Merge path findings into our findings array. The read-back needs no guard of
-  # its own: the payload has already been shown to hold a findings array.
+  # its own: every element has been shown to carry a string level, rule and
+  # message, so there is nothing here left to trip over.
   path_findings=$(echo "$path_json" | jq -c '.findings[]')
   if [[ -n "$path_findings" ]]; then
     while IFS= read -r pf; do

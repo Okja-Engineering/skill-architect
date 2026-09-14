@@ -3,6 +3,7 @@
 # skill-validator handles: frontmatter format, name, description, YAML validity.
 # We add: license requirement (house policy, not spec).
 # Exit codes: 0=pass, 1=spec failure, 2=policy failure, 3=execution error.
+# The policy failure carries rule ID PL001, a missing license.
 # Execution errors are reported as DEP001 (a required tool is absent) or
 # DEP002 (skill-validator returned a status this script cannot interpret), and
 # a verdict-guard.sh that would not load is a third, reported before either ID
@@ -20,8 +21,8 @@ bash -n "$verdict_guard" 2>/dev/null \
   || { echo "ERROR: cannot load $verdict_guard: missing or malformed; no verdict was computed" >&2; exit 3; }
 # shellcheck source=verdict-guard.sh
 source "$verdict_guard"
-declare -F cannot_compute >/dev/null && declare -F require_tool >/dev/null \
-  || { echo "ERROR: $verdict_guard defines no guards; no verdict was computed" >&2; exit 3; }
+{ declare -F verdict_guard_ready >/dev/null && verdict_guard_ready; } \
+  || { echo "ERROR: $verdict_guard did not load its guards; no verdict was computed" >&2; exit 3; }
 
 if [[ $# -ne 1 ]]; then
   echo "Usage: check-frontmatter.sh <skill-dir>" >&2
