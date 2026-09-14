@@ -43,11 +43,12 @@ const (
 // than a live endpoint keeps the adapter self-contained and testable without a
 // running collector.
 //
-// Skill activation and attribution are always unknown for Claude Code. It emits
-// no skill activation event; the skill.name attribute it does attach to
-// request-scoped signals is not read yet, and nothing in its telemetry maps an
-// output back to the skill that produced it. Reporting either signal would mean
-// inventing it.
+// Skill activation and attribution are always unknown for Claude Code, for two
+// different reasons. Activation is unknown because this adapter does not read
+// the telemetry yet: Claude Code logs a claude_code.skill_activated event, and
+// attaches skill.name to request-scoped signals besides. Attribution is unknown
+// because there is nothing to read: no signal maps an output back to the skill
+// that produced it. Reporting either today would mean inventing it.
 type ClaudeCodeAdapter struct {
 	// OtelExportFile is the path to a file containing an OTLP/JSON export.
 	// It is the adapter's only input: Probe and Capture both resolve this one
@@ -193,13 +194,17 @@ func (a ClaudeCodeAdapter) Capture(sessionID string, opts CaptureOpts) (Profile,
 		ToolCalls: sig.ToolCalls,
 		Timing:    sig.Timing,
 
-		// skill.name marks the skill active for a request on token.usage,
-		// cost.usage and api_request, and appears verbatim for every skill but
-		// a third-party plugin's. This adapter does not read it yet, and no
-		// signal in the telemetry maps an output back to a skill at all.
-		SkillActivation: UnknownActivationResult("Claude Code emits no skill activation event; this adapter does not yet read " +
-			"skill.name, which marks the skill active for a request on token.usage, cost.usage and api_request " +
-			"(third-party plugin skills appear as \"third-party\"). Reading it is 0.5.0."),
+		// Claude Code does emit skill telemetry: claude_code.skill_activated
+		// is logged whenever a skill is invoked, and skill.name also rides
+		// along on token.usage, cost.usage, api_request, api_error and
+		// api_refusal. This adapter reads none of it yet, which is why
+		// activation is unknown — the harness is not the thing that is
+		// missing, the read is. Nothing in the telemetry maps an output back
+		// to the skill that produced it, which is a genuine gap and why
+		// attribution is unknown for a different reason.
+		SkillActivation: UnknownActivationResult("This adapter does not yet read Claude Code's skill telemetry: the " +
+			"claude_code.skill_activated event, logged when a skill is invoked through the Skill tool or a / command, " +
+			"carries skill.name, invocation_trigger, skill.source and skill.kind. Reading it is 0.5.0."),
 		Attribution: UnknownAttributionResult("Claude Code telemetry carries no output-to-skill mapping"),
 	}, nil
 }

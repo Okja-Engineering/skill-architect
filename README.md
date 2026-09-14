@@ -99,13 +99,20 @@ path becomes a row of zeros in a comparison. Every usage error — an unknown co
 harness, a missing required flag, an unrecognised flag, `--export-file` — exits **1**, so
 2 means the capture and nothing else.
 
-`skill_activation` and `attribution` are always `none`. Claude Code emits no skill
-activation event. It does attach a `skill.name` attribute to `claude_code.token.usage`,
-`claude_code.cost.usage` and `claude_code.api_request`, marking the skill active for that
-request — built-in, bundled, user-defined and official-marketplace skill names appear
-verbatim, and only third-party plugin skills are replaced with `"third-party"` — but this
-adapter does not read it yet. That is 0.5.0. Attribution has no source at all: nothing in
-the telemetry maps an output back to the skill that produced it.
+`skill_activation` and `attribution` are always `none`, for two different reasons. Claude
+Code *does* emit skill telemetry: `claude_code.skill_activated` is logged whenever a skill
+is invoked, whether Claude calls it through the Skill tool or you run it as a `/` command,
+and it carries `skill.name`, `invocation_trigger`, `skill.source` and `skill.kind`. A
+`skill.name` attribute rides along on request-scoped signals too — `claude_code.token.usage`,
+`claude_code.cost.usage`, `claude_code.api_request`, `claude_code.api_error` and
+`claude_code.api_refusal` — marking the skill active for that request; on those, built-in,
+bundled, user-defined and official-marketplace skill names appear verbatim and only
+third-party plugin skills are replaced with `"third-party"`, while on `skill_activated`
+itself user-defined *and* third-party plugin skills read as `"custom_skill"` unless
+`OTEL_LOG_TOOL_DETAILS=1`. This adapter reads none of it yet, which is why activation is
+`none`: the gap is in the reader, not in the harness. Reading
+`claude_code.skill_activated` is 0.5.0. Attribution is the other case — it has no source
+at all, because nothing in the telemetry maps an output back to the skill that produced it.
 
 ### Capturing an OTel export
 

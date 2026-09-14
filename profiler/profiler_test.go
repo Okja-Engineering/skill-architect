@@ -287,9 +287,9 @@ const (
 	// docs/profiler-spec.md, "Fallback".
 	fallbackReasonInSpec = "OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile."
 	// docs/profiler-spec.md, "Capture logic" step 6.
-	activationReasonInSpec = "Claude Code emits no skill activation event; this adapter does not yet read " +
-		"skill.name, which marks the skill active for a request on token.usage, cost.usage and api_request " +
-		"(third-party plugin skills appear as \"third-party\"). Reading it is 0.5.0."
+	activationReasonInSpec = "This adapter does not yet read Claude Code's skill telemetry: the " +
+		"claude_code.skill_activated event, logged when a skill is invoked through the Skill tool or a / command, " +
+		"carries skill.name, invocation_trigger, skill.source and skill.kind. Reading it is 0.5.0."
 )
 
 // skill_activation and attribution are a property of the harness and of this
