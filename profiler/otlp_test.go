@@ -885,6 +885,13 @@ func TestCounterAccumulator_CumulativeKeepsTheLatestPoint(t *testing.T) {
 			reason: "a running total only goes up, so the greater one is the later",
 		},
 		{
+			name:   "at the same instant, the greater running total wins wherever it arrived",
+			points: []counterPoint{cumulative(900, at(1)), cumulative(500, at(1))},
+			want:   900,
+			reason: "the same instant orders nothing, so file order must not decide it either — this is " +
+				"the order that under-counts if an equal instant is read as a later one",
+		},
+		{
 			name:   "a timed point beats an untimed one",
 			points: []counterPoint{cumulative(900, never), cumulative(500, at(1))},
 			want:   500,
@@ -958,20 +965,6 @@ func TestCounterAccumulator_ARunIsIdentifiedByItsStartTime(t *testing.T) {
 			reason: "the same start is the same run, and its points are running totals of each other",
 		},
 		{
-			name:   "points with no start time are one run",
-			points: []counterPoint{cumulative(100, at(10)), cumulative(120, at(20))},
-			want:   120,
-			reason: "no point says when its run began, so there is no evidence of a restart to act on",
-		},
-		{
-			name:   "a stamped run and the unstamped one are two runs",
-			points: []counterPoint{cumulative(100, at(10)).from(at(1)), cumulative(120, at(20))},
-			want:   220,
-			reason: "the stated rule for a start time that does not read: such points are one run of " +
-				"their own, which is a run like any other — the alternative is letting a point that " +
-				"cannot say which run it is from supersede one that can",
-		},
-		{
 			name:   "a delta series is one run whatever its points' start times say",
 			points: []counterPoint{delta(100, at(10)).from(at(1)), delta(200, at(20)).from(at(11))},
 			want:   300,
@@ -986,6 +979,155 @@ func TestCounterAccumulator_ARunIsIdentifiedByItsStartTime(t *testing.T) {
 			}
 			if got := acc.reduce()[tokenTypeInput]; got != tc.want {
 				t.Errorf("total = %d, want %d — %s", got, tc.want, tc.reason)
+			}
+		})
+	}
+}
+
+// A cumulative point whose startTimeUnixNano is absent, zero or unreadable
+// cannot say which run it came from. It is evidence that the series reached
+// that running total, and it is not evidence of anything else — least of all of
+// a counter that restarted, which is the one reading that adds tokens the
+// export does not carry.
+//
+// The invariant every case below pins: an unplaceable point may raise a series
+// to the greatest running total observed on it, and may never raise it past
+// that. Where it can be absorbed it is absorbed; it never becomes an addend.
+func TestCounterAccumulator_AnUnplaceablePointIsAFloorAndNeverAnAddend(t *testing.T) {
+	const series = "model=a"
+	for _, tc := range []struct {
+		name   string
+		points []counterPoint
+		want   int64
+		reason string
+	}{
+		{
+			name:   "an unplaced point before a run does not add to it",
+			points: []counterPoint{cumulative(100, at(10)), cumulative(120, at(20)).from(at(11))},
+			want:   120,
+			reason: "the capture holds a series that reached 120; the unplaceable 100 is a running " +
+				"total of it, not 100 more tokens",
+		},
+		{
+			name:   "an unplaced point after a run does not add to it",
+			points: []counterPoint{cumulative(100, at(10)).from(at(1)), cumulative(120, at(20))},
+			want:   120,
+			reason: "the same series seen twice, one flush of which omitted its start time",
+		},
+		{
+			name: "a final flush that omitted its start time is not a second session",
+			points: []counterPoint{
+				cumulative(800000, at(10)).from(at(1)),
+				cumulative(1200000, at(20)).from(at(1)),
+				cumulative(1200050, at(30)),
+			},
+			want: 1200050,
+			reason: "one session, one run, and a last flush with no start: 2400050 is a session " +
+				"reported at twice its size",
+		},
+		{
+			name: "an unplaced total above the placed runs raises the floor to it",
+			points: []counterPoint{
+				cumulative(100, at(10)).from(at(1)),
+				cumulative(20, at(20)).from(at(11)),
+				cumulative(500, at(30)),
+			},
+			want: 500,
+			reason: "some run of this series reached 500, so the series holds at least 500 — and 620 " +
+				"is mass no point in the export ever reported",
+		},
+		{
+			name: "an unplaced total below the placed runs is absorbed",
+			points: []counterPoint{
+				cumulative(100, at(10)).from(at(1)),
+				cumulative(20, at(20)).from(at(11)),
+				cumulative(50, at(30)),
+			},
+			want:   120,
+			reason: "the two runs already hold more than the unplaced point observed",
+		},
+		{
+			name:   "with nothing placed, the greatest running total observed stands",
+			points: []counterPoint{cumulative(100, at(10)), cumulative(120, at(20))},
+			want:   120,
+			reason: "no point says when its run began, so there is no restart to act on and the " +
+				"capture merges as it did before runs existed",
+		},
+		{
+			name:   "an unplaced series does not lose the total it reached",
+			points: []counterPoint{cumulative(100, at(10)), cumulative(120, at(20)), cumulative(90, at(30))},
+			want:   120,
+			reason: "the series was seen at 120; a later point reporting less is either a restart " +
+				"nothing declared or an exporter contradicting itself, and neither unsees the 120",
+		},
+		{
+			name:   "one unplaced point is the total it reports",
+			points: []counterPoint{cumulative(100, at(10))},
+			want:   100,
+			reason: "a running total is a total, whether or not it can name its run",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acc := counterAccumulator{}
+			for _, p := range tc.points {
+				acc.add(series, p)
+			}
+			got := acc.reduce()[tokenTypeInput]
+			if got != tc.want {
+				t.Errorf("total = %d, want %d — %s", got, tc.want, tc.reason)
+			}
+			// The invariant itself, asserted over the same points rather than
+			// left implied by the number above: whatever the rule, no series
+			// may exceed the greatest running total any of its points reported.
+			var observed int64
+			for _, p := range tc.points {
+				if p.value > observed {
+					observed = p.value
+				}
+			}
+			if got > observed {
+				t.Errorf("total = %d, above the greatest running total observed (%d): a point that "+
+					"cannot place itself opened a run that was summed", got, observed)
+			}
+		})
+	}
+}
+
+// Delta and cumulative are opposite instructions — add, or supersede — and a
+// series carrying both is malformed input. No total derived from it is in the
+// export: adding the increments to a running total double-counts them, and
+// dropping them under-counts. The series is refused and counted, exactly as a
+// temporality that reads as neither 1 nor 2 already is, rather than being made
+// to produce a number nobody could trust.
+func TestCounterAccumulator_AMixedTemporalitySeriesIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		order []bool // cumulative flag per point, in file order
+	}{
+		{"cumulative then delta", []bool{true, false}},
+		{"delta then cumulative", []bool{false, true}},
+		{"cumulative between deltas", []bool{false, true, false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acc := counterAccumulator{}
+			// Values that discriminate: every rule anyone might pick — keep the
+			// cumulative, sum the deltas, sum everything — gives a different
+			// number, so this case cannot pass by arithmetic coincidence.
+			for i, isCumulative := range tc.order {
+				p := delta(int64(100*(i+1)), at(int64(i+1)))
+				if isCumulative {
+					p = cumulative(50, at(int64(i+1)))
+				}
+				acc.add("model=a", p.from(at(1)))
+			}
+			// A second series, well-formed, on the same label: refusing one
+			// series must not cost the export the rest of its counts.
+			acc.add("model=b", delta(7, at(1)).from(at(1)))
+
+			totals := acc.reduce()
+			if got := totals[tokenTypeInput]; got != 7 {
+				t.Errorf("total = %d, want 7 — the mixed series contributes nothing and the "+
+					"well-formed one still counts", got)
 			}
 		})
 	}
@@ -1017,35 +1159,40 @@ func at(nanos int64) optionalNanos { return optionalNanos{nanos: nanos, ok: true
 
 var never optionalNanos
 
-// Delta and cumulative are opposite instructions, and no producer mixes them on
-// one series. If one does, the series stays cumulative for the rest of the
-// file: of the ways to be wrong about it, this is the one that cannot
-// double-count a session's tokens. A running total already contains every
-// increment of its own series, so the increments never add to it — the ones
-// counted before it arrived are dropped, and the ones after it are not counted.
-func TestCounterAccumulator_AMixedSeriesStaysCumulative(t *testing.T) {
-	const series = "model=a"
+// startTimeUnixNano and timeUnixNano are proto3 fixed64 fields, and OTLP
+// mandates the proto3 JSON mapping, whose documented deviations do not touch
+// default values. An absent field and an explicit 0 are therefore two spellings
+// of one message — protojson emits "0" with EmitUnpopulated on and omits the
+// field with it off — so no reader may tell them apart. Reading them apart is
+// what gave one series two runs and reported a session at twice its size.
+func TestOTLP_AZeroNanosecondTimestampIsTheProto3Default(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		order []bool // cumulative flag per point, in file order
+		name string
+		raw  string
 	}{
-		{"cumulative first", []bool{true, false}},
-		{"delta first", []bool{false, true}},
-		{"cumulative in the middle", []bool{false, true, false}},
+		{"the field is absent", ``},
+		{"the field is JSON null", `null`},
+		{"a bare zero", `0`},
+		{"a quoted zero", `"0"`},
+		{"a quoted zero with leading zeroes", `"000"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			acc := counterAccumulator{}
-			for i, isCumulative := range tc.order {
-				p := delta(100, at(int64(i+1)))
-				if isCumulative {
-					p = cumulative(100, at(int64(i+1)))
-				}
-				acc.add(series, p.from(at(1)))
+			if got := readNanos(json.RawMessage(tc.raw)); got.ok {
+				t.Errorf("readNanos(%q) read %d, want no instant — 0 is the field's default, "+
+					"which is the same message as the field being absent", tc.raw, got.nanos)
 			}
-			if got := acc.reduce()[tokenTypeInput]; got != 100 {
-				t.Errorf("total = %d, want 100 — a series that ever declared itself cumulative "+
-					"must not start adding its points up", got)
+			if _, ok := nanoTime(json.RawMessage(tc.raw)); ok {
+				t.Errorf("nanoTime(%q) read an instant, want none — one encoding rule, "+
+					"both of this layer's timestamp readers", tc.raw)
 			}
 		})
+	}
+	// A timestamp that is not the default still reads, or this test would pass
+	// against a reader that refused everything.
+	if got := readNanos(json.RawMessage(`"1789332595000000000"`)); !got.ok || got.nanos != 1789332595000000000 {
+		t.Errorf("readNanos of a real instant = %+v, want 1789332595000000000", got)
+	}
+	if _, ok := nanoTime(json.RawMessage(`1789332595000000000`)); !ok {
+		t.Error("nanoTime of a real instant read nothing")
 	}
 }

@@ -587,6 +587,12 @@ var captureCases = []captureCase{
 		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "cumulative points whose start time does not read", fixture: "unreadable_start_time.json",
 		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "a run beside a flush that carried no start time", fixture: "mixed_start_time.json",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "start times that are zero and start times that are absent", fixture: "zero_start_time.json",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "a series mixing temporalities beside a well-formed one", fixture: "mixed_temporality.ndjson",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "the temporality enum spelled out by name", fixture: "temporality_enum_names.json",
 		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "asDouble beside asInt on one point", fixture: "as_double_wins_over_as_int.json",
@@ -607,6 +613,7 @@ var captureCases = []captureCase{
 	{name: "an envelope carrying no telemetry", fixture: "empty_envelope.json", absent: MetricUnknown},
 	{name: "a sum that declared no temporality", fixture: "absent_temporality.json", absent: MetricUnknown},
 	{name: "a token type the adapter does not recognise", fixture: "unrecognised_token_type.json", absent: MetricUnknown},
+	{name: "every series mixes delta and cumulative", fixture: "mixed_temporality_only.ndjson", absent: MetricUnknown},
 	{name: "values no count can hold", fixture: "value_not_a_count.json", absent: MetricUnknown},
 
 	// Exports that cannot be read as OTLP/JSON at all.
@@ -805,6 +812,14 @@ func TestCapture_ReasonNamesWhatTheExportActuallyCarried(t *testing.T) {
 		{fixture: "unrecognised_token_type.json", metric: MetricTokens,
 			want: "no readable claude_code.token.usage metric in OTel export: " +
 				"2 data points carried no recognised type attribute (input/output/cacheRead/cacheCreation)"},
+		// A series carrying both temporalities is refused whole, and the reason
+		// counts series rather than data points because that is the unit the
+		// defect belongs to: the points are individually fine and it is their
+		// company that is malformed.
+		{fixture: "mixed_temporality_only.ndjson", metric: MetricTokens,
+			want: "no readable claude_code.token.usage metric in OTel export: " +
+				"1 time series carried both delta (1) and cumulative (2) aggregationTemporality points",
+			wantOut: []string{"data point"}},
 		{fixture: "value_not_a_count.json", metric: MetricTokens,
 			want: "no readable claude_code.token.usage metric in OTel export: " +
 				"4 data points carried a value that is not a token count: " +
@@ -1000,6 +1015,12 @@ func TestTokens_TemporalityDecidesSumOrSupersede(t *testing.T) {
 		{"cumulative keeps the last value per series", "cumulative.ndjson", `{"input":1150}`},
 		// Both enum names, as the standard protobuf JSON mapping emits them.
 		{"the temporality enum spelled out by name", "temporality_enum_names.json", `{"input":100,"output":900}`},
+		// One series declares both temporalities, which are opposite
+		// instructions: no total it could contribute is in the export, so it
+		// contributes none. The well-formed series beside it is untouched —
+		// 640, not 690 (its 640 plus the running total) and not 740 (plus the
+		// increment). Refusing the series is not refusing the file.
+		{"a series carrying both temporalities is refused", "mixed_temporality.ndjson", `{"input":640}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1260,9 +1281,12 @@ func TestTokens_ASeriesIsResourceScopeMetricAndAttributes(t *testing.T) {
 // reset is tokens the session really spent, so it is kept and added rather than
 // replaced — replacing it reports a fraction of the capture as the whole of it.
 //
-// A point whose start time is absent or unreadable cannot say which run it came
-// from. Every such point in a series belongs to one run of its own, so a capture
-// carrying no start times at all is merged exactly as it was before 0.4.2.
+// A point whose start time is absent, zero or unreadable cannot say which run
+// it came from. It is a running total the series reached and nothing more: it
+// sets a floor under the series' total and is never added to a run, so a
+// capture carrying no start times at all is merged exactly as it was before
+// 0.4.2, and one that carries them on some points and not others is never
+// reported at twice its size.
 func TestTokens_ACumulativeResetKeepsTheRunBeforeIt(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1293,6 +1317,20 @@ func TestTokens_ACumulativeResetKeepsTheRunBeforeIt(t *testing.T) {
 			fixture: "unreadable_start_time.json",
 			want:    `{"input":120}`,
 			reason:  "a start time that does not read is not evidence of a reset, and inventing one double-counts",
+		},
+		{
+			name:    "a run and a flush that omitted its start time are one series",
+			fixture: "mixed_start_time.json",
+			want:    `{"input":1200050}`,
+			reason: "one session, one series: a final flush with no start time is the running total it " +
+				"reports, not a second session's worth of tokens on top of the first",
+		},
+		{
+			name:    "a start time of zero is a start time that is absent",
+			fixture: "zero_start_time.json",
+			want:    `{"input":120}`,
+			reason: "startTimeUnixNano is a proto3 fixed64: an explicit 0 and an absent field are two " +
+				"encodings of one message, and a reader that tells them apart splits one series in two",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
