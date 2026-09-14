@@ -405,9 +405,9 @@ func TestProfileSchemaField(t *testing.T) {
 // The adapter version is a release surface: it goes into every profile, and
 // tests/test_skill.sh asserts the same number beside the five plugin manifests.
 // Pinning the literal here is what makes a forgotten bump fail rather than
-// quietly ship a 0.4.1 profile labelled as something else.
+// quietly ship a 0.4.2 profile labelled as something else.
 func TestAdapterVersionIsThisRelease(t *testing.T) {
-	const want = "0.4.1"
+	const want = "0.4.2"
 	if AdapterVersion != want {
 		t.Errorf("AdapterVersion = %q, want %q", AdapterVersion, want)
 	}
@@ -1233,8 +1233,9 @@ func TestTokens_SeriesDifferingOnlyByANonStringAttributeDoNotMerge(t *testing.T)
 	profile := capturedProfile(t, "array_attribute_series.ndjson")
 
 	// Two cumulative series, 100 and 200, distinguished only by an arrayValue
-	// attribute. Merged, the later point supersedes the earlier and the total
-	// is 200; kept apart, they are two running totals and add.
+	// attribute. Merged, they are one series and hold the greatest running
+	// total reported on it, which is 200 whichever order the points arrive in;
+	// kept apart, they are two running totals and add.
 	assertTokenJSON(t, profile.Tokens.Value, `{"input":300}`)
 }
 

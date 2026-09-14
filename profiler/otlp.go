@@ -842,8 +842,14 @@ func (s otlpSum) temporality() (int64, temporalityState) {
 //
 // The label is whatever the caller totals by — the token type, for this file's
 // only caller today. Nothing here knows what a token is: this is the format
-// layer, and a second OTLP-speaking adapter counting something else would use
-// it unchanged.
+// layer. It is not, however, self-contained: it assumes every value handed to
+// it is a count, and enforces that nowhere. A negative value is clamped to
+// zero rather than refused, because a run keeps the greatest total reported
+// and an unplaced point keeps the greatest it has seen, both of which start at
+// zero. The caller owns the refusal — claude_code.go drops a point whose value
+// is not a count before add is reached — so a second OTLP-speaking adapter
+// counting something that can legitimately decrease must either refuse such a
+// value itself or change this type, not reuse it as is.
 type counterAccumulator map[seriesID]*counterSeries
 
 // counterSeries is one time series' contribution to a counter total, under the
