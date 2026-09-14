@@ -1076,18 +1076,39 @@ func TestCounterAccumulator_AnUnplaceablePointIsAFloorAndNeverAnAddend(t *testin
 			if got != tc.want {
 				t.Errorf("total = %d, want %d — %s", got, tc.want, tc.reason)
 			}
+
 			// The invariant itself, asserted over the same points rather than
-			// left implied by the number above: whatever the rule, no series
-			// may exceed the greatest running total any of its points reported.
-			var observed int64
+			// left implied by the number above, and stated against the rule
+			// rather than against this implementation of it: folding in the
+			// points that cannot place themselves may raise the total to the
+			// greatest running total they report, and may not raise it one
+			// token further. Whatever the model, an unplaceable point is never
+			// an addend.
+			placedOnly := counterAccumulator{}
+			var greatestUnplaced int64
 			for _, p := range tc.points {
-				if p.value > observed {
-					observed = p.value
+				if p.start.ok {
+					placedOnly.add(series, p)
+					continue
+				}
+				if p.value > greatestUnplaced {
+					greatestUnplaced = p.value
 				}
 			}
-			if got > observed {
-				t.Errorf("total = %d, above the greatest running total observed (%d): a point that "+
-					"cannot place itself opened a run that was summed", got, observed)
+			placed := placedOnly.reduce()[tokenTypeInput]
+			ceiling := placed
+			if greatestUnplaced > ceiling {
+				ceiling = greatestUnplaced
+			}
+			switch {
+			case got > ceiling:
+				t.Errorf("total = %d; without the unplaceable points it is %d and the greatest total "+
+					"any of them reported is %d, so %d is mass no point in the export carried — "+
+					"a point that could not place itself opened a run that was summed",
+					got, placed, greatestUnplaced, got)
+			case got < placed:
+				t.Errorf("total = %d, below the %d the placed runs alone hold: an unplaceable point "+
+					"superseded a run that could say which run it was", got, placed)
 			}
 		})
 	}

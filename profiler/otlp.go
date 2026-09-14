@@ -507,16 +507,20 @@ func numericText(raw json.RawMessage) (string, bool) {
 	return s, true
 }
 
-// nanoTime reads a record's timeUnixNano: nanoseconds since the epoch, as a
-// decimal string or a bare number. The RFC 3339 event.timestamp attribute
-// beside it is deliberately not a fallback — it duplicates this field, and a
-// second time source is a branch that breeds.
+// nanoTime reads a record's timeUnixNano as an instant: nanoseconds since the
+// epoch, as a decimal string or a bare number. The RFC 3339 event.timestamp
+// attribute beside it is deliberately not a fallback — it duplicates this
+// field, and a second time source is a branch that breeds.
+//
+// It reads through readNanos rather than beside it, so the encoding rules for a
+// nanosecond timestamp — including that zero is the field's default and not an
+// instant — are stated once and hold for every timestamp in the export.
 func nanoTime(raw json.RawMessage) (time.Time, bool) {
-	n, ok := jsonInt64(raw)
-	if !ok {
+	n := readNanos(raw)
+	if !n.ok {
 		return time.Time{}, false
 	}
-	return time.Unix(0, n).UTC(), true
+	return time.Unix(0, n.nanos).UTC(), true
 }
 
 // optionalNanos is a nanosecond instant a data point may not have carried, or
@@ -524,10 +528,11 @@ func nanoTime(raw json.RawMessage) (time.Time, bool) {
 // value, because a merge has to store one point's instants and compare them
 // with the next point's.
 //
-// Absent and unreadable are one answer here. Neither is an instant this reader
-// can order against another, and for a timestamp — unlike a temporality, where
-// the difference sends the reader to two different places in their capture —
-// there is nothing a profile could say about which of the two it was.
+// Absent, zero and unreadable are one answer here. None of them is an instant
+// this reader can order against another, and for a timestamp — unlike a
+// temporality, where the difference sends the reader to two different places in
+// their capture — there is nothing a profile could say about which of them it
+// was.
 type optionalNanos struct {
 	nanos int64
 	ok    bool
@@ -535,9 +540,26 @@ type optionalNanos struct {
 
 // readNanos reads a nanosecond timestamp leaf, as a decimal string or a bare
 // number, the way every 64-bit integer in an OTLP/JSON export may arrive.
+//
+// Zero is not an instant. start_time_unix_nano and time_unix_nano are proto3
+// fixed64 fields with no presence, and OTLP mandates the proto3 JSON mapping,
+// whose documented deviations do not touch default values — so an absent field
+// and an explicit 0 are two encodings of one message. protojson writes "0" for
+// them with EmitUnpopulated on and omits them with it off, and a reader that
+// tells the two apart reads one series as two and reports the session at twice
+// its size. The epoch itself is not an instant any capture of a running agent
+// carries, so nothing is lost by spending it on saying "unset".
+//
+// An exponent-form number — 1.7893e18 — is refused with everything else that is
+// not a decimal integer, even where it happens to be exact. Reading it means
+// parsing through a float64, which cannot represent every nanosecond instant;
+// an approximate start time is worse than none, because it is a run identity,
+// and two points of one run that round apart would become two runs. A start
+// time that does not read costs nothing now: it sets a floor rather than
+// opening a run (see counterSeries).
 func readNanos(raw json.RawMessage) optionalNanos {
 	n, ok := jsonInt64(raw)
-	if !ok {
+	if !ok || n == 0 {
 		return optionalNanos{}
 	}
 	return optionalNanos{nanos: n, ok: true}
@@ -831,39 +853,58 @@ type counterAccumulator map[seriesID]*counterSeries
 // counterSeries is one time series' contribution to a counter total, under the
 // label its caller totals by.
 //
-// A series is a set of runs, and what it contributes is the sum of what they
-// do. Temporality decides what a run is, because delta and cumulative are
-// opposite instructions. Delta points are the increments since the last export:
-// they add up, and nothing in a delta series ever restarts, so the whole series
-// is one run. Cumulative points are running totals since the instant their
-// counter started, so the points sharing a startTimeUnixNano are one run and
-// the latest of them is what that run holds — and a point carrying a different
-// start is a counter that restarted. Its run sits beside the one before it
-// rather than replacing it: the tokens spent before a restart were still spent,
-// and a capture that spans one holds both runs.
+// Temporality decides what the points of a series mean, and delta and
+// cumulative are opposite instructions — add, or supersede — so a series
+// carrying both is malformed input rather than a third instruction. It is
+// refused whole (see malformed), not resolved one way: every resolution invents
+// a number the export does not contain.
+//
+// Delta points are the increments since the last export. They add up, nothing
+// in a delta series ever restarts, and a delta point's startTimeUnixNano is
+// never read — it is the start of that point's own interval, not of a run, so
+// it identifies nothing.
+//
+// Cumulative points are running totals since the instant their counter started,
+// so startTimeUnixNano says which run of the counter a point belongs to. The
+// points sharing a start are one run and the latest of them is what that run
+// holds; a point carrying a different start is a counter that restarted, and
+// its run sits beside the one before it rather than replacing it, because the
+// tokens spent before a restart were still spent. What such a series
+// contributes is the sum of its runs.
+//
+// A cumulative point whose start does not read names no run, and that is the
+// case this type is shaped around. It is not a run of its own: counting it as
+// one puts it in the sum beside the runs that did name themselves, and one
+// export flush that omitted one field then reports a session at twice its size.
+// What the point actually says is that the series reached that running total,
+// which is a floor under the series and never an addend — a bound, because a
+// running total observed anywhere in a series is at most the sum of that
+// series' runs. So the series contributes the greater of its placed runs and
+// its floor: an unplaceable point can raise a series to the largest running
+// total observed on it and can never raise it past that. A capture carrying no
+// start times at all is one floor and nothing else, which is the number it
+// reported before runs existed.
 type counterSeries struct {
-	label      string
-	cumulative bool
-	runs       map[runID]*counterRun
-}
+	label string
 
-// runID identifies a run within a series: the startTimeUnixNano its points
-// carry.
-//
-// A point whose start time is absent or unreadable cannot say which run it came
-// from, and every such point in a series belongs to the one run the zero runID
-// names. That is the rule for a start time that does not read, and it is the
-// conservative one: a point that cannot place itself is not evidence that a
-// counter restarted, so a capture carrying no start times at all — every point
-// in the same unstamped run — is merged exactly as it was before the reset
-// boundary existed.
-//
-// A delta series keeps all of its points in that same run, and a delta point's
-// startTimeUnixNano is never read: it is the start of that point's own
-// interval, not of a run, so it identifies nothing.
-type runID struct {
-	start   int64
-	stamped bool
+	// Which of the two instructions the series' points declared. Both is
+	// malformed; the series is then refused rather than totalled.
+	sawDelta      bool
+	sawCumulative bool
+
+	// increments is a delta series' sum, which is the whole of what it
+	// contributes.
+	increments int64
+
+	// runs are the cumulative runs that named themselves, keyed by the
+	// startTimeUnixNano their points carry.
+	runs map[int64]*counterRun
+
+	// floor is the greatest running total reported by a cumulative point that
+	// could not name its run. A count is never negative, so zero is both "no
+	// such point was seen" and the floor such a point would set, and the two
+	// need not be told apart.
+	floor int64
 }
 
 // counterRun is the points of one run reduced to the one number they
@@ -882,69 +923,67 @@ type counterPoint struct {
 	cumulative bool
 }
 
-// runID is the run p belongs to, by the rule above.
-func (p counterPoint) runID() runID {
-	if !p.cumulative || !p.start.ok {
-		return runID{}
-	}
-	return runID{start: p.start.nanos, stamped: true}
-}
-
 // add folds one data point into its series.
 func (acc counterAccumulator) add(id seriesID, p counterPoint) {
 	s := acc[id]
 	if s == nil {
-		s = &counterSeries{label: p.label, runs: map[runID]*counterRun{}}
+		s = &counterSeries{label: p.label}
 		acc[id] = s
 	}
 
-	// A series that ever declares itself cumulative is cumulative for the rest
-	// of the file. No producer mixes the two, and of the ways to be wrong about
-	// one that does, this is the one that cannot double-count: a running total
-	// already contains every increment of its own series, so the increments
-	// counted before the first running total arrived are dropped, and the ones
-	// that arrive after it are not counted at all.
-	if p.cumulative && !s.cumulative {
-		s.cumulative = true
-		clear(s.runs)
-	}
-	if s.cumulative && !p.cumulative {
+	if !p.cumulative {
+		s.sawDelta = true
+		s.increments = addSaturating(s.increments, p.value)
 		return
 	}
 
-	run := s.run(p.runID())
-	if s.cumulative {
-		run.supersede(p)
+	s.sawCumulative = true
+	if !p.start.ok {
+		// The point cannot say which run it is from. It is evidence the series
+		// reached this running total and evidence of nothing else — in
+		// particular, not of a counter that restarted.
+		if p.value > s.floor {
+			s.floor = p.value
+		}
 		return
 	}
-	run.accumulate(p)
+	s.run(p.start.nanos).supersede(p)
 }
 
-// run is the series' run under id, empty the first time that run is seen.
-func (s *counterSeries) run(id runID) *counterRun {
-	r := s.runs[id]
+// run is the series' run under the start time its points carry, empty the first
+// time that run is seen.
+func (s *counterSeries) run(start int64) *counterRun {
+	if s.runs == nil {
+		s.runs = map[int64]*counterRun{}
+	}
+	r := s.runs[start]
 	if r == nil {
 		r = &counterRun{}
-		s.runs[id] = r
+		s.runs[start] = r
 	}
 	return r
 }
 
-// total is the series' contribution: what each of its runs holds, added.
+// malformed reports whether the series carried both temporalities, which is the
+// one state no total can be derived from.
+func (s *counterSeries) malformed() bool { return s.sawDelta && s.sawCumulative }
+
+// total is the series' contribution: its increments if it is a delta series,
+// and otherwise its runs added, raised to the floor if an unplaceable point
+// observed more than they hold. A malformed series never reaches here — reduce
+// drops it.
 func (s *counterSeries) total() int64 {
+	if !s.sawCumulative {
+		return s.increments
+	}
 	var sum int64
 	for _, r := range s.runs {
 		sum = addSaturating(sum, r.value)
 	}
-	return sum
-}
-
-// accumulate adds a delta point's increment to the run.
-func (r *counterRun) accumulate(p counterPoint) {
-	r.value = addSaturating(r.value, p.value)
-	if p.time.after(r.time) {
-		r.time = p.time
+	if s.floor > sum {
+		return s.floor
 	}
+	return sum
 }
 
 // supersede replaces the run with a cumulative point if that point is the later
@@ -972,12 +1011,34 @@ func (r *counterRun) supersede(p counterPoint) {
 // already turned each series into one number, so this adds series, never
 // points. A label no series carried is absent from the map, which is how the
 // caller tells "nothing was read for this" from "this came to zero".
+//
+// A malformed series contributes nothing, not even a key: refusing it is the
+// whole point, and a zero under its label would be a measurement it never made.
+// Refusing one series is not refusing the export — the well-formed series
+// beside it still count.
 func (acc counterAccumulator) reduce() map[string]int64 {
 	totals := make(map[string]int64, len(acc))
 	for _, s := range acc {
+		if s.malformed() {
+			continue
+		}
 		totals[s.label] = addSaturating(totals[s.label], s.total())
 	}
 	return totals
+}
+
+// refused is how many series carried both temporalities and were dropped. The
+// caller says so in its reason, and it can only say what was counted here: a
+// series refused without a number to report is a total that quietly went
+// missing.
+func (acc counterAccumulator) refused() int {
+	var n int
+	for _, s := range acc {
+		if s.malformed() {
+			n++
+		}
+	}
+	return n
 }
 
 // addSaturating adds two counts without wrapping. Nothing a session really
