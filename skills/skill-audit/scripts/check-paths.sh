@@ -3,8 +3,32 @@
 # Finds executable script references (./ or $ prefixed) in code blocks
 # and markdown links, then resolves them against the filesystem.
 # Exit codes: 0=pass, 1=path failure, 3=execution error.
-# Use --json for machine-readable output: {"findings": [...], "passed": bool}
+# Findings carry rule IDs: at level fail, PT001 missing script/reference and
+# PT002 missing markdown link, plus DEP001 when a required tool is absent; at
+# level unverified, PATH for a reference built from a glob or a variable, which
+# cannot be resolved and so is reported without being judged — an unverified
+# finding is not a failure and does not change the exit status.
+# Use --json for machine-readable output: {"findings": [...], "passed": bool},
+# plus an "error" key on the exit-3 payload naming why no verdict was reached.
+# --json builds its verdict with jq and requires it.
+# In --json mode stdout is the payload channel: it carries a payload or it
+# carries nothing, and every diagnostic goes to stderr. Three exits carry no
+# payload: a usage error and an unresolvable target, where there is no skill to
+# render a verdict about, and a verdict-guard.sh that would not load, where
+# there is nothing left to build a payload with.
 set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+verdict_guard="$script_dir/verdict-guard.sh"
+# The guard is the one dependency it cannot announce itself, so loading it is
+# checked before and after — see its header for why an unchecked source would
+# exit with a status that means a verdict was computed.
+bash -n "$verdict_guard" 2>/dev/null \
+  || { echo "ERROR: cannot load $verdict_guard: missing or malformed; no verdict was computed" >&2; exit 3; }
+# shellcheck source=verdict-guard.sh
+source "$verdict_guard"
+{ declare -F verdict_guard_ready >/dev/null && verdict_guard_ready; } \
+  || { echo "ERROR: $verdict_guard did not load its guards; no verdict was computed" >&2; exit 3; }
 
 json_output=false
 skill_dir=""
@@ -27,6 +51,10 @@ skill_md="$skill_dir/SKILL.md"
 if [[ ! -f "$skill_md" ]]; then
   echo "ERROR: SKILL.md not found in $skill_dir" >&2
   exit 3
+fi
+
+if $json_output; then
+  require_tool jq true
 fi
 
 fail=0
@@ -80,22 +108,18 @@ done < <(echo "$code_body" | grep -oE '(\./|\$)\S*(scripts|references|assets)/\S
 
 # --- Output ---
 if $json_output; then
-  if [[ ${#findings[@]} -eq 0 ]]; then
-    echo '{"findings": [], "passed": true}'
-  else
-    # Build JSON findings array from pipe-delimited entries.
-    json_findings="[]"
-    for f in "${findings[@]}"; do
-      level="${f%%|*}"
-      rest="${f#*|}"
-      rule="${rest%%|*}"
-      message="${rest#*|}"
-      json_findings=$(echo "$json_findings" | jq --arg level "$level" --arg rule "$rule" --arg msg "$message" \
-        '. + [{"level": $level, "rule": $rule, "message": $msg}]')
-    done
-    echo "$json_findings" | jq --argjson passed $([[ $fail -eq 0 ]] && echo true || echo false) \
-      '{findings: ., passed: $passed}'
-  fi
+  # Build JSON findings array from pipe-delimited entries.
+  json_findings="[]"
+  for f in ${findings[@]+"${findings[@]}"}; do
+    level="${f%%|*}"
+    rest="${f#*|}"
+    rule="${rest%%|*}"
+    message="${rest#*|}"
+    json_findings=$(echo "$json_findings" | jq --arg level "$level" --arg rule "$rule" --arg msg "$message" \
+      '. + [{"level": $level, "rule": $rule, "message": $msg}]')
+  done
+  echo "$json_findings" | jq --argjson passed "$([[ $fail -eq 0 ]] && echo true || echo false)" \
+    '{findings: ., passed: $passed}'
 else
   for f in ${findings[@]+"${findings[@]}"}; do
     level="${f%%|*}"

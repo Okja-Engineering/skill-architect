@@ -4,8 +4,39 @@
 #   1. skill-validator check -o json  (spec, structure, content, contamination)
 #   2. skillscore --json              (7-dimension quality scoring)
 #   3. House-policy checks            (PL001-PL005, PT001-PT002)
+# Composes them with jq and requires it: without jq there is no report to
+# generate, so it says which tool is missing and exits 3 (DEP001) rather than
+# dying part-way through with the shell's own "command not found".
+# Every source stays soft: the report still generates and names in-band, as
+# spec_error, quality_error or policy_error, the source it could not read. The
+# two sources that carry a verdict are never read as sources with nothing to
+# say — an unread spec or policy source leaves summary.passed false. Quality is
+# a score rather than a verdict, so quality_error leaves the score null and the
+# verdict alone.
+# Every source is proven to carry the shape it is about to be read as — one
+# document, of the type being indexed, as far down as the read goes — before any
+# of it is read, so "could not read it" covers every way a source can be
+# misshapen rather than the one way this file happened to check for. "It parsed"
+# is not that proof: a number parses, and then indexing it raises inside the
+# merge below and there is no report at all, which is the one outcome this file
+# exists to prevent. The shape claimed differs per source, because what is read
+# out of each of them differs.
+# Rule IDs reach the report only by relay, from the policy source, except PL001
+# for a missing license, which this file checks inline and adds itself.
 # Exit codes: 0=report generated, 3=execution error.
 set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+verdict_guard="$script_dir/verdict-guard.sh"
+# The guard is the one dependency it cannot announce itself, so loading it is
+# checked before and after — see its header for why an unchecked source would
+# exit with a status that means a verdict was computed.
+bash -n "$verdict_guard" 2>/dev/null \
+  || { echo "ERROR: cannot load $verdict_guard: missing or malformed; no verdict was computed" >&2; exit 3; }
+# shellcheck source=verdict-guard.sh
+source "$verdict_guard"
+{ declare -F verdict_guard_ready >/dev/null && verdict_guard_ready; } \
+  || { echo "ERROR: $verdict_guard did not load its guards; no verdict was computed" >&2; exit 3; }
 
 skill_dir=""
 for arg in "$@"; do
@@ -26,15 +57,18 @@ if [[ ! -f "$skill_md" ]]; then
   exit 3
 fi
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+require_tool jq false
+
 timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 # --- Source 1: skill-validator (spec + structure + content + contamination) ---
+# Read as `.passed`, `.errors` and `.warnings` of one document, so one document
+# that is an object is the whole of what has to hold before any of it is read.
 spec_json="null"
 spec_error=""
 if command -v skill-validator &>/dev/null; then
   spec_raw="$(skill-validator check -o json "$skill_dir" 2>&1)" || true
-  if echo "$spec_raw" | jq -e . >/dev/null 2>&1; then
+  if json_document_conforms "$spec_raw" 'type == "object"'; then
     spec_json="$spec_raw"
   else
     spec_error="$spec_raw"
@@ -44,11 +78,20 @@ else
 fi
 
 # --- Source 2: skillscore (7-dimension quality scoring) ---
+# Read two levels in, at `.overallScore.percentage` and `.overallScore.
+# letterGrade`, so the claim reaches two levels in: proving the top level and
+# then indexing `.overallScore` would be the same defect one level down. It
+# reaches no further than the read does — a source carrying no `overallScore` at
+# all is read, and leaves the score null, because null is what the read yields.
 quality_json="null"
 quality_error=""
 if command -v skillscore &>/dev/null; then
   quality_raw="$(skillscore "$skill_dir" --json 2>&1)" || true
-  if echo "$quality_raw" | jq -e . >/dev/null 2>&1; then
+  if json_document_conforms "$quality_raw" '
+       if type != "object" then false
+       elif (.overallScore | type) == "null" then true
+       else (.overallScore | type) == "object"
+       end'; then
     quality_json="$quality_raw"
   else
     quality_error="$quality_raw"
@@ -58,12 +101,39 @@ else
 fi
 
 # --- Source 3: House-policy checks (PL002-PL005, PT001-PT002) via check-structure.sh ---
+# Unlike the two sources above, this one has a stdout contract: it carries a
+# payload and nothing else, with every diagnostic on stderr. So its stdout is
+# captured alone — merging the two channels turned the passed:false payload it
+# emits when it cannot reach a verdict into unparseable text — and its
+# diagnostics pass through to our stderr, where they belong.
+#
+# And an unreadable policy source is not a skill with no policy findings. It is
+# a source this report could not read: it is named, and the report does not
+# claim a pass over it.
+#
+# The payload is proven to be the documented shape before anything is read out
+# of it, by the same predicate its producer's other consumer uses. Proving one
+# thing about it — that .findings is an array — and then reading a great deal
+# more is how the merge below came to select on .level and call startswith on
+# .rule of elements nothing had checked, and die inside jq with no report at all.
+# Everything after this line is a total read.
+#
+# The verdict is the source's own, not one re-derived from the findings it came
+# with: a source saying it failed for a reason it did not enumerate as a
+# level: "fail" finding is still a source saying it failed.
 policy_findings="[]"
+policy_passed=false
+policy_error=""
 if [[ -x "$script_dir/check-structure.sh" ]]; then
-  struct_raw="$("$script_dir/check-structure.sh" --json "$skill_dir" 2>&1)" || true
-  if echo "$struct_raw" | jq -e . >/dev/null 2>&1; then
+  struct_raw="$("$script_dir/check-structure.sh" --json "$skill_dir")" || true
+  if payload_is_conforming "$struct_raw"; then
     policy_findings=$(echo "$struct_raw" | jq -c '.findings')
+    policy_passed=$(echo "$struct_raw" | jq -r '.passed')
+  else
+    policy_error="check-structure.sh --json did not produce a readable payload"
   fi
+else
+  policy_error="check-structure.sh is not present or not executable at $script_dir"
 fi
 
 # --- PL001: license check (inline — avoids double-running skill-validator) ---
@@ -88,14 +158,18 @@ jq -n \
   --argjson spec "$spec_json" \
   --argjson quality "$quality_json" \
   --argjson policy_findings "$policy_findings" \
+  --argjson policy_passed "$policy_passed" \
   --arg spec_error "$spec_error" \
   --arg quality_error "$quality_error" \
+  --arg policy_error "$policy_error" \
   '{
     skill: $skill,
     timestamp: $timestamp,
     summary: {
       passed: (
         ($spec | if . == null then false else .passed end)
+        and $policy_error == ""
+        and $policy_passed
         and ([($policy_findings[] | select(.level == "fail"))] | length == 0)
       ),
       spec_passed: ($spec | if . == null then false else .passed end),
@@ -113,5 +187,6 @@ jq -n \
     quality_error: (if $quality_error == "" then null else $quality_error end),
     policy: {
       findings: $policy_findings
-    }
+    },
+    policy_error: (if $policy_error == "" then null else $policy_error end)
   }'

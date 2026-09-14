@@ -266,13 +266,47 @@ The skills shell out to three external tools. Install them before running an aud
 
 | Tool | Install | Without it |
 |---|---|---|
-| [`skill-validator`](https://github.com/agent-ecosystem/skill-validator) | `brew install agent-ecosystem/tap/skill-validator` | `skill-audit` stops at its structural-checks stage with `skill-validator not found` and exit 1 — that guard is what protects you. `audit-report.sh` also detects it: `spec` is `null`, `spec_error` names the tool, and `summary.passed` is `false`. `check-frontmatter.sh` run on its own does **not** detect it: the missing binary exits 127, which the script does not handle, so it skips spec validation silently. Only the license policy gate still runs — a license-less skill exits 2, a licensed one prints `frontmatter OK` and exits 0 having checked nothing else. Do not bypass the guard. |
+| [`skill-validator`](https://github.com/agent-ecosystem/skill-validator) | `brew install agent-ecosystem/tap/skill-validator` | `skill-audit` stops at its structural-checks stage with `skill-validator not found` and exit 1 — that guard is what protects you. `audit-report.sh` also detects it: `spec` is `null`, `spec_error` names the tool, and `summary.passed` is `false`. `check-frontmatter.sh` run on its own detects it too: it exits 3 with `required tool not found: skill-validator` and never reaches the license gate, so a missing validator can neither pass a skill nor be mistaken for a policy failure. |
 | [`skillscore`](https://www.npmjs.com/package/skillscore) | `npm install -g skillscore` | `skill-audit` stops at the same stage with `skillscore not found` and exit 1. `check-quality.sh` exits 3. `audit-report.sh` emits `quality: null` with `quality_error`, and `quality_score` / `quality_grade` are `null`. |
-| `jq` | `brew install jq` (macOS) · `apt-get install jq` (Debian/Ubuntu) | `audit-report.sh` dies with `jq: command not found` (exit 127). `check-paths.sh --json` and `check-structure.sh --json` die the same way **when they have a finding to serialise**; with nothing to report they take a branch that never calls jq (`check-structure.sh:93`, `check-paths.sh:84`) and exit 0 correctly. The quiet case is in between: `check-structure.sh --json` reads its path findings back through jq at `check-structure.sh:71`, where `2>/dev/null \|\| true` swallows the missing binary — so a skill whose only faults are path faults prints `{"findings": [], "passed": true}` and exits **0** instead of the `passed: false` and exit 1 it returns with jq installed. Policy findings (PL002–PL005) are not affected, because they never round-trip through jq before the output stage. |
+| `jq` | `brew install jq` (macOS) · `apt-get install jq` (Debian/Ubuntu) | `audit-report.sh` composes its whole report with jq, so without it there is no report to generate: it exits 3 with `required tool not found: jq` and writes nothing to stdout, rather than dying part-way through. `check-paths.sh --json` and `check-structure.sh --json` require jq unconditionally too: they exit 3 with the same message and a `passed: false` payload carrying a `DEP001` finding, whatever the skill contains. Text mode needs no jq and is unaffected. |
 
-The `skill-validator` and `skillscore` checks are deliberately loud — a missing tool
-fails the audit instead of quietly scoring an unchecked skill as a pass. There is no
-such guard for `jq`, so confirm it is installed yourself.
+These checks are deliberately loud — a missing tool fails the audit instead of
+quietly scoring an unchecked skill as a pass. That holds for `jq` as well: a script
+that cannot reach a verdict says which tool is missing and exits 3, rather than
+reporting a result it did not compute.
+
+The same rule covers the case where every tool is present but one of them answers
+with something the caller cannot interpret. `check-structure.sh` exits 3 with a
+`DEP002` finding when `check-paths.sh` returns an unenumerated status, a payload it
+cannot read, or a payload that contradicts the status it arrived with; and
+`check-frontmatter.sh` does the same on stderr for `skill-validator`. `DEP001` and
+`DEP002` are the only rule IDs an exit 3 emits, and
+[`skills/skill-audit/SKILL.md`](skills/skill-audit/SKILL.md) registers them beside
+the `PL`, `PT` and `PATH` findings — the whole set these scripts emit, compared
+against the scripts themselves by `tests/test_f01.sh` so the list cannot fall
+behind what they produce.
+
+That rule has to survive composition, so `audit-report.sh` applies it to its own
+sources. It reads `check-structure.sh` on stdout alone, where the payload is, so a
+`DEP002` payload reaches the report as a finding instead of being lost among the
+diagnostics; and when a source produces nothing it can read, it names the source in
+`spec_error` or `policy_error` and leaves `summary.passed` false rather than
+reporting a skill with nothing wrong with it. `quality_error` is the exception, by
+design: quality is a score, not a verdict, so an unread `skillscore` leaves
+`quality_score` null and the verdict alone.
+
+The scripts share `skills/skill-audit/scripts/verdict-guard.sh`, which is the one
+dependency they cannot announce through the guard itself. Each checks that it loads
+before relying on it — and that it loaded *completely*, since a file that stopped
+short defines some guards and not others — so a missing, damaged or partial copy
+exits 3 with `verdict-guard.sh` named and no payload, rather than aborting with the
+1 or 2 that mean a spec, path or policy verdict was actually computed.
+
+The same guard holds the one definition of the payload shape those scripts pass
+between themselves, `{"findings": [{level, rule, message}, ...], "passed": bool}`.
+A consumer proves the whole shape, elements included, before reading any of it,
+and a payload that is not that shape is a source it could not read — never a
+source with nothing to report.
 
 Building the profiler additionally needs Go, at the version declared in
 [`profiler/go.mod`](profiler/go.mod).

@@ -95,6 +95,25 @@ assert "skill-audit passes its own frontmatter check" true
 skills/skill-audit/scripts/check-structure.sh skills/skill-audit >/dev/null
 assert "skill-audit passes its own structure check" true
 
+# The shipped skills validate clean — warnings included.
+#
+# skill-audit is the repo's reference skill: it is what the audit skill points
+# other skills at, and it invokes this very validator. A warning in our own
+# artifact is a defect. Nothing checked for one before, which is how a
+# `scripts/lib/` directory earned a "deep nesting detected" warning and carried
+# it through every gate unnoticed.
+#
+# `skill-validator check` exits 0 only on a clean pass; 1 means errors and 2
+# means warnings only. Asserting 0 pins both counts at zero.
+for skill in skills/skill-audit skills/skill-rewrite; do
+  sv_code=0
+  sv_output="$(skill-validator check "$skill" 2>&1)" || sv_code=$?
+  if [[ $sv_code -ne 0 ]]; then
+    echo "$sv_output" | grep -iE 'warn|error' || true
+  fi
+  assert "$skill validates with zero errors and zero warnings" \
+    "$([[ $sv_code -eq 0 ]] && echo true || echo false)"
+done
 # skill-rewrite carries its script and can draft a rewrite for itself.
 [[ -x skills/skill-rewrite/scripts/draft-rewrite.sh ]]
 assert "skill-rewrite draft-rewrite.sh is executable" true

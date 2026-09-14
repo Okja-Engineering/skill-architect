@@ -76,7 +76,7 @@ For a unified machine-readable report combining all three sources (spec, quality
 "$skill_root/scripts/audit-report.sh" "$target_skill"
 ```
 
-The report nests the full output of each source under `spec`, `quality`, and `policy`, with a top-level `summary` for quick pass/fail checks. Parse with `jq`:
+The report nests the full output of each source under `spec`, `quality`, and `policy`, with a top-level `summary` for quick pass/fail checks. A source the report could not read is named in `spec_error`, `quality_error` or `policy_error` rather than being treated as a source with nothing to report, and an unread `spec` or `policy` leaves `summary.passed` false. Parse with `jq`:
 
 ```bash
 "$skill_root/scripts/audit-report.sh" "$target_skill" | jq '.summary.passed'
@@ -84,7 +84,7 @@ The report nests the full output of each source under `spec`, `quality`, and `po
 "$skill_root/scripts/audit-report.sh" "$target_skill" | jq '.policy.findings[] | select(.level == "fail")'
 ```
 
-Exit codes: 0=pass, 1=spec/path failure, 2=policy failure, 3=execution error. House-policy findings include rule IDs: PL001 for license, PL002 for headings, PL003 for line count, PL004 for code blocks, PL005 for lists, PT001 for missing scripts, PT002 for missing markdown links.
+Exit codes: 0=pass, 1=spec/path failure, 2=policy failure, 3=execution error. Every finding carries a level and a rule ID. At level `fail`: PL001 for license, PL002 for headings, PL003 for line count, PL004 for code blocks, PL005 for lists, PT001 for missing scripts, PT002 for missing markdown links, and — on an exit 3, in the same findings array a `--json` consumer reads — DEP001 when a required tool is absent and DEP002 when a child check returns a status or a payload the script cannot interpret. At level `unverified`: PATH, for a reference built from a glob or a variable, which the scripts cannot resolve and so report without judging; an unverified finding is not a failure and does not change the exit status. Those ten are the whole set these scripts emit, and `tests/test_f01.sh` compares this line against what they can emit so that neither side can grow without the other.
 
 List bundled resources:
 
