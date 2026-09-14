@@ -291,8 +291,13 @@ func extractTokenCounts(export otlpExport) TokenResult {
 				c.notACount++
 				continue
 			}
-			timeNanos, hasTime := jsonInt64(dp.TimeUnixNano)
-			acc.add(dp.Attributes.seriesKey(), tokenType, value, timeNanos, hasTime, temporality == temporalityCumulative)
+			acc.add(m.series(dp), counterPoint{
+				label:      tokenType,
+				value:      value,
+				time:       readNanos(dp.TimeUnixNano),
+				start:      readNanos(dp.StartTimeUnixNano),
+				cumulative: temporality == temporalityCumulative,
+			})
 			read++
 		}
 	}

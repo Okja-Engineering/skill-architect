@@ -2,6 +2,7 @@ package profiler
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -344,11 +345,15 @@ func TestOTLP_ASchemaMismatchNamesAFieldPathOnlyWhenThereIsOne(t *testing.T) {
 func TestCounterAccumulator_TotalsSaturateRatherThanWrap(t *testing.T) {
 	acc := counterAccumulator{}
 	// Two series under the same label, summed at reduce.
-	acc.add("model=a", tokenTypeInput, math.MaxInt64, 1, true, false)
-	acc.add("model=b", tokenTypeInput, 1000, 1, true, false)
+	acc.add("model=a", delta(math.MaxInt64, at(1)))
+	acc.add("model=b", delta(1000, at(1)))
 	// One series accumulating deltas past the limit.
-	acc.add("model=c", tokenTypeOutput, math.MaxInt64, 1, true, false)
-	acc.add("model=c", tokenTypeOutput, math.MaxInt64, 2, true, false)
+	acc.add("model=c", delta(math.MaxInt64, at(1)).as(tokenTypeOutput))
+	acc.add("model=c", delta(math.MaxInt64, at(2)).as(tokenTypeOutput))
+	// One cumulative series whose runs sum past the limit: a reset adds the
+	// run before it, and that addition has the same job to do.
+	acc.add("model=d", cumulative(math.MaxInt64, at(1)).from(at(1)).as(tokenTypeCacheCreation))
+	acc.add("model=d", cumulative(math.MaxInt64, at(3)).from(at(2)).as(tokenTypeCacheCreation))
 
 	totals := acc.reduce()
 	if got := totals[tokenTypeInput]; got != math.MaxInt64 {
@@ -356,6 +361,9 @@ func TestCounterAccumulator_TotalsSaturateRatherThanWrap(t *testing.T) {
 	}
 	if got := totals[tokenTypeOutput]; got != math.MaxInt64 {
 		t.Errorf("output total = %d, want %d — accumulating deltas must saturate", got, int64(math.MaxInt64))
+	}
+	if got := totals[tokenTypeCacheCreation]; got != math.MaxInt64 {
+		t.Errorf("cache_creation total = %d, want %d — summing a series' runs must saturate", got, int64(math.MaxInt64))
 	}
 	// A label no series carried is absent, not zero: that is how the caller
 	// tells "nothing was read for this" from "this came to nothing".
@@ -579,14 +587,15 @@ func TestOTLP_CountIsExactlyTheValuesAnInt64Holds(t *testing.T) {
 	}
 }
 
-// OTel defines a time series by its full attribute set, so the series key must
-// be injective over that set: two attribute sets that differ anywhere are two
-// series and must not merge, and two that differ only in how the exporter
-// ordered or spelled the same values are one series and must not split.
+// A data point's attributes are the part of a series' identity the point
+// carries itself, so the encoding must be injective over them: two attribute
+// sets that differ anywhere are two series and must not merge, and two that
+// differ only in how the exporter ordered or spelled the same values are one
+// series and must not split.
 //
-// The key is internal and never shown to anyone, so these cases pin identity
-// rather than any particular encoding.
-func TestOTLP_SeriesKeyIsTheAttributeSetNotItsText(t *testing.T) {
+// The encoding is internal and never shown to anyone, so these cases pin
+// identity rather than any particular spelling of it.
+func TestOTLP_AttributeIdentityIsTheSetNotItsText(t *testing.T) {
 	// Every entry is a different attribute set, so every key must be
 	// different. Asserting injectivity over a corpus rather than pair by pair
 	// is what makes the test independent of how the key is built: the corpus
@@ -642,9 +651,9 @@ func TestOTLP_SeriesKeyIsTheAttributeSetNotItsText(t *testing.T) {
 	}
 	keyed := make(map[string]string, len(corpus))
 	for _, wire := range corpus {
-		key := attrs(t, wire).seriesKey()
+		key := attrs(t, wire).identity()
 		if before, collides := keyed[key]; collides {
-			t.Errorf("two different attribute sets share the series key %q, so they would merge into one series:\n  %s\n  %s",
+			t.Errorf("two different attribute sets share the identity %q, so they would merge into one series:\n  %s\n  %s",
 				key, before, wire)
 			continue
 		}
@@ -667,12 +676,99 @@ func TestOTLP_SeriesKeyIsTheAttributeSetNotItsText(t *testing.T) {
 	}
 	for _, tc := range same {
 		t.Run("same/"+tc.name, func(t *testing.T) {
-			if a, b := attrs(t, tc.a).seriesKey(), attrs(t, tc.b).seriesKey(); a != b {
+			if a, b := attrs(t, tc.a).identity(), attrs(t, tc.b).identity(); a != b {
 				t.Errorf("%s keys as %q and %s as %q — one series would split in two",
 					tc.a, a, tc.b, b)
 			}
 		})
 	}
+}
+
+// The attribute set is one of four parts. OTel identifies a series by the
+// resource it came from, the scope that recorded it, the metric's name and
+// those attributes, and the whole of that has to be injective too: a capture
+// that aggregates two service instances carries two series whose data points
+// are identical, and merging them reports one instance's running total as both.
+//
+// The corpus differs in exactly one part per entry, and carries the entries
+// where one part's text would be another part's if the parts were run together.
+func TestOTLP_SeriesIdentityIsAllFourPartsOfIt(t *testing.T) {
+	corpus := []struct {
+		name    string
+		metric  string
+		batches []string
+	}{
+		{name: "nothing but the metric and one point", metric: "m", batches: []string{batch("", "", `[]`)}},
+		{name: "a resource attribute", metric: "m", batches: []string{batch(`"resource":{"attributes":[{"key":"a","value":{"stringValue":"b"}}]},`, "", `[]`)}},
+		{name: "a different resource attribute value", metric: "m", batches: []string{batch(`"resource":{"attributes":[{"key":"a","value":{"stringValue":"c"}}]},`, "", `[]`)}},
+		{name: "a resource attribute of another AnyValue kind", metric: "m", batches: []string{batch(`"resource":{"attributes":[{"key":"a","value":{"intValue":5}}]},`, "", `[]`)}},
+		{name: "the string that kind prints as", metric: "m", batches: []string{batch(`"resource":{"attributes":[{"key":"a","value":{"stringValue":"5"}}]},`, "", `[]`)}},
+		{name: "a scope name", metric: "m", batches: []string{batch("", `"scope":{"name":"a"},`, `[]`)}},
+		{name: "the same text as a scope version", metric: "m", batches: []string{batch("", `"scope":{"version":"a"},`, `[]`)}},
+		{name: "a scope name and version", metric: "m", batches: []string{batch("", `"scope":{"name":"a","version":"b"},`, `[]`)}},
+		{name: "the two run together as a name", metric: "m", batches: []string{batch("", `"scope":{"name":"ab"},`, `[]`)}},
+		// The same attribute, on each of the three things that can carry one.
+		{name: "a scope attribute", metric: "m", batches: []string{batch("", `"scope":{"attributes":[{"key":"a","value":{"stringValue":"b"}}]},`, `[]`)}},
+		{name: "a data-point attribute", metric: "m", batches: []string{batch("", "", `[{"key":"a","value":{"stringValue":"b"}}]`)}},
+		{name: "another metric's name", metric: "n", batches: []string{batch("", "", `[]`)}},
+	}
+
+	seen := make(map[seriesID]string, len(corpus))
+	for _, tc := range corpus {
+		for _, id := range seriesIDs(t, tc.metric, tc.batches...) {
+			if before, collides := seen[id]; collides {
+				t.Errorf("%q and %q share a series identity, so two series would merge into one", before, tc.name)
+				continue
+			}
+			seen[id] = tc.name
+		}
+	}
+
+	// The other direction: one series written across two batches, as every
+	// capture of more than one flush is, must stay one series.
+	t.Run("same/one series across two batches", func(t *testing.T) {
+		b := batch(`"resource":{"attributes":[{"key":"a","value":{"stringValue":"b"}}]},`,
+			`"scope":{"name":"s","version":"1"},`, `[{"key":"type","value":{"stringValue":"input"}}]`)
+		ids := seriesIDs(t, "m", b, b)
+		if len(ids) != 2 {
+			t.Fatalf("walked %d data points across two batches, want 2", len(ids))
+		}
+		if ids[0] != ids[1] {
+			t.Errorf("the same series in two batches has two identities, so its points would not merge")
+		}
+	})
+}
+
+// batch is one metrics export object: a metric named m and a metric named n,
+// each with one data point, under the resource and scope given. The resource
+// and scope arguments are the JSON member and its trailing comma, or empty for
+// an entry that carries none — absent and empty are the same identity, and an
+// entry that says nothing about its scope is the common case on the wire.
+func batch(resource, scope, attributes string) string {
+	const metric = `{"name":"%s","sum":{"aggregationTemporality":2,"dataPoints":[{"attributes":%s,` +
+		`"startTimeUnixNano":"1","timeUnixNano":"2","asDouble":1}]}}`
+	return `{"resourceMetrics":[{` + resource + `"scopeMetrics":[{` + scope + `"metrics":[` +
+		fmt.Sprintf(metric, "m", attributes) + "," + fmt.Sprintf(metric, "n", attributes) + `]}]}]}`
+}
+
+// seriesIDs is the identity of every data point the named metric carries,
+// across the batches given, in walk order.
+func seriesIDs(t *testing.T, name string, batches ...string) []seriesID {
+	t.Helper()
+	export, err := readOTLP(strings.NewReader(strings.Join(batches, "\n")))
+	if err != nil {
+		t.Fatalf("fixture does not read: %v", err)
+	}
+	var ids []seriesID
+	for m := range export.metrics(name) {
+		for _, dp := range m.Sum.DataPoints {
+			ids = append(ids, m.series(dp))
+		}
+	}
+	if len(ids) == 0 {
+		t.Fatalf("no %q data points in the batches given", name)
+	}
+	return ids
 }
 
 // --- Byte offsets ---
@@ -765,60 +861,52 @@ func TestCounterAccumulator_CumulativeKeepsTheLatestPoint(t *testing.T) {
 	const series = "model=a"
 	for _, tc := range []struct {
 		name string
-		// add is the points folded in, in file order, after the first.
-		first  counterPoint
-		rest   []counterPoint
+		// points are folded in in file order, and all belong to one run.
+		points []counterPoint
 		want   int64
 		reason string
 	}{
 		{
 			name:   "a later timestamp supersedes an earlier one",
-			first:  counterPoint{value: 500, nanos: 1, timed: true},
-			rest:   []counterPoint{{value: 900, nanos: 2, timed: true}},
+			points: []counterPoint{cumulative(500, at(1)), cumulative(900, at(2))},
 			want:   900,
 			reason: "the running total at the later instant is the total",
 		},
 		{
 			name:   "an earlier timestamp does not supersede a later one",
-			first:  counterPoint{value: 900, nanos: 2, timed: true},
-			rest:   []counterPoint{{value: 500, nanos: 1, timed: true}},
+			points: []counterPoint{cumulative(900, at(2)), cumulative(500, at(1))},
 			want:   900,
 			reason: "file order is not time order; an exporter may write batches out of order",
 		},
 		{
 			name:   "at the same instant, the greater running total wins",
-			first:  counterPoint{value: 500, nanos: 1, timed: true},
-			rest:   []counterPoint{{value: 900, nanos: 1, timed: true}},
+			points: []counterPoint{cumulative(500, at(1)), cumulative(900, at(1))},
 			want:   900,
 			reason: "a running total only goes up, so the greater one is the later",
 		},
 		{
 			name:   "a timed point beats an untimed one",
-			first:  counterPoint{value: 900},
-			rest:   []counterPoint{{value: 500, nanos: 1, timed: true}},
+			points: []counterPoint{cumulative(900, never), cumulative(500, at(1))},
 			want:   500,
 			reason: "a point that says when it was is better evidence than one that does not",
 		},
 		{
 			name:   "an untimed point does not beat a timed one",
-			first:  counterPoint{value: 500, nanos: 1, timed: true},
-			rest:   []counterPoint{{value: 900}},
+			points: []counterPoint{cumulative(500, at(1)), cumulative(900, never)},
 			want:   500,
 			reason: "a point that says when it was is better evidence than one that does not",
 		},
 		{
 			name:   "with no times at all, the greater running total wins",
-			first:  counterPoint{value: 500},
-			rest:   []counterPoint{{value: 900}, {value: 700}},
+			points: []counterPoint{cumulative(500, never), cumulative(900, never), cumulative(700, never)},
 			want:   900,
 			reason: "nothing else orders them, and a running total only goes up",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			acc := counterAccumulator{}
-			acc.add(series, tokenTypeInput, tc.first.value, tc.first.nanos, tc.first.timed, true)
-			for _, p := range tc.rest {
-				acc.add(series, tokenTypeInput, p.value, p.nanos, p.timed, true)
+			for _, p := range tc.points {
+				acc.add(series, p.from(at(1)))
 			}
 			if got := acc.reduce()[tokenTypeInput]; got != tc.want {
 				t.Errorf("total = %d, want %d — %s", got, tc.want, tc.reason)
@@ -827,17 +915,114 @@ func TestCounterAccumulator_CumulativeKeepsTheLatestPoint(t *testing.T) {
 	}
 }
 
-// counterPoint is one data point's contribution, as the accumulator takes it.
-type counterPoint struct {
-	value int64
-	nanos int64
-	timed bool
+// A cumulative counter that restarts reports a running total from zero again,
+// and startTimeUnixNano is what says which run a point is from. The run before
+// a restart is tokens the session really spent: it stays, beside the new run
+// rather than under it. Nothing here depends on the runs arriving in order — a
+// capture is a stream of batches an exporter may have written in any order.
+func TestCounterAccumulator_ARunIsIdentifiedByItsStartTime(t *testing.T) {
+	const series = "model=a"
+	for _, tc := range []struct {
+		name   string
+		points []counterPoint
+		want   int64
+		reason string
+	}{
+		{
+			name:   "a reset opens a run beside the one before it",
+			points: []counterPoint{cumulative(100, at(10)).from(at(1)), cumulative(20, at(20)).from(at(11))},
+			want:   120,
+			reason: "the counter restarted, and the 100 it had reached was still spent",
+		},
+		{
+			name: "each run keeps its own latest point",
+			points: []counterPoint{
+				cumulative(60, at(5)).from(at(1)),
+				cumulative(100, at(10)).from(at(1)),
+				cumulative(12, at(15)).from(at(11)),
+				cumulative(20, at(20)).from(at(11)),
+			},
+			want:   120,
+			reason: "two runs reaching 100 and 20: the points inside a run supersede, the runs add",
+		},
+		{
+			name:   "runs out of file order still add",
+			points: []counterPoint{cumulative(20, at(20)).from(at(11)), cumulative(100, at(10)).from(at(1))},
+			want:   120,
+			reason: "a run is identified by its start time, not by where in the file it arrived",
+		},
+		{
+			name:   "one run does not add to itself",
+			points: []counterPoint{cumulative(100, at(10)).from(at(1)), cumulative(120, at(20)).from(at(1))},
+			want:   120,
+			reason: "the same start is the same run, and its points are running totals of each other",
+		},
+		{
+			name:   "points with no start time are one run",
+			points: []counterPoint{cumulative(100, at(10)), cumulative(120, at(20))},
+			want:   120,
+			reason: "no point says when its run began, so there is no evidence of a restart to act on",
+		},
+		{
+			name:   "a stamped run and the unstamped one are two runs",
+			points: []counterPoint{cumulative(100, at(10)).from(at(1)), cumulative(120, at(20))},
+			want:   220,
+			reason: "the stated rule for a start time that does not read: such points are one run of " +
+				"their own, which is a run like any other — the alternative is letting a point that " +
+				"cannot say which run it is from supersede one that can",
+		},
+		{
+			name:   "a delta series is one run whatever its points' start times say",
+			points: []counterPoint{delta(100, at(10)).from(at(1)), delta(200, at(20)).from(at(11))},
+			want:   300,
+			reason: "a delta point's start time is the start of its own interval, not of a run: read as " +
+				"a run boundary it would leave every batch a run of its own and total the last of each",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acc := counterAccumulator{}
+			for _, p := range tc.points {
+				acc.add(series, p)
+			}
+			if got := acc.reduce()[tokenTypeInput]; got != tc.want {
+				t.Errorf("total = %d, want %d — %s", got, tc.want, tc.reason)
+			}
+		})
+	}
 }
+
+// cumulative and delta build the points these cases fold in, carrying the two
+// instructions a sum declares. from names the run a point belongs to and as
+// changes the label it totals under, so each case states only what it is about.
+func cumulative(value int64, when optionalNanos) counterPoint {
+	return counterPoint{label: tokenTypeInput, value: value, time: when, cumulative: true}
+}
+
+func delta(value int64, when optionalNanos) counterPoint {
+	return counterPoint{label: tokenTypeInput, value: value, time: when}
+}
+
+func (p counterPoint) from(start optionalNanos) counterPoint {
+	p.start = start
+	return p
+}
+
+func (p counterPoint) as(label string) counterPoint {
+	p.label = label
+	return p
+}
+
+// at and never are the two answers a timestamp leaf gives.
+func at(nanos int64) optionalNanos { return optionalNanos{nanos: nanos, ok: true} }
+
+var never optionalNanos
 
 // Delta and cumulative are opposite instructions, and no producer mixes them on
 // one series. If one does, the series stays cumulative for the rest of the
-// file: of the two ways to be wrong about it, this is the one that cannot
-// double-count a session's tokens.
+// file: of the ways to be wrong about it, this is the one that cannot
+// double-count a session's tokens. A running total already contains every
+// increment of its own series, so the increments never add to it — the ones
+// counted before it arrived are dropped, and the ones after it are not counted.
 func TestCounterAccumulator_AMixedSeriesStaysCumulative(t *testing.T) {
 	const series = "model=a"
 	for _, tc := range []struct {
@@ -850,8 +1035,12 @@ func TestCounterAccumulator_AMixedSeriesStaysCumulative(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			acc := counterAccumulator{}
-			for i, cumulative := range tc.order {
-				acc.add(series, tokenTypeInput, 100, int64(i+1), true, cumulative)
+			for i, isCumulative := range tc.order {
+				p := delta(100, at(int64(i+1)))
+				if isCumulative {
+					p = cumulative(100, at(int64(i+1)))
+				}
+				acc.add(series, p.from(at(1)))
 			}
 			if got := acc.reduce()[tokenTypeInput]; got != 100 {
 				t.Errorf("total = %d, want 100 — a series that ever declared itself cumulative "+

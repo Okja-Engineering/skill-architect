@@ -94,13 +94,18 @@ key, because "nothing was said about output tokens" is not "no output tokens". A
 read as zero keeps its key, with `0` in it. No key names changed; the profile schema is
 still `skill-architect/profile/v1`.
 
-Two known limits of how those counts are merged, both **fixed together in 0.4.2** and
-both confined to cumulative temporality — Claude Code's default is delta, where neither
-arises. Resource and instrumentation-scope identity are not part of the series key, so a
-capture that aggregates several resources under cumulative temporality merges their series
-and undercounts: two resources reporting 100 and 200 give 200, not 300. And
-`startTimeUnixNano` is not read, so a cumulative counter that resets inside one capture
-discards the earlier run: 100 followed by a restart at 20 gives 20, not 120.
+Counts are merged per **time series**, and a series is what OTel says it is: the resource
+the points came from, the instrumentation scope that recorded them, the metric's name, and
+the data point's whole attribute set. Two that differ anywhere are two series and never
+merge, so a capture aggregating several resources or scopes adds them up rather than
+letting one replace another — two resources reporting cumulative 100 and 200 give 300.
+Under cumulative temporality `startTimeUnixNano` says which **run** of a counter a point
+belongs to: points sharing a start are one running total and the latest of them stands,
+while a point carrying a different start is a counter that restarted, and both runs count
+— 100 followed by a restart reaching 20 gives 120. Points whose start time is absent or
+unreadable cannot say which run they are from, and are treated as one run of their own, so
+a capture carrying no start times merges as it always has. Delta temporality — Claude
+Code's default — is unaffected throughout: increments add up whatever series they are on.
 
 `capture` exits **2** when nothing was read and at least one signal came back `error` — a
 supplied export that could not be used — and **0** otherwise, including a profile that is
