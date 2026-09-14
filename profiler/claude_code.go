@@ -291,10 +291,12 @@ func extractTokenCounts(export otlpExport) TokenResult {
 				c.notACount++
 				continue
 			}
+			// timeUnixNano is not read here. What a run holds is the greatest
+			// running total its points reported, and an instant could only
+			// stand in for an order those values already carry.
 			acc.add(m.series(dp), counterPoint{
 				label:      tokenType,
 				value:      value,
-				time:       readNanos(dp.TimeUnixNano),
 				start:      readNanos(dp.StartTimeUnixNano),
 				cumulative: temporality == temporalityCumulative,
 			})
@@ -307,6 +309,14 @@ func extractTokenCounts(export otlpExport) TokenResult {
 	// of the series, not of any point in it, so it is counted here — after the
 	// walk, where the series are what is left — and the totals are what
 	// survived it, not what was read.
+	//
+	// The count reaches a reader only when nothing survived, because the reason
+	// below is built only on that path. A profile/v1 present result carries no
+	// reason at all, so a series refused beside a healthy one is a total
+	// reduced by a defect the profile has no field to name — the same gap as a
+	// skipped data point, tracked with it for 0.5.0. Inventing a channel for it
+	// inside v1 would mean a reason on a present result, which is a schema
+	// change wearing a bug fix's clothes.
 	totals := acc.reduce()
 	c.mixedTemporality = acc.refused()
 

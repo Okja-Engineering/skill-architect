@@ -554,22 +554,18 @@ type optionalNanos struct {
 // not a decimal integer, even where it happens to be exact. Reading it means
 // parsing through a float64, which cannot represent every nanosecond instant;
 // an approximate start time is worse than none, because it is a run identity,
-// and two points of one run that round apart would become two runs. A start
-// time that does not read costs nothing now: it sets a floor rather than
-// opening a run (see counterSeries).
+// and two points of one run that round apart would become two runs. This is a
+// deliberate departure from the proto3 JSON mapping, which does accept exponent
+// notation for integer fields — the profiler spec's conformance note records it
+// rather than claiming it is conformant. A start time that does not read is
+// cheap rather than free: the point carrying it joins the largest run instead
+// of naming one of its own (see counterSeries).
 func readNanos(raw json.RawMessage) optionalNanos {
 	n, ok := jsonInt64(raw)
 	if !ok || n == 0 {
 		return optionalNanos{}
 	}
 	return optionalNanos{nanos: n, ok: true}
-}
-
-// after reports whether t is later than u. An instant that was read is later
-// than one that was not: a point that says when it was is better evidence than
-// a point that does not, whatever else it carries.
-func (t optionalNanos) after(u optionalNanos) bool {
-	return t.ok && (!u.ok || t.nanos > u.nanos)
 }
 
 // bodyName reads a log record's body as a name. The body is an AnyValue, and
@@ -866,24 +862,49 @@ type counterAccumulator map[seriesID]*counterSeries
 //
 // Cumulative points are running totals since the instant their counter started,
 // so startTimeUnixNano says which run of the counter a point belongs to. The
-// points sharing a start are one run and the latest of them is what that run
-// holds; a point carrying a different start is a counter that restarted, and
-// its run sits beside the one before it rather than replacing it, because the
-// tokens spent before a restart were still spent. What such a series
-// contributes is the sum of its runs.
+// points sharing a start are one run, and what that run holds is the greatest
+// running total any of them reported: these are counts, a count only goes up,
+// and no flush unsees a total an earlier flush carried. A point carrying a
+// different start is a counter that restarted, and its run sits beside the one
+// before it rather than replacing it, because the tokens spent before a restart
+// were still spent.
+//
+// Nothing here reads timeUnixNano. An instant could only stand in for an order
+// the values already carry, and where a capture's own flushes disagree — one
+// run reporting 900 and then 500 — standing in for it reports the series below
+// a total the export states outright, so that supplying the field which says
+// what run a point is from made the profile report fewer tokens.
 //
 // A cumulative point whose start does not read names no run, and that is the
 // case this type is shaped around. It is not a run of its own: counting it as
 // one puts it in the sum beside the runs that did name themselves, and one
 // export flush that omitted one field then reports a session at twice its size.
-// What the point actually says is that the series reached that running total,
-// which is a floor under the series and never an addend — a bound, because a
-// running total observed anywhere in a series is at most the sum of that
-// series' runs. So the series contributes the greater of its placed runs and
-// its floor: an unplaceable point can raise a series to the largest running
-// total observed on it and can never raise it past that. A capture carrying no
-// start times at all is one floor and nothing else, which is the number it
-// reported before runs existed.
+// It is not free either. It came from some run — one that named itself, or one
+// nothing else in the capture observed — so what the capture guarantees is the
+// least total over every run it could have come from, and the cheapest run to
+// have carried it is the one that already reached furthest:
+//
+//	total = (runs added) + max(0, unplaced − largest run)
+//
+// Both ends of that are wrong in a direction someone has already shipped.
+// Adding the point outright invents a run. Dropping the series to the greatest
+// running total observed anywhere on it throws away the runs the point did not
+// join, which are tokens the session really spent: with runs of 100 and 20
+// beside an unplaceable 500, the 500 is a running total of the run that reached
+// 100 and the other run's 20 is still beside it, so the series holds 520 — not
+// 500, and not the 620 that invents a third run. A capture carrying no start
+// times at all has no runs to place its points against, so it holds the
+// greatest running total they reported and nothing more.
+//
+// The two halves are one rule read at two scales: a run holds the greatest
+// total its points reported, and a series holds the least total its runs can
+// account for. Taking information away — erasing a start time — can lower that
+// number and can never raise it, which is the property to check a change here
+// against.
+//
+// One assumption throughout, and it is the counter's own: these are monotonic
+// sums, whose running totals never decrease. That is what makes "the greatest
+// reported" the right reading of a run rather than a guess between flushes.
 type counterSeries struct {
 	label string
 
@@ -896,29 +917,21 @@ type counterSeries struct {
 	// contributes.
 	increments int64
 
-	// runs are the cumulative runs that named themselves, keyed by the
-	// startTimeUnixNano their points carry.
-	runs map[int64]*counterRun
+	// runs are the cumulative runs that named themselves: the greatest running
+	// total reported on each, keyed by the startTimeUnixNano its points carry.
+	runs map[int64]int64
 
-	// floor is the greatest running total reported by a cumulative point that
-	// could not name its run. A count is never negative, so zero is both "no
-	// such point was seen" and the floor such a point would set, and the two
-	// need not be told apart.
-	floor int64
-}
-
-// counterRun is the points of one run reduced to the one number they
-// contribute, with the latest instant seen among them.
-type counterRun struct {
-	value int64
-	time  optionalNanos
+	// unplaced is the greatest running total reported by a cumulative point
+	// that could not name its run. A count is never negative, so zero is both
+	// "no such point was seen" and the total such a point would report, and the
+	// two need not be told apart.
+	unplaced int64
 }
 
 // counterPoint is one data point as the accumulator takes it.
 type counterPoint struct {
 	label      string
 	value      int64
-	time       optionalNanos
 	start      optionalNanos
 	cumulative bool
 }
@@ -942,26 +955,26 @@ func (acc counterAccumulator) add(id seriesID, p counterPoint) {
 		// The point cannot say which run it is from. It is evidence the series
 		// reached this running total and evidence of nothing else — in
 		// particular, not of a counter that restarted.
-		if p.value > s.floor {
-			s.floor = p.value
+		if p.value > s.unplaced {
+			s.unplaced = p.value
 		}
 		return
 	}
-	s.run(p.start.nanos).supersede(p)
+	s.observe(p.start.nanos, p.value)
 }
 
-// run is the series' run under the start time its points carry, empty the first
-// time that run is seen.
-func (s *counterSeries) run(start int64) *counterRun {
+// observe records a running total against the run that reported it, keeping the
+// greatest. The points of one run are running totals of each other, so the
+// greatest of them is what that run reached and every other is a prefix of it —
+// including one that arrived later carrying less, which is a capture
+// contradicting itself rather than tokens being given back.
+func (s *counterSeries) observe(start, value int64) {
 	if s.runs == nil {
-		s.runs = map[int64]*counterRun{}
+		s.runs = map[int64]int64{}
 	}
-	r := s.runs[start]
-	if r == nil {
-		r = &counterRun{}
-		s.runs[start] = r
+	if value > s.runs[start] {
+		s.runs[start] = value
 	}
-	return r
 }
 
 // malformed reports whether the series carried both temporalities, which is the
@@ -969,42 +982,28 @@ func (s *counterSeries) run(start int64) *counterRun {
 func (s *counterSeries) malformed() bool { return s.sawDelta && s.sawCumulative }
 
 // total is the series' contribution: its increments if it is a delta series,
-// and otherwise its runs added, raised to the floor if an unplaceable point
-// observed more than they hold. A malformed series never reaches here — reduce
-// drops it.
+// and otherwise the least total its runs can account for — the runs added, plus
+// whatever an unplaceable point reported over and above the largest of them,
+// since such a point came either from one of these runs or from one nothing
+// else observed. A malformed series never reaches here — reduce drops it.
 func (s *counterSeries) total() int64 {
 	if !s.sawCumulative {
 		return s.increments
 	}
-	var sum int64
-	for _, r := range s.runs {
-		sum = addSaturating(sum, r.value)
+	var sum, largest int64
+	for _, value := range s.runs {
+		sum = addSaturating(sum, value)
+		if value > largest {
+			largest = value
+		}
 	}
-	if s.floor > sum {
-		return s.floor
+	if s.unplaced > largest {
+		// The cheapest run to have carried it is the largest, which already
+		// holds `largest` of that total; only the remainder is new mass. With
+		// no runs at all, largest is zero and this is the point's own total.
+		sum = addSaturating(sum, s.unplaced-largest)
 	}
 	return sum
-}
-
-// supersede replaces the run with a cumulative point if that point is the later
-// of the two, because each of them is the whole of the run so far and the rest
-// are prefixes of the latest.
-//
-// "Later" has to be decided for every pair of points the walk can be handed,
-// including the pairs a well-behaved exporter never produces: the wrong answer
-// here does not fail, it reports a number. A point that says when it was beats
-// one that does not, and where nothing orders two points — the same instant, or
-// no instant on either — the greater running total is the later one by another
-// route, because a running total only goes up.
-func (r *counterRun) supersede(p counterPoint) {
-	switch {
-	case p.time.after(r.time):
-		r.value, r.time = p.value, p.time
-	case r.time.after(p.time):
-		// The run already holds a later point; this one is a prefix of it.
-	case p.value > r.value:
-		r.value = p.value
-	}
 }
 
 // reduce totals each label across every series it was seen on. The merge above
@@ -1028,9 +1027,11 @@ func (acc counterAccumulator) reduce() map[string]int64 {
 }
 
 // refused is how many series carried both temporalities and were dropped. The
-// caller says so in its reason, and it can only say what was counted here: a
-// series refused without a number to report is a total that quietly went
-// missing.
+// caller can only say what was counted here, and it can only say it when no
+// series survived: a profile/v1 present result carries no reason, so a series
+// refused beside a healthy one reduces a total the profile has no field to
+// qualify. That gap is the profile schema's, not this counter's, and it is
+// tracked for 0.5.0 with the skipped data points it belongs beside.
 func (acc counterAccumulator) refused() int {
 	var n int
 	for _, s := range acc {
