@@ -589,6 +589,12 @@ var captureCases = []captureCase{
 		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "a run beside a flush that carried no start time", fixture: "mixed_start_time.json",
 		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "one run whose flushes disagree", fixture: "run_flushes_disagree.ndjson",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "an unplaceable total above every run", fixture: "unplaced_above_every_run.json",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "an unplaceable total under the runs' sum", fixture: "unplaced_under_the_runs_sum.json",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "start times that are zero and start times that are absent", fixture: "zero_start_time.json",
 		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "a series mixing temporalities beside a well-formed one", fixture: "mixed_temporality.ndjson",
@@ -614,6 +620,7 @@ var captureCases = []captureCase{
 	{name: "a sum that declared no temporality", fixture: "absent_temporality.json", absent: MetricUnknown},
 	{name: "a token type the adapter does not recognise", fixture: "unrecognised_token_type.json", absent: MetricUnknown},
 	{name: "every series mixes delta and cumulative", fixture: "mixed_temporality_only.ndjson", absent: MetricUnknown},
+	{name: "two series each mixing delta and cumulative", fixture: "mixed_temporality_two_series.ndjson", absent: MetricUnknown},
 	{name: "values no count can hold", fixture: "value_not_a_count.json", absent: MetricUnknown},
 
 	// Exports that cannot be read as OTLP/JSON at all.
@@ -820,6 +827,12 @@ func TestCapture_ReasonNamesWhatTheExportActuallyCarried(t *testing.T) {
 			want: "no readable claude_code.token.usage metric in OTel export: " +
 				"1 time series carried both delta (1) and cumulative (2) aggregationTemporality points",
 			wantOut: []string{"data point"}},
+		// "time series" is its own plural, and this is the case the helper that
+		// knows it exists for: two refused series must not read "2 time seriess".
+		{fixture: "mixed_temporality_two_series.ndjson", metric: MetricTokens,
+			want: "no readable claude_code.token.usage metric in OTel export: " +
+				"2 time series carried both delta (1) and cumulative (2) aggregationTemporality points",
+			wantOut: []string{"data point", "seriess"}},
 		{fixture: "value_not_a_count.json", metric: MetricTokens,
 			want: "no readable claude_code.token.usage metric in OTel export: " +
 				"4 data points carried a value that is not a token count: " +
@@ -1280,13 +1293,17 @@ func TestTokens_ASeriesIsResourceScopeMetricAndAttributes(t *testing.T) {
 // differs from the points before it belongs to a new run. The run before the
 // reset is tokens the session really spent, so it is kept and added rather than
 // replaced — replacing it reports a fraction of the capture as the whole of it.
+// What one run holds is the greatest running total its points reported, which
+// is the only reading that does not depend on an order the points may not
+// carry and cannot be talked below a total the export states outright.
 //
 // A point whose start time is absent, zero or unreadable cannot say which run
-// it came from. It is a running total the series reached and nothing more: it
-// sets a floor under the series' total and is never added to a run, so a
-// capture carrying no start times at all is merged exactly as it was before
-// 0.4.2, and one that carries them on some points and not others is never
-// reported at twice its size.
+// it came from — but it came from one, so it is neither a run of its own nor
+// free. It joins the run it is cheapest to have come from, which is the largest
+// one, and costs the series only what it reports over and above that run. A
+// capture that carries start times on some points and not others is therefore
+// never reported at twice its size, and never below the runs that did name
+// themselves either.
 func TestTokens_ACumulativeResetKeepsTheRunBeforeIt(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1307,16 +1324,42 @@ func TestTokens_ACumulativeResetKeepsTheRunBeforeIt(t *testing.T) {
 			reason:  "one run reporting 60, 100 then 120 is 120 — runs that are one run must not add",
 		},
 		{
-			name:    "points carrying no start time are one run",
-			fixture: "absent_start_time.json",
-			want:    `{"input":120}`,
-			reason:  "no point says when its run began, so the latest running total stands, as it did before 0.4.2",
+			name:    "one run whose flushes disagree holds the greatest of them",
+			fixture: "run_flushes_disagree.ndjson",
+			want:    `{"input":900}`,
+			reason: "one run reported 500, then 900, then 700: it reached 900, and the 700 after it " +
+				"is a capture contradicting itself rather than tokens given back — 700 is the " +
+				"answer that lets a later flush unsee a total the export carries",
 		},
 		{
-			name:    "points whose start time cannot be read are one run",
+			name:    "points carrying no start time name no run",
+			fixture: "absent_start_time.json",
+			want:    `{"input":120}`,
+			reason: "nothing places these points against a run, and with no runs to place them " +
+				"against the greatest running total they reported is the whole of what the " +
+				"capture guarantees",
+		},
+		{
+			name:    "points whose start time cannot be read name no run either",
 			fixture: "unreadable_start_time.json",
 			want:    `{"input":120}`,
 			reason:  "a start time that does not read is not evidence of a reset, and inventing one double-counts",
+		},
+		{
+			name:    "an unplaceable total above every run keeps the runs it did not join",
+			fixture: "unplaced_above_every_run.json",
+			want:    `{"input":520}`,
+			reason: "runs of 100 and 20 beside an unplaceable 500: the 500 is a running total of the " +
+				"run that reached 100, and the other run's 20 is still beside it. 500 drops a run " +
+				"that named itself; 620 invents a third run",
+		},
+		{
+			name:    "an unplaceable total under the runs' sum still costs what it exceeds them by",
+			fixture: "unplaced_under_the_runs_sum.json",
+			want:    `{"input":350}`,
+			reason: "three runs of 100 beside an unplaceable 150: whichever run the 150 came from " +
+				"reached 150 and the other two still hold 100 each — comparing the point with " +
+				"the runs' sum instead never fires here and loses 50 tokens the points reported",
 		},
 		{
 			name:    "a run and a flush that omitted its start time are one series",
