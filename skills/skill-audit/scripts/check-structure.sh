@@ -5,7 +5,12 @@
 # this script covers our repository-specific policy rules (PL002-PL005, PT001-PT002).
 # Exit codes: 0=pass, 1=path failure, 2=policy failure, 3=execution error.
 # Use --json for machine-readable output: {"findings": [...], "passed": bool}
+# --json builds its verdict with jq and requires it.
 set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/verdict-guard.sh
+source "$script_dir/lib/verdict-guard.sh"
 
 json_output=false
 skill_dir=""
@@ -30,7 +35,10 @@ if [[ ! -f "$skill_md" ]]; then
   exit 3
 fi
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if $json_output; then
+  require_tool jq true
+fi
+
 fail=0
 findings=()
 
@@ -64,11 +72,26 @@ if [[ "$line_count" -gt 500 ]]; then
 fi
 
 # --- Path checks ---
+# Keep the child's stdout clean of its diagnostics: in JSON mode stdout is a
+# payload we parse.
+path_code=0
 if $json_output; then
-  path_json="$("$script_dir/check-paths.sh" --json "$skill_dir" 2>&1)" || path_code=$? || path_code=0
-  path_code=${path_code:-0}
+  path_json="$("$script_dir/check-paths.sh" --json "$skill_dir")" || path_code=$?
+else
+  path_output="$("$script_dir/check-paths.sh" "$skill_dir" 2>&1)" || path_code=$?
+fi
+
+# check-paths.sh exits 0=pass, 1=path failure. Any other status means it did not
+# reach a verdict, so neither did we.
+case $path_code in
+  0|1) ;;
+  *) cannot_compute DEP002 "check-paths.sh exited with unexpected status $path_code" "$json_output" ;;
+esac
+
+if $json_output; then
   # Merge path findings into our findings array.
-  path_findings=$(echo "$path_json" | jq -c '.findings[]' 2>/dev/null || true)
+  path_findings=$(echo "$path_json" | jq -c '.findings[]') \
+    || cannot_compute DEP002 "check-paths.sh --json did not produce a readable payload" true
   if [[ -n "$path_findings" ]]; then
     while IFS= read -r pf; do
       level=$(echo "$pf" | jq -r '.level')
@@ -78,8 +101,6 @@ if $json_output; then
     done <<< "$path_findings"
   fi
 else
-  path_output="$("$script_dir/check-paths.sh" "$skill_dir" 2>&1)" || path_code=$? || path_code=0
-  path_code=${path_code:-0}
   echo "$path_output"
 fi
 
@@ -89,21 +110,17 @@ fi
 
 # --- Output ---
 if $json_output; then
-  if [[ ${#findings[@]} -eq 0 ]]; then
-    echo '{"findings": [], "passed": true}'
-  else
-    json_findings="[]"
-    for f in ${findings[@]+"${findings[@]}"}; do
-      level="${f%%|*}"
-      rest="${f#*|}"
-      rule="${rest%%|*}"
-      message="${rest#*|}"
-      json_findings=$(echo "$json_findings" | jq --arg level "$level" --arg rule "$rule" --arg msg "$message" \
-        '. + [{"level": $level, "rule": $rule, "message": $msg}]')
-    done
-    echo "$json_findings" | jq --argjson passed $([[ $fail -eq 0 ]] && echo true || echo false) \
-      '{findings: ., passed: $passed}'
-  fi
+  json_findings="[]"
+  for f in ${findings[@]+"${findings[@]}"}; do
+    level="${f%%|*}"
+    rest="${f#*|}"
+    rule="${rest%%|*}"
+    message="${rest#*|}"
+    json_findings=$(echo "$json_findings" | jq --arg level "$level" --arg rule "$rule" --arg msg "$message" \
+      '. + [{"level": $level, "rule": $rule, "message": $msg}]')
+  done
+  echo "$json_findings" | jq --argjson passed "$([[ $fail -eq 0 ]] && echo true || echo false)" \
+    '{findings: ., passed: $passed}'
 else
   for f in ${findings[@]+"${findings[@]}"}; do
     level="${f%%|*}"

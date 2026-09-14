@@ -4,7 +4,12 @@
 # and markdown links, then resolves them against the filesystem.
 # Exit codes: 0=pass, 1=path failure, 3=execution error.
 # Use --json for machine-readable output: {"findings": [...], "passed": bool}
+# --json builds its verdict with jq and requires it.
 set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/verdict-guard.sh
+source "$script_dir/lib/verdict-guard.sh"
 
 json_output=false
 skill_dir=""
@@ -27,6 +32,10 @@ skill_md="$skill_dir/SKILL.md"
 if [[ ! -f "$skill_md" ]]; then
   echo "ERROR: SKILL.md not found in $skill_dir" >&2
   exit 3
+fi
+
+if $json_output; then
+  require_tool jq true
 fi
 
 fail=0
@@ -80,22 +89,18 @@ done < <(echo "$code_body" | grep -oE '(\./|\$)\S*(scripts|references|assets)/\S
 
 # --- Output ---
 if $json_output; then
-  if [[ ${#findings[@]} -eq 0 ]]; then
-    echo '{"findings": [], "passed": true}'
-  else
-    # Build JSON findings array from pipe-delimited entries.
-    json_findings="[]"
-    for f in "${findings[@]}"; do
-      level="${f%%|*}"
-      rest="${f#*|}"
-      rule="${rest%%|*}"
-      message="${rest#*|}"
-      json_findings=$(echo "$json_findings" | jq --arg level "$level" --arg rule "$rule" --arg msg "$message" \
-        '. + [{"level": $level, "rule": $rule, "message": $msg}]')
-    done
-    echo "$json_findings" | jq --argjson passed $([[ $fail -eq 0 ]] && echo true || echo false) \
-      '{findings: ., passed: $passed}'
-  fi
+  # Build JSON findings array from pipe-delimited entries.
+  json_findings="[]"
+  for f in ${findings[@]+"${findings[@]}"}; do
+    level="${f%%|*}"
+    rest="${f#*|}"
+    rule="${rest%%|*}"
+    message="${rest#*|}"
+    json_findings=$(echo "$json_findings" | jq --arg level "$level" --arg rule "$rule" --arg msg "$message" \
+      '. + [{"level": $level, "rule": $rule, "message": $msg}]')
+  done
+  echo "$json_findings" | jq --argjson passed "$([[ $fail -eq 0 ]] && echo true || echo false)" \
+    '{findings: ., passed: $passed}'
 else
   for f in ${findings[@]+"${findings[@]}"}; do
     level="${f%%|*}"

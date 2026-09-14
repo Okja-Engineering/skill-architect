@@ -144,6 +144,199 @@ assert "check-frontmatter.sh no-license fails" "$([[ $code -ne 0 ]] && echo true
 run "$CHECK_STRUCT" tests/fixtures/f01/valid-full
 assert "check-structure.sh valid-full passes" "$([[ $code -eq 0 ]] && echo true || echo false)"
 
+# --- Dependency guards: never report a verdict a missing tool could not compute ---
+#
+# Invariant under test: when a tool a script needs to reach its verdict is absent,
+# the script exits non-zero, says which tool is missing, and never emits a passing
+# verdict — in the exit status and in the --json payload alike. Unenumerated child
+# exit codes are execution errors, not passes.
+#
+# Masked PATHs are symlink farms of the real PATH minus one binary. Nothing is
+# deleted, moved or uninstalled.
+
+mask_root="$(mktemp -d)"
+trap 'rm -rf "$mask_root"' EXIT
+
+# A PATH holding every binary the real PATH offers except one. Cached per tool.
+masked_path() {
+  local hide="$1"
+  local farm="$mask_root/without-$hide"
+  if [[ -d "$farm" ]]; then
+    echo "$farm"
+    return 0
+  fi
+  mkdir -p "$farm"
+  local dirs d f b
+  IFS=: read -ra dirs <<< "$PATH"
+  for d in "${dirs[@]}"; do
+    [[ -d "$d" ]] || continue
+    for f in "$d"/*; do
+      b="${f##*/}"
+      [[ "$b" == "$hide" ]] && continue
+      [[ -e "$farm/$b" ]] && continue
+      ln -s "$f" "$farm/$b" 2>/dev/null || true
+    done
+  done
+  echo "$farm"
+}
+
+# A PATH whose first entry provides a stub tool exiting with a chosen code.
+stub_tool_path() {
+  local tool="$1"
+  local exit_code="$2"
+  local dir="$mask_root/stub-$tool-$exit_code"
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir"
+    printf '#!/usr/bin/env bash\necho "stub %s output"\nexit %s\n' "$tool" "$exit_code" > "$dir/$tool"
+    chmod +x "$dir/$tool"
+  fi
+  echo "$dir:$PATH"
+}
+
+# A copy of the scripts directory whose check-paths.sh exits with a chosen code.
+# Echoes the path to the copied check-structure.sh.
+stub_paths_tree() {
+  local exit_code="$1"
+  local dir="$mask_root/tree-$exit_code"
+  if [[ ! -d "$dir" ]]; then
+    cp -R skills/skill-audit/scripts "$dir"
+    printf '#!/usr/bin/env bash\nexit %s\n' "$exit_code" > "$dir/check-paths.sh"
+    chmod +x "$dir/check-paths.sh"
+  fi
+  echo "$dir/check-structure.sh"
+}
+
+# Run a command under a given PATH, capturing stdout and stderr separately so a
+# --json payload can be parsed without the diagnostics mixed into it.
+run_on_path() {
+  local use_path="$1"
+  shift
+  local errfile="$mask_root/stderr"
+  code=0
+  output=$(PATH="$use_path" "$@" 2>"$errfile") || code=$?
+  errout="$(cat "$errfile")"
+}
+
+run_masked() {
+  local hide="$1"
+  shift
+  run_on_path "$(masked_path "$hide")" "$@"
+}
+
+run_present() {
+  run_on_path "$PATH" "$@"
+}
+
+PATH_FAULT=tests/fixtures/f01/path-fault-only
+
+# --- The path-fault-only fixture: preconditions the S1 cases depend on ---
+# If this fixture ever grew a policy fault, the S1 cases below would stop testing
+# S1 (a policy finding never round-trips through jq), and they would still pass.
+
+run_present "$CHECK_STRUCT" --json "$PATH_FAULT"
+assert "path-fault-only: structure --json fails with jq present (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert "path-fault-only: structure --json reports passed false with jq present" "$([[ "$(echo "$output" | jq -r '.passed')" == "false" ]] && echo true || echo false)"
+assert "path-fault-only: has a PT001 finding" "$(echo "$output" | jq -e '.findings[] | select(.rule == "PT001")' >/dev/null 2>&1 && echo true || echo false)"
+assert "path-fault-only: has no PL policy finding (keeps S1 under test)" "$([[ "$(echo "$output" | jq -r '[.findings[] | select(.rule | startswith("PL"))] | length')" -eq 0 ]] && echo true || echo false)"
+
+# --- S1: check-structure.sh --json must not pass a failing skill when jq is gone ---
+
+run_masked jq "$CHECK_STRUCT" --json "$PATH_FAULT"
+assert "S1 structure --json, jq masked: exits non-zero" "$([[ $code -ne 0 ]] && echo true || echo false)"
+assert "S1 structure --json, jq masked: exits 3 (execution error)" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "S1 structure --json, jq masked: names the missing tool" "$(echo "$errout" | grep -q 'jq' && echo true || echo false)"
+assert "S1 structure --json, jq masked: never reports passed true" "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+assert "S1 structure --json, jq masked: payload is valid JSON" "$(echo "$output" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
+assert "S1 structure --json, jq masked: payload passed is false" "$([[ "$(echo "$output" | jq -r '.passed')" == "false" ]] && echo true || echo false)"
+assert "S1 structure --json, jq masked: payload carries DEP001 naming jq" "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP001") | select(.message | test("jq"))' >/dev/null 2>&1 && echo true || echo false)"
+
+# --- --json requires jq unconditionally, including on a clean skill ---
+# The requirement is a stated precondition, not a function of what the skill
+# happens to contain; a data-dependent dependency is what let S1 hide.
+
+run_masked jq "$CHECK_STRUCT" --json tests/fixtures/f01/valid-full
+assert "structure --json, jq masked, clean skill: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "structure --json, jq masked, clean skill: names the missing tool" "$(echo "$errout" | grep -q 'jq' && echo true || echo false)"
+assert "structure --json, jq masked, clean skill: never reports passed true" "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+
+run_masked jq "$CHECK_PATHS" --json tests/fixtures/f01/valid-full
+assert "paths --json, jq masked, clean skill: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "paths --json, jq masked, clean skill: names the missing tool" "$(echo "$errout" | grep -q 'jq' && echo true || echo false)"
+assert "paths --json, jq masked, clean skill: never reports passed true" "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+
+# --- check-paths.sh --json under the same missing tool ---
+
+run_masked jq "$CHECK_PATHS" --json "$PATH_FAULT"
+assert "paths --json, jq masked: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "paths --json, jq masked: names the missing tool" "$(echo "$errout" | grep -q 'jq' && echo true || echo false)"
+assert "paths --json, jq masked: payload passed is false" "$([[ "$(echo "$output" | jq -r '.passed')" == "false" ]] && echo true || echo false)"
+assert "paths --json, jq masked: payload carries DEP001 naming jq" "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP001") | select(.message | test("jq"))' >/dev/null 2>&1 && echo true || echo false)"
+
+# --- Text mode needs no jq and is unaffected by its absence ---
+
+run_masked jq "$CHECK_PATHS" "$PATH_FAULT"
+assert "paths text, jq masked: still fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert "paths text, jq masked: still reports PT001" "$(echo "$output" | grep -q 'PT001' && echo true || echo false)"
+
+run_masked jq "$CHECK_STRUCT" "$PATH_FAULT"
+assert "structure text, jq masked: still fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert "structure text, jq masked: still reports PT001" "$(echo "$output" | grep -q 'PT001' && echo true || echo false)"
+
+run_masked jq "$CHECK_PATHS" tests/fixtures/f01/valid-full
+assert "paths text, jq masked, clean skill: still passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+
+run_masked jq "$CHECK_STRUCT" tests/fixtures/f01/valid-full
+assert "structure text, jq masked, clean skill: still passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+
+# --- S2: check-frontmatter.sh must not pass when skill-validator is gone ---
+
+run_masked skill-validator "$CHECK_FM" tests/fixtures/f01/valid-full
+assert "S2 frontmatter, validator masked: exits non-zero" "$([[ $code -ne 0 ]] && echo true || echo false)"
+assert "S2 frontmatter, validator masked: exits 3 (execution error)" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "S2 frontmatter, validator masked: names the missing tool" "$(echo "$errout" | grep -q 'skill-validator' && echo true || echo false)"
+assert "S2 frontmatter, validator masked: never prints frontmatter OK" "$(echo "$output" | grep -q 'frontmatter OK' && echo false || echo true)"
+
+# A missing validator must not reclassify a spec failure as a policy failure.
+run_masked skill-validator "$CHECK_FM" tests/fixtures/f01/malformed-yaml
+assert "S2 frontmatter, validator masked, broken spec: exits 3 not 2" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "S2 frontmatter, validator masked, broken spec: does not report PL001" "$(echo "$output" | grep -q 'PL001' && echo false || echo true)"
+
+# Controls: with the validator present, behaviour is unchanged.
+run_present "$CHECK_FM" tests/fixtures/f01/valid-full
+assert "frontmatter, validator present: valid-full passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert "frontmatter, validator present: valid-full prints frontmatter OK" "$(echo "$output" | grep -q 'frontmatter OK' && echo true || echo false)"
+
+run_present "$CHECK_FM" tests/fixtures/f01/malformed-yaml
+assert "frontmatter, validator present: malformed-yaml fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert "frontmatter, validator present: malformed-yaml reports SPEC FAIL" "$(echo "$output" | grep -q 'SPEC FAIL' && echo true || echo false)"
+
+# --- Unenumerated child exit codes are execution errors, not passes ---
+
+run_on_path "$(stub_tool_path skill-validator 42)" "$CHECK_FM" tests/fixtures/f01/valid-full
+assert "frontmatter, validator exits 42: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "frontmatter, validator exits 42: never prints frontmatter OK" "$(echo "$output" | grep -q 'frontmatter OK' && echo false || echo true)"
+assert "frontmatter, validator exits 42: names the tool and the status" "$(echo "$errout" | grep -q 'skill-validator' && echo "$errout" | grep -q '42' && echo true || echo false)"
+
+# Control: exit 2 is enumerated (warnings only) and still a pass.
+run_on_path "$(stub_tool_path skill-validator 2)" "$CHECK_FM" tests/fixtures/f01/valid-full
+assert "frontmatter, validator exits 2 (warnings): still passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert "frontmatter, validator exits 2 (warnings): prints frontmatter OK" "$(echo "$output" | grep -q 'frontmatter OK' && echo true || echo false)"
+
+run_present "$(stub_paths_tree 42)" --json tests/fixtures/f01/valid-full
+assert "structure --json, check-paths exits 42: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "structure --json, check-paths exits 42: never reports passed true" "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+
+run_present "$(stub_paths_tree 42)" tests/fixtures/f01/valid-full
+assert "structure text, check-paths exits 42: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+
+# Control: an enumerated child exit still behaves as before.
+run_present "$(stub_paths_tree 0)" --json tests/fixtures/f01/valid-full
+assert "structure --json, check-paths exits 0: still passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert "structure --json, check-paths exits 0: reports passed true" "$([[ "$(echo "$output" | jq -r '.passed')" == "true" ]] && echo true || echo false)"
+
+run_present "$(stub_paths_tree 1)" --json tests/fixtures/f01/valid-full
+assert "structure --json, check-paths exits 1: fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+
 echo
 echo "$pass passed, $fail failed"
 if [[ "$fail" -gt 0 ]]; then

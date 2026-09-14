@@ -242,13 +242,14 @@ The skills shell out to three external tools. Install them before running an aud
 
 | Tool | Install | Without it |
 |---|---|---|
-| [`skill-validator`](https://github.com/agent-ecosystem/skill-validator) | `brew install agent-ecosystem/tap/skill-validator` | `skill-audit` stops at its structural-checks stage with `skill-validator not found` and exit 1 — that guard is what protects you. `audit-report.sh` also detects it: `spec` is `null`, `spec_error` names the tool, and `summary.passed` is `false`. `check-frontmatter.sh` run on its own does **not** detect it: the missing binary exits 127, which the script does not handle, so it skips spec validation silently. Only the license policy gate still runs — a license-less skill exits 2, a licensed one prints `frontmatter OK` and exits 0 having checked nothing else. Do not bypass the guard. |
+| [`skill-validator`](https://github.com/agent-ecosystem/skill-validator) | `brew install agent-ecosystem/tap/skill-validator` | `skill-audit` stops at its structural-checks stage with `skill-validator not found` and exit 1 — that guard is what protects you. `audit-report.sh` also detects it: `spec` is `null`, `spec_error` names the tool, and `summary.passed` is `false`. `check-frontmatter.sh` run on its own detects it too: it exits 3 with `required tool not found: skill-validator` and never reaches the license gate, so a missing validator can neither pass a skill nor be mistaken for a policy failure. |
 | [`skillscore`](https://www.npmjs.com/package/skillscore) | `npm install -g skillscore` | `skill-audit` stops at the same stage with `skillscore not found` and exit 1. `check-quality.sh` exits 3. `audit-report.sh` emits `quality: null` with `quality_error`, and `quality_score` / `quality_grade` are `null`. |
-| `jq` | `brew install jq` (macOS) · `apt-get install jq` (Debian/Ubuntu) | `audit-report.sh` dies with `jq: command not found` (exit 127). `check-paths.sh --json` and `check-structure.sh --json` die the same way **when they have a finding to serialise**; with nothing to report they take a branch that never calls jq (`check-structure.sh:93`, `check-paths.sh:84`) and exit 0 correctly. The quiet case is in between: `check-structure.sh --json` reads its path findings back through jq at `check-structure.sh:71`, where `2>/dev/null \|\| true` swallows the missing binary — so a skill whose only faults are path faults prints `{"findings": [], "passed": true}` and exits **0** instead of the `passed: false` and exit 1 it returns with jq installed. Policy findings (PL002–PL005) are not affected, because they never round-trip through jq before the output stage. |
+| `jq` | `brew install jq` (macOS) · `apt-get install jq` (Debian/Ubuntu) | `audit-report.sh` dies with `jq: command not found` (exit 127). `check-paths.sh --json` and `check-structure.sh --json` require jq unconditionally: without it they exit 3 with `required tool not found: jq` and a `passed: false` payload carrying a `DEP001` finding, whatever the skill contains. Text mode needs no jq and is unaffected. |
 
-The `skill-validator` and `skillscore` checks are deliberately loud — a missing tool
-fails the audit instead of quietly scoring an unchecked skill as a pass. There is no
-such guard for `jq`, so confirm it is installed yourself.
+These checks are deliberately loud — a missing tool fails the audit instead of
+quietly scoring an unchecked skill as a pass. That holds for `jq` as well: a script
+that cannot reach a verdict says which tool is missing and exits 3, rather than
+reporting a result it did not compute.
 
 Building the profiler additionally needs Go, at the version declared in
 [`profiler/go.mod`](profiler/go.mod).
