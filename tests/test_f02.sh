@@ -230,6 +230,46 @@ run_struct_json tests/fixtures/f01/missing-script-ref
 assert "check-structure.sh --json: missing-script-ref has findings" "$([[ "$(echo "$soutput" | jq -r '.findings | length')" -gt 0 ]] && echo true || echo false)"
 assert "check-structure.sh --json: missing-script-ref includes PT001 from check-paths" "$(echo "$soutput" | jq -e '.findings[] | select(.rule == "PT001")' >/dev/null 2>&1 && echo true || echo false)"
 
+# --- audit-report.sh states its jq dependency instead of tripping over it ---
+#
+# Every other script in the skill names a missing tool and exits 3. This one
+# composed its whole report through jq and, without it, died mid-run at the
+# final merge with the shell's own `jq: command not found` and exit 127 — the
+# very shape the rest of the skill exists to prevent. The invariant is the same
+# one: a script that cannot reach its result says which tool is missing and
+# exits 3, rather than failing in a way a caller has to decode.
+#
+# Masked PATHs are symlink farms of the real PATH minus one binary. Nothing is
+# deleted, moved or uninstalled.
+
+mask_root="$(mktemp -d)"
+trap 'rm -rf "$mask_root"' EXIT
+source tests/lib/masked-path.sh
+
+REPORT=skills/skill-audit/scripts/audit-report.sh
+
+run_masked jq "$REPORT" tests/fixtures/f01/valid-full
+assert "audit-report, jq masked: exits 3 (execution error)" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "audit-report, jq masked: names the missing tool" "$(echo "$errout" | grep -q 'required tool not found: jq' && echo true || echo false)"
+assert "audit-report, jq masked: does not die with a bare command-not-found" "$(echo "$errout" | grep -q 'command not found' && echo false || echo true)"
+assert "audit-report, jq masked: emits no partial report on stdout" "$([[ -z "$output" ]] && echo true || echo false)"
+
+# Control: with jq present the report is produced exactly as before.
+run_present "$REPORT" tests/fixtures/f01/valid-full
+assert "audit-report, jq present: exits 0" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert "audit-report, jq present: stdout is a valid report" "$(echo "$output" | jq -e '.summary.passed != null' >/dev/null 2>&1 && echo true || echo false)"
+
+# The other two tools stay soft dependencies: the report still generates and
+# says in-band which source it could not read. Guarding jq must not have turned
+# these into hard failures.
+run_masked skill-validator "$REPORT" tests/fixtures/f01/valid-full
+assert "audit-report, validator masked: still exits 0" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert "audit-report, validator masked: spec is null with a spec_error" "$(echo "$output" | jq -e '.spec == null and (.spec_error | test("skill-validator"))' >/dev/null 2>&1 && echo true || echo false)"
+
+run_masked skillscore "$REPORT" tests/fixtures/f01/valid-full
+assert "audit-report, skillscore masked: still exits 0" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert "audit-report, skillscore masked: quality is null with a quality_error" "$(echo "$output" | jq -e '.quality == null and (.quality_error | test("skillscore"))' >/dev/null 2>&1 && echo true || echo false)"
+
 echo
 echo "$pass passed, $fail failed"
 if [[ "$fail" -gt 0 ]]; then

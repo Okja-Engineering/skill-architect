@@ -157,28 +157,9 @@ assert "check-structure.sh valid-full passes" "$([[ $code -eq 0 ]] && echo true 
 mask_root="$(mktemp -d)"
 trap 'rm -rf "$mask_root"' EXIT
 
-# A PATH holding every binary the real PATH offers except one. Cached per tool.
-masked_path() {
-  local hide="$1"
-  local farm="$mask_root/without-$hide"
-  if [[ -d "$farm" ]]; then
-    echo "$farm"
-    return 0
-  fi
-  mkdir -p "$farm"
-  local dirs d f b
-  IFS=: read -ra dirs <<< "$PATH"
-  for d in "${dirs[@]}"; do
-    [[ -d "$d" ]] || continue
-    for f in "$d"/*; do
-      b="${f##*/}"
-      [[ "$b" == "$hide" ]] && continue
-      [[ -e "$farm/$b" ]] && continue
-      ln -s "$f" "$farm/$b" 2>/dev/null || true
-    done
-  done
-  echo "$farm"
-}
+# masked_path / run_on_path / run_masked / run_present live in the shared
+# harness, because test_f02.sh needs the same masking for audit-report.sh.
+source tests/lib/masked-path.sh
 
 # A PATH whose first entry provides a stub tool exiting with a chosen code.
 stub_tool_path() {
@@ -206,25 +187,16 @@ stub_paths_tree() {
   echo "$dir/check-structure.sh"
 }
 
-# Run a command under a given PATH, capturing stdout and stderr separately so a
-# --json payload can be parsed without the diagnostics mixed into it.
-run_on_path() {
-  local use_path="$1"
-  shift
-  local errfile="$mask_root/stderr"
-  code=0
-  output=$(PATH="$use_path" "$@" 2>"$errfile") || code=$?
-  errout="$(cat "$errfile")"
-}
-
-run_masked() {
-  local hide="$1"
-  shift
-  run_on_path "$(masked_path "$hide")" "$@"
-}
-
-run_present() {
-  run_on_path "$PATH" "$@"
+# A copy of the scripts directory whose check-paths.sh exits 0 but writes
+# something that is not a JSON payload. Echoes the copied check-structure.sh.
+stub_paths_garbage_tree() {
+  local dir="$mask_root/tree-garbage"
+  if [[ ! -d "$dir" ]]; then
+    cp -R skills/skill-audit/scripts "$dir"
+    printf '#!/usr/bin/env bash\necho "not json at all"\nexit 0\n' > "$dir/check-paths.sh"
+    chmod +x "$dir/check-paths.sh"
+  fi
+  echo "$dir/check-structure.sh"
 }
 
 PATH_FAULT=tests/fixtures/f01/path-fault-only
@@ -336,6 +308,82 @@ assert "structure --json, check-paths exits 0: reports passed true" "$([[ "$(ech
 
 run_present "$(stub_paths_tree 1)" --json tests/fixtures/f01/valid-full
 assert "structure --json, check-paths exits 1: fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+
+# --- DEP002: a child result the script cannot interpret is a named finding ---
+#
+# DEP001 (a required tool is absent) and DEP002 (a child produced a result this
+# script cannot interpret) are both consumer-observable: they reach a --json
+# consumer in the findings array. A consumer has to be able to tell them apart,
+# so both IDs are documented in skills/skill-audit/SKILL.md and both are pinned
+# here. An emitted ID that appears in no document and no test is how the two of
+# them shipped unregistered.
+
+run_present "$(stub_paths_tree 42)" --json tests/fixtures/f01/valid-full
+assert "structure --json, check-paths exits 42: payload carries DEP002" "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP002")' >/dev/null 2>&1 && echo true || echo false)"
+assert "structure --json, check-paths exits 42: DEP002 names the status" "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP002") | select(.message | test("42"))' >/dev/null 2>&1 && echo true || echo false)"
+
+run_present "$(stub_paths_garbage_tree)" --json tests/fixtures/f01/valid-full
+assert "structure --json, unreadable child payload: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "structure --json, unreadable child payload: never reports passed true" "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+assert "structure --json, unreadable child payload: payload carries DEP002" "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP002")' >/dev/null 2>&1 && echo true || echo false)"
+
+# DEP001's own registration is pinned by the jq-masked cases above, which assert
+# the rule ID in both check-structure.sh's and check-paths.sh's payloads.
+
+# --- The guard emits JSON, whatever the message holds ---
+#
+# cannot_compute promises the documented payload shape. Building that shape by
+# interpolating an unescaped message makes the promise conditional on every
+# caller passing a string with no quote, backslash or control character — a
+# convention no caller is checked against. Pin the promise, not the convention.
+
+GUARD=skills/skill-audit/scripts/verdict-guard.sh
+assert "verdict-guard.sh sits beside the scripts that source it" "$([[ -f "$GUARD" ]] && echo true || echo false)"
+
+guard_nasty=$'he said "boom" \\ then a tab\there'
+guard_out="$(bash -c 'source "$1"; cannot_compute DEP002 "$2" true' _ "$GUARD" "$guard_nasty" 2>/dev/null || true)"
+assert "guard: payload is valid JSON when the message holds a quote and a backslash" "$(echo "$guard_out" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
+assert "guard: error field round-trips the message exactly" "$([[ "$(echo "$guard_out" | jq -r '.error' 2>/dev/null)" == "$guard_nasty" ]] && echo true || echo false)"
+assert "guard: finding message round-trips the message exactly" "$([[ "$(echo "$guard_out" | jq -r '.findings[0].message' 2>/dev/null)" == "$guard_nasty" ]] && echo true || echo false)"
+assert "guard: finding carries the rule it was given" "$([[ "$(echo "$guard_out" | jq -r '.findings[0].rule' 2>/dev/null)" == "DEP002" ]] && echo true || echo false)"
+assert "guard: payload never reports passed true" "$(echo "$guard_out" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+
+# The guard needs no jq to build its payload: it is what runs when jq is the
+# tool that went missing.
+run_masked jq bash -c 'source "$1"; cannot_compute DEP001 "required tool not found: jq" true' _ "$GUARD"
+assert "guard: emits its payload with jq itself absent" "$(echo "$output" | jq -e '.findings[0].rule == "DEP001"' >/dev/null 2>&1 && echo true || echo false)"
+
+# --- stdout is the payload channel, on every exit path ---
+#
+# In --json mode a machine reads stdout. So stdout carries a payload or it
+# carries nothing; a diagnostic belongs on stderr. Argument errors and an
+# unresolvable target are the two exits that carry no payload — the script has
+# no target to render a verdict about — and that is the whole of the exception,
+# stated in both script headers and pinned here so it cannot quietly grow.
+
+run_present "$CHECK_PATHS" --json --bogus
+assert "paths --json, bad flag: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "paths --json, bad flag: stdout is empty" "$([[ -z "$output" ]] && echo true || echo false)"
+assert "paths --json, bad flag: diagnostic is on stderr" "$(echo "$errout" | grep -q 'Usage' && echo true || echo false)"
+
+run_present "$CHECK_STRUCT" --json --bogus
+assert "structure --json, bad flag: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "structure --json, bad flag: stdout is empty" "$([[ -z "$output" ]] && echo true || echo false)"
+assert "structure --json, bad flag: diagnostic is on stderr" "$(echo "$errout" | grep -q 'Usage' && echo true || echo false)"
+
+run_present "$CHECK_PATHS" --json "$mask_root/no-such-skill"
+assert "paths --json, no SKILL.md: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "paths --json, no SKILL.md: stdout is empty" "$([[ -z "$output" ]] && echo true || echo false)"
+assert "paths --json, no SKILL.md: diagnostic is on stderr" "$(echo "$errout" | grep -q 'SKILL.md not found' && echo true || echo false)"
+
+run_present "$CHECK_STRUCT" --json "$mask_root/no-such-skill"
+assert "structure --json, no SKILL.md: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "structure --json, no SKILL.md: stdout is empty" "$([[ -z "$output" ]] && echo true || echo false)"
+assert "structure --json, no SKILL.md: diagnostic is on stderr" "$(echo "$errout" | grep -q 'SKILL.md not found' && echo true || echo false)"
+
+run_present "$CHECK_FM" "$mask_root/no-such-skill"
+assert "frontmatter, no SKILL.md: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert "frontmatter, no SKILL.md: diagnostic is on stderr" "$(echo "$errout" | grep -q 'SKILL.md not found' && echo true || echo false)"
 
 echo
 echo "$pass passed, $fail failed"
