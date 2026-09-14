@@ -1318,7 +1318,7 @@ func TestTokens_ACumulativeResetKeepsTheRunBeforeIt(t *testing.T) {
 			reason:  "the first run ended at 100 and the second reached 20, so the capture holds 120",
 		},
 		{
-			name:    "with no reset the latest running total is the whole of it",
+			name:    "with no reset the greatest running total is the whole of it",
 			fixture: "counter_no_reset.ndjson",
 			want:    `{"input":120}`,
 			reason:  "one run reporting 60, 100 then 120 is 120 — runs that are one run must not add",
