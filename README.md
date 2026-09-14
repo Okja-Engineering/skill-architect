@@ -61,7 +61,7 @@ only when the export yields a value the adapter can actually read:
 
 | Capability | Reported `otel` when the export carries |
 |---|---|
-| `tokens` | a `claude_code.token.usage` sum that declares an `aggregationTemporality` of 1 or 2, with a data point carrying a `type` attribute of `input`, `output`, `cacheRead` or `cacheCreation` and a value that is a token count — a whole number from 0 to 2⁶³−1, from `asDouble` or `asInt` |
+| `tokens` | a `claude_code.token.usage` sum that declares an `aggregationTemporality` of 1 or 2 — as a bare number, as a quoted digit, or as the protobuf JSON enum name (`AGGREGATION_TEMPORALITY_DELTA` / `AGGREGATION_TEMPORALITY_CUMULATIVE`) — with a data point carrying a `type` attribute of `input`, `output`, `cacheRead` or `cacheCreation` and a value that is a token count — a whole number from 0 to 2⁶³−1, from `asDouble` or `asInt` |
 | `tool_calls` | `claude_code.tool_result` events carrying a tool name and a readable `success` value, **or** `claude_code.tool_decision` events recording a reject with a tool name. Either alone is enough |
 | `timing` | `claude_code.api_request` events carrying a parseable timestamp |
 
@@ -73,13 +73,14 @@ reason, rather than discarding the run.
 A file you supplied is never reported as "unconfigured". If it cannot be read as an
 OTLP/JSON export — unreadable, empty, not a JSON object at the top level, malformed, or
 carrying a value that does not fit the OTLP schema — all three OTel signals come back
-`error`, naming the failure. Malformed JSON is the one of those five that has a place in
-the file to point at, and it names the batch (1-based) and the byte: the 0-based offset of
-the first byte the decoder could not accept, or the file's length when the file ended
-mid-object. If it parses but carries no telemetry, the signals come back `unknown`
-instead: JSON with neither a `resourceMetrics` nor a `resourceLogs` key is reported as not
-being an OTLP export rather than as a broken one, and an export that has the key with
-nothing under it gets a per-signal "none of mine is in here" reason.
+`error`, naming the failure. Two of those five sit inside a batch and name it (1-based):
+malformed JSON, and a value that does not fit the OTLP schema, which also names the field
+path. Only malformed JSON has a single byte to point at, so only it carries an offset: the
+0-based offset of the first byte the decoder could not accept, or the file's length when
+the file ended mid-object. If it parses but carries no telemetry, the signals come back
+`unknown` instead: JSON with neither a `resourceMetrics` nor a `resourceLogs` key is
+reported as not being an OTLP export rather than as a broken one, and an export that has
+the key with nothing under it gets a per-signal "none of mine is in here" reason.
 
 A token count the export said nothing about is **absent** from the profile rather than
 reported as `0`: a cache-only export gives you `cache_read` and no `input` or `output`

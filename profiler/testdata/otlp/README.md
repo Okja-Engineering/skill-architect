@@ -6,10 +6,12 @@ Most are real OTLP/JSON: one `ExportMetricsServiceRequest` or
 receiver (README route (a)) or the collector's `file` exporter (route (b))
 writes. `.ndjson` files hold one object per line, which is the framing both
 capture routes produce. `.json` files hold a single object, pretty-printed for
-review — except for the four that exist to be unreadable, which are whatever
-their failure needs them to be: `empty.json` is zero bytes, `no_envelope.json`
-is `{}`, `malformed.json` is one truncated line, and `top_level_array.json` is
-an array rather than an object.
+review — except for the three that exist to be unreadable, which are whatever
+their failure needs them to be: `empty.json` is zero bytes, `malformed.json` is
+one truncated line, and `top_level_array.json` is an array rather than an
+object. `no_envelope.json` is listed here for its formatting too — it is `{}` —
+but it is not unreadable: it parses, carries no envelope, and so reports
+`unknown` rather than `error`.
 
 JSON has no comments, so what is real and what is constructed is recorded here.
 
@@ -32,7 +34,11 @@ emitting them would be unusual or broken, which is the point. Where a fixture
 contains something no producer emits, it is called out below.
 
 Session ids and user ids here are placeholders. A real capture carries
-`user.email`, `organization.id` and `session.id`; scrub before sharing.
+`user.email`, `user.id`, `user.account_id`, `user.account_uuid`,
+`organization.id` and `session.id` on every metric data point and every log
+record — and that list is what was observed on one version, so treat it as the
+floor rather than the whole of it. See the privacy note in the repository
+README ("A capture identifies you"). Read the file before you share it.
 
 | Fixture | What it pins |
 |---|---|

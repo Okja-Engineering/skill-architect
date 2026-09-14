@@ -21,7 +21,7 @@
 - **The spec now describes the code.** The `MetricResult[T any]` generic never existed; the acceptance criteria described the probe one commit out of date; the fallback reason named env vars the adapter never reads and claimed every metric carries it.
 - **"Snapshot-pinned" was an overstatement.** `--snapshot` is a label you supply and the profiler records verbatim. It does not hash or verify the skill directory.
 - Module path corrected to `github.com/Okja-Engineering/skill-architect/profiler`; CI takes its Go version from `profiler/go.mod` instead of a stale pin four minors behind. The profiler adapter version moves to 0.4.1, since a profile's contents changed.
-- 50 test functions pass — 47 in the profiler package, 3 in the CLI — and 128 subtests, under `-race`. The shell suites are at 134: 0.4.0's 131 plus three new version-surface assertions. CI now runs `gofmt -l`, `go vet` and `go test -race` rather than `go test` alone.
+- 51 test functions pass — 47 in the profiler package, 4 in the CLI — and 135 subtests, under `-race`. The shell suites are at 134: 0.4.0's 131 plus three new version-surface assertions. CI now runs `gofmt -l`, `go vet` and `go test -race` rather than `go test` alone.
 - v0.3.1's note that `skill-audit` scores 92.5 (A-) was true of the 0.3.1 commit. It has been **94 (A)** since 3e2efd8, and still is; `skill-rewrite` is unchanged at 89.5 (B+).
 
 ## v0.4.0
