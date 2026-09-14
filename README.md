@@ -75,9 +75,11 @@ OTLP/JSON export — unreadable, empty, not a JSON object at the top level, malf
 carrying a value that does not fit the OTLP schema — all three OTel signals come back
 `error`, naming the failure. Two of those five sit inside a batch and name it (1-based):
 malformed JSON, and a value that does not fit the OTLP schema, which also names the field
-path. Only malformed JSON has a single byte to point at, so only it carries an offset: the
-0-based offset of the first byte the decoder could not accept, or the file's length when
-the file ended mid-object. If it parses but carries no telemetry, the signals come back
+path when the decoder reports one — a batch whose own top level is the wrong shape (an
+array, say) has no path inside it to name, and that reason names the batch alone. Only
+malformed JSON has a single byte to point at, so only it carries an offset: the 0-based
+offset of the first byte the decoder could not accept, or the file's length when the file
+ended mid-object. If it parses but carries no telemetry, the signals come back
 `unknown` instead: JSON with neither a `resourceMetrics` nor a `resourceLogs` key is
 reported as not being an OTLP export rather than as a broken one, and an export that has
 the key with nothing under it gets a per-signal "none of mine is in here" reason.
@@ -193,9 +195,12 @@ not the whole of it, and read the file before you share it. `prompt` and `respon
 `<REDACTED>` by default, and the recipe above does nothing to change that.
 
 Leave `OTEL_LOG_TOOL_DETAILS` unset. It is not needed — this adapter reads nothing it
-adds — and setting it widens the export to include tool parameters, untruncated commands
-and full error text. Anthropic's docs suggest it for other purposes; for capturing a
-profile it only puts more of your session in a file you may end up pasting somewhere.
+adds — and setting it widens the export to what Anthropic's docs list for it: tool
+parameters and input, Bash commands, MCP server and tool names, skill names, and
+user-authored workflow names, plus the custom, plugin and MCP command names on
+`user_prompt` events that are otherwise collapsed. Those docs suggest it for other
+purposes; for capturing a profile it only puts more of your session in a file you may
+end up pasting somewhere.
 
 A bundled receiver subcommand is 0.5.0; `--otel-file` is the only input today.
 
