@@ -58,6 +58,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The scratch directory belongs to the shell that installed the trap. A helper
+# that made its own could be running inside a command substitution, where the
+# assignment never escapes and the trap has nothing to clean up.
+tmp_skill="$(mktemp -d)"
+
 manifest_is_valid() {
   python3 - "$1" <<'PY'
 import json, sys
@@ -99,12 +104,10 @@ frontmatter_name_matches_directory() {
 }
 
 draft_rewrite_produces_draft() {
-  tmp_skill="$(mktemp -d)" || return 1
-  [[ -n "$tmp_skill" ]] || return 1
-  cp -R skills/skill-rewrite "$tmp_skill/skill-rewrite-test" || return 1
-  skills/skill-rewrite/scripts/draft-rewrite.sh -t "$tmp_skill/skill-rewrite-test" \
-    >/dev/null || return 1
-  [[ -f "$tmp_skill/skill-rewrite-test/REWRITE-DRAFT.md" ]]
+  local work="$tmp_skill/skill-rewrite-test"
+  cp -R skills/skill-rewrite "$work" || return 1
+  skills/skill-rewrite/scripts/draft-rewrite.sh -t "$work" >/dev/null || return 1
+  [[ -f "$work/REWRITE-DRAFT.md" ]]
 }
 
 # Plugin manifests are valid JSON and version matches.
