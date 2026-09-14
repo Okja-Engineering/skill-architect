@@ -25,7 +25,7 @@ import json, sys
 with open('$manifest') as f:
     data = json.load(f)
 assert data['name'] == 'skill-architect', 'name mismatch'
-assert data['version'] == '0.4.1', 'version mismatch'
+assert data['version'] == '0.4.2', 'version mismatch'
 assert 'skills' in data, 'missing skills'
 PY
   assert "$manifest is valid plugin.json" true
@@ -45,17 +45,17 @@ assert data['name'] == 'skill-architect', 'marketplace name mismatch'
 plugins = data['plugins']
 assert len(plugins) == 1, 'expected exactly one plugin entry'
 assert plugins[0]['name'] == 'skill-architect', 'plugin entry name mismatch'
-assert plugins[0]['version'] == '0.4.1', 'plugin entry version mismatch'
+assert plugins[0]['version'] == '0.4.2', 'plugin entry version mismatch'
 assert plugins[0]['source'] == './', 'plugin entry source mismatch'
 PY
-assert ".claude-plugin/marketplace.json is valid and at 0.4.1" true
+assert ".claude-plugin/marketplace.json is valid and at 0.4.2" true
 
 # The profiler records its own version in every profile it writes, and it is the
 # sixth surface carrying this release's number. It is asserted here beside the
 # manifests so one place shows all of them, and in Go by
 # TestAdapterVersionIsThisRelease.
-grep -q 'AdapterVersion = "0.4.1"' profiler/types.go
-assert "profiler AdapterVersion is 0.4.1" true
+grep -q 'AdapterVersion = "0.4.2"' profiler/types.go
+assert "profiler AdapterVersion is 0.4.2" true
 
 # Each skill has a valid SKILL.md with frontmatter and name matching directory.
 for skill in skill-audit skill-rewrite; do
