@@ -43,12 +43,15 @@ import (
 // from the same struct because a capture may carry either, and route (b) may
 // put both in one file; which top-level field is present says which it is.
 
-// otlpBatch holds the envelope keys as pointers, because "the export did not
-// carry this key" and "the export carried it with nothing under it" are
-// different answers. The first is a file that is not an OTLP export; the second
-// is an OTLP export of a session that emitted nothing yet, and telling its
-// owner their file is not OTLP/JSON sends them to fix their exporter protocol
-// when nothing is wrong with it.
+// otlpBatch holds the envelope fields as pointers, because "the export carried
+// no value for this field" and "it carried an empty list under it" are
+// different answers. The test is the value, not the key: ProtoJSON reads a JSON
+// null as the field's default, so {"resourceMetrics":null} names the key and
+// still said nothing about metrics, and the pointer is what tells it apart from
+// {"resourceMetrics":[]}. The first is a file that is not an OTLP export; the
+// second is an OTLP export of a session that emitted nothing yet, and telling
+// its owner their file is not OTLP/JSON sends them to fix their exporter
+// protocol when nothing is wrong with it.
 type otlpBatch struct {
 	ResourceMetrics *[]otlpResourceMetrics `json:"resourceMetrics"`
 	ResourceLogs    *[]otlpResourceLogs    `json:"resourceLogs"`
