@@ -156,7 +156,11 @@ func (e otlpExport) hasEnvelope() bool {
 
 // --- Reading the file ---
 
-// readOTLP decodes every Export*ServiceRequest object in r.
+// readOTLP decodes every Export*ServiceRequest object in r. Every byte of the
+// capture is accounted for: read as a batch, or reported as a failure. Nothing
+// between the last batch that decoded and the end of the file is passed over —
+// a capture read only as far as its first unreadable byte is part of a file
+// reported as a measurement of the file, which a profile has no way to show.
 //
 // The returned error's message is the reason all three signals will carry, so
 // it is written for the person holding the file: it names the shape that could
@@ -184,16 +188,28 @@ func readOTLP(r io.Reader) (otlpExport, error) {
 
 	dec := json.NewDecoder(br)
 	var export otlpExport
+	// Decoding is what ends the walk, because only decoding can tell the end of
+	// the file from a byte that cannot start a batch. Asking the decoder
+	// whether another element follows cannot: it answers no for a stray `}` or
+	// `]` as readily as for the end of the file, so a walk driven by that
+	// question stops at the first such byte, reports the batches before it, and
+	// calls a partial read a complete measurement. io.EOF is the file ending
+	// between batches — whitespace after the last batch included, which is how
+	// text files end. Every other error is the file failing.
+	//
 	// Batch indices are 1-based: batch 1 is the first object in the file, which
 	// is what someone counting lines in their capture will call it.
-	for batchIdx := 1; dec.More(); batchIdx++ {
+	for batchIdx := 1; ; batchIdx++ {
 		var b otlpBatch
-		if err := dec.Decode(&b); err != nil {
+		err := dec.Decode(&b)
+		if errors.Is(err, io.EOF) {
+			return export, nil
+		}
+		if err != nil {
 			return nil, decodeFailure(err, batchIdx, prelude, counted.n)
 		}
 		export = append(export, b)
 	}
-	return export, nil
 }
 
 // countingReader counts the bytes pulled from the capture file. It is the only
@@ -287,12 +303,13 @@ func decodeFailure(err error, batchIdx int, prelude, fileLen int64) error {
 				typeErr.Field, batchIdx)
 		}
 		return fmt.Errorf("OTel export does not fit the OTLP schema: a value in batch %d is not the expected type", batchIdx)
-	case errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF):
+	case errors.Is(err, io.ErrUnexpectedEOF):
 		// The object began and the file ended. There is no offending byte in
 		// the file — the byte the decoder wanted is the one past the end — so
 		// the file's length is the honest place to point at. The batch's own
 		// start would send the reader to a batch that is fine as far as it
-		// goes.
+		// goes. A file that ended *between* batches is not a failure at all and
+		// never reaches here: that is io.EOF, and it is where the walk ends.
 		return malformedJSON(fileLen, batchIdx, "unexpected end of JSON input")
 	}
 	// Anything left is the file failing under us, not its contents.
