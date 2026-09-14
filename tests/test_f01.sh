@@ -174,29 +174,52 @@ stub_tool_path() {
   echo "$dir:$PATH"
 }
 
-# A copy of the scripts directory whose check-paths.sh exits with a chosen code.
-# Echoes the path to the copied check-structure.sh.
+# stub_paths_tree <name> <exit-code> [stdout-payload]
+#
+# A copy of the scripts directory whose check-paths.sh writes <stdout-payload>
+# and exits <exit-code>, so check-structure.sh can be driven against any child
+# result — any status, paired with any payload or with none at all. Echoes the
+# path to the copied check-structure.sh. Cached per name.
 stub_paths_tree() {
-  local exit_code="$1"
-  local dir="$mask_root/tree-$exit_code"
+  local name="$1"
+  local exit_code="$2"
+  local payload="${3-}"
+  local dir="$mask_root/tree-$name"
   if [[ ! -d "$dir" ]]; then
     cp -R skills/skill-audit/scripts "$dir"
-    printf '#!/usr/bin/env bash\nexit %s\n' "$exit_code" > "$dir/check-paths.sh"
+    printf '%s' "$payload" > "$dir/stub-payload"
+    printf '#!/usr/bin/env bash\ncat "$(dirname "$0")/stub-payload"\nexit %s\n' "$exit_code" \
+      > "$dir/check-paths.sh"
     chmod +x "$dir/check-paths.sh"
   fi
   echo "$dir/check-structure.sh"
 }
 
-# A copy of the scripts directory whose check-paths.sh exits 0 but writes
-# something that is not a JSON payload. Echoes the copied check-structure.sh.
-stub_paths_garbage_tree() {
-  local dir="$mask_root/tree-garbage"
+# The payloads a conforming check-paths.sh --json produces, and the one its own
+# guard produces when it cannot reach a verdict. Named here so a case can pair
+# any of them with any exit status — including the pairings no conforming child
+# would ever produce.
+PAYLOAD_PASS='{"findings": [], "passed": true}'
+PAYLOAD_FAIL='{"findings": [{"level": "fail", "rule": "PT001", "message": "script/reference path not found: ./scripts/nope.sh"}], "passed": false}'
+PAYLOAD_DEP='{"findings": [{"level": "fail", "rule": "DEP001", "message": "required tool not found: jq"}], "passed": false, "error": "required tool not found: jq"}'
+
+# guard_broken_tree <mode>
+#
+# A copy of the scripts directory whose shared verdict-guard.sh is unusable:
+# absent, syntactically broken, or present but defining none of the guards.
+# Echoes the path to the copied directory. Cached per mode.
+guard_broken_tree() {
+  local mode="$1"
+  local dir="$mask_root/guard-$mode"
   if [[ ! -d "$dir" ]]; then
     cp -R skills/skill-audit/scripts "$dir"
-    printf '#!/usr/bin/env bash\necho "not json at all"\nexit 0\n' > "$dir/check-paths.sh"
-    chmod +x "$dir/check-paths.sh"
+    case "$mode" in
+      missing)   rm -f "$dir/verdict-guard.sh" ;;
+      malformed) printf 'if then fi (\n' > "$dir/verdict-guard.sh" ;;
+      empty)     printf '# a guard that defines no guards\n' > "$dir/verdict-guard.sh" ;;
+    esac
   fi
-  echo "$dir/check-structure.sh"
+  echo "$dir"
 }
 
 PATH_FAULT=tests/fixtures/f01/path-fault-only
@@ -282,34 +305,58 @@ run_present "$CHECK_FM" tests/fixtures/f01/malformed-yaml
 assert "frontmatter, validator present: malformed-yaml fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
 assert "frontmatter, validator present: malformed-yaml reports SPEC FAIL" "$(echo "$output" | grep -q 'SPEC FAIL' && echo true || echo false)"
 
-# --- Unenumerated child exit codes are execution errors, not passes ---
+# --- Every enumeration the guard introduced, walked at both edges ---
+#
+# A `case` arm or an `||` splits results into two sets: the ones a script will
+# build a verdict on, and the ones it refuses. Pinning a single witness of the
+# refused set leaves the accepted set's edge free to move — widen an enumeration
+# by one status, or let one arm fall through, and the suite still passes while
+# the script reports a verdict nothing computed. That is S1 and S2's shape
+# exactly, so each enumeration below is walked across its whole boundary: every
+# status the accepted set contains, the statuses immediately outside it, and the
+# unenumerated remainder.
 
+# skill-validator's statuses: 0 clean, 1 errors, 2 warnings only, 3 its own
+# usage error. check-frontmatter.sh accepts {0, 2} as a verdict it may build on
+# and reports 1 as a spec failure; everything else, 3 included, is a status it
+# cannot interpret. An arm that reached the license gate anyway would print
+# "frontmatter OK" over a validator that never ran — S2's exact symptom.
+
+for spec in "0:0:ok" "1:1:no" "2:0:ok" "3:3:no" "4:3:no" "42:3:no"; do
+  vcode="${spec%%:*}"
+  vrest="${spec#*:}"
+  vwant="${vrest%%:*}"
+  vverdict="${vrest#*:}"
+  run_on_path "$(stub_tool_path skill-validator "$vcode")" "$CHECK_FM" tests/fixtures/f01/valid-full
+  assert "frontmatter, validator exits $vcode: exits $vwant" \
+    "$([[ $code -eq $vwant ]] && echo true || echo false)"
+  if [[ "$vverdict" == "ok" ]]; then
+    assert "frontmatter, validator exits $vcode: prints frontmatter OK" \
+      "$(echo "$output" | grep -q 'frontmatter OK' && echo true || echo false)"
+  else
+    assert "frontmatter, validator exits $vcode: never prints frontmatter OK" \
+      "$(echo "$output" | grep -q 'frontmatter OK' && echo false || echo true)"
+  fi
+done
+
+# The unenumerated arm still names what it could not interpret, and the
+# enumerated exit-3 arm names the tool that failed to run.
 run_on_path "$(stub_tool_path skill-validator 42)" "$CHECK_FM" tests/fixtures/f01/valid-full
-assert "frontmatter, validator exits 42: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
-assert "frontmatter, validator exits 42: never prints frontmatter OK" "$(echo "$output" | grep -q 'frontmatter OK' && echo false || echo true)"
-assert "frontmatter, validator exits 42: names the tool and the status" "$(echo "$errout" | grep -q 'skill-validator' && echo "$errout" | grep -q '42' && echo true || echo false)"
+assert "frontmatter, validator exits 42: names the tool and the status" \
+  "$(echo "$errout" | grep -q 'skill-validator' && echo "$errout" | grep -q '42' && echo true || echo false)"
 
-# Control: exit 2 is enumerated (warnings only) and still a pass.
-run_on_path "$(stub_tool_path skill-validator 2)" "$CHECK_FM" tests/fixtures/f01/valid-full
-assert "frontmatter, validator exits 2 (warnings): still passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
-assert "frontmatter, validator exits 2 (warnings): prints frontmatter OK" "$(echo "$output" | grep -q 'frontmatter OK' && echo true || echo false)"
+run_on_path "$(stub_tool_path skill-validator 3)" "$CHECK_FM" tests/fixtures/f01/valid-full
+assert "frontmatter, validator exits 3: names the tool that failed to run" \
+  "$(echo "$errout" | grep -q 'skill-validator' && echo true || echo false)"
 
-run_present "$(stub_paths_tree 42)" --json tests/fixtures/f01/valid-full
-assert "structure --json, check-paths exits 42: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
-assert "structure --json, check-paths exits 42: never reports passed true" "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
-
-run_present "$(stub_paths_tree 42)" tests/fixtures/f01/valid-full
-assert "structure text, check-paths exits 42: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
-
-# Control: an enumerated child exit still behaves as before.
-run_present "$(stub_paths_tree 0)" --json tests/fixtures/f01/valid-full
-assert "structure --json, check-paths exits 0: still passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
-assert "structure --json, check-paths exits 0: reports passed true" "$([[ "$(echo "$output" | jq -r '.passed')" == "true" ]] && echo true || echo false)"
-
-run_present "$(stub_paths_tree 1)" --json tests/fixtures/f01/valid-full
-assert "structure --json, check-paths exits 1: fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
-
-# --- DEP002: a child result the script cannot interpret is a named finding ---
+# --- check-structure.sh over every child result it can be handed ---
+#
+# Two enumerations meet here: the child's exit status, and the read-back of the
+# child's payload. check-paths.sh's contract is 0 = pass, 1 = path failure, and
+# 3 = its own guard reporting that it reached no verdict; in --json mode it also
+# promises a {"findings": [...], "passed": bool} payload on stdout whenever it
+# exits 0 or 1. Every column below is a way that contract can be broken, and the
+# rows immediately inside it are the accepted set's edge.
 #
 # DEP001 (a required tool is absent) and DEP002 (a child produced a result this
 # script cannot interpret) are both consumer-observable: they reach a --json
@@ -318,17 +365,89 @@ assert "structure --json, check-paths exits 1: fails (exit 1)" "$([[ $code -eq 1
 # here. An emitted ID that appears in no document and no test is how the two of
 # them shipped unregistered.
 
-run_present "$(stub_paths_tree 42)" --json tests/fixtures/f01/valid-full
-assert "structure --json, check-paths exits 42: payload carries DEP002" "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP002")' >/dev/null 2>&1 && echo true || echo false)"
-assert "structure --json, check-paths exits 42: DEP002 names the status" "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP002") | select(.message | test("42"))' >/dev/null 2>&1 && echo true || echo false)"
+child_names=(pass0 fail1 dep3 u42 garbage0 empty0 shape0 liar0 liar1)
+child_codes=(0 1 3 42 0 0 0 0 1)
+child_payloads=("$PAYLOAD_PASS" "$PAYLOAD_FAIL" "$PAYLOAD_DEP" "" "not json at all" "" '{"ok": true}' "$PAYLOAD_FAIL" "$PAYLOAD_PASS")
+child_why=(
+  "a conforming pass"
+  "a conforming path failure"
+  "the child's own no-verdict (exit 3)"
+  "an unenumerated status"
+  "an unreadable payload"
+  "no payload at all"
+  "a payload of the wrong shape"
+  "a payload contradicting its exit 0"
+  "a payload contradicting its exit 1"
+)
+want_exit=(0 1 3 3 3 3 3 3 3)
+want_passed=(true false false false false false false false false)
+want_rule=("" PT001 DEP002 DEP002 DEP002 DEP002 DEP002 DEP002 DEP002)
 
-run_present "$(stub_paths_garbage_tree)" --json tests/fixtures/f01/valid-full
-assert "structure --json, unreadable child payload: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
-assert "structure --json, unreadable child payload: never reports passed true" "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
-assert "structure --json, unreadable child payload: payload carries DEP002" "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP002")' >/dev/null 2>&1 && echo true || echo false)"
+for i in "${!child_names[@]}"; do
+  why="${child_why[$i]}"
+  run_present "$(stub_paths_tree "${child_names[$i]}" "${child_codes[$i]}" "${child_payloads[$i]}")" \
+    --json tests/fixtures/f01/valid-full
+  assert "structure --json, child gives $why: exits ${want_exit[$i]}" \
+    "$([[ $code -eq ${want_exit[$i]} ]] && echo true || echo false)"
+  assert "structure --json, child gives $why: stdout is a payload" \
+    "$(echo "$output" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
+  assert "structure --json, child gives $why: payload passed is ${want_passed[$i]}" \
+    "$([[ "$(echo "$output" | jq -r '.passed' 2>/dev/null)" == "${want_passed[$i]}" ]] && echo true || echo false)"
+  if [[ -n "${want_rule[$i]}" ]]; then
+    assert "structure --json, child gives $why: payload carries ${want_rule[$i]}" \
+      "$(echo "$output" | jq -e --arg r "${want_rule[$i]}" '.findings[] | select(.rule == $r)' >/dev/null 2>&1 && echo true || echo false)"
+  fi
+  # The invariant every arm above exists to hold, pinned over the whole boundary
+  # so it survives any rework of the arms that currently enforce it: a payload
+  # may never claim it passed while carrying a finding that says it failed.
+  assert "structure --json, child gives $why: never claims passed beside a fail finding" \
+    "$(echo "$output" | jq -e '.passed == true and ([.findings[] | select(.level == "fail")] | length > 0)' >/dev/null 2>&1 && echo false || echo true)"
+done
+
+# The DEP002 message names the status it could not interpret, so a consumer can
+# tell which child result it is looking at.
+run_present "$(stub_paths_tree u42 42 "")" --json tests/fixtures/f01/valid-full
+assert "structure --json, child exits 42: DEP002 names the status" \
+  "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP002") | select(.message | test("42"))' >/dev/null 2>&1 && echo true || echo false)"
+
+# Text mode reads no payload, so only the exit-status enumeration applies — and
+# it applies identically: a child that reached no verdict leaves us with none.
+run_present "$(stub_paths_tree pass0 0 "$PAYLOAD_PASS")" tests/fixtures/f01/valid-full
+assert "structure text, child gives a conforming pass: exits 0" "$([[ $code -eq 0 ]] && echo true || echo false)"
+
+run_present "$(stub_paths_tree dep3 3 "$PAYLOAD_DEP")" tests/fixtures/f01/valid-full
+assert "structure text, child exits 3 (no verdict): exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+
+run_present "$(stub_paths_tree u42 42 "")" tests/fixtures/f01/valid-full
+assert "structure text, child exits 42: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
 
 # DEP001's own registration is pinned by the jq-masked cases above, which assert
 # the rule ID in both check-structure.sh's and check-paths.sh's payloads.
+
+# --- The shared guard is itself a dependency, and require_tool cannot cover it ---
+#
+# Every other dependency is announced by the guard. The guard's own absence is
+# announced by nothing: `source` fails, `set -e` aborts, and the script exits 1
+# or 2 — statuses this contract reserves for verdicts the script actually
+# computed. A missing guard must read as "no verdict reached", like every other
+# unmet precondition, in the exit status and on the payload channel alike.
+
+for gmode in missing malformed empty; do
+  gdir="$(guard_broken_tree "$gmode")"
+  for gscript in check-structure.sh check-paths.sh check-frontmatter.sh audit-report.sh; do
+    run_present "$gdir/$gscript" tests/fixtures/f01/valid-full
+    assert "$gscript, guard $gmode: exits 3, not a status meaning a verdict" \
+      "$([[ $code -eq 3 ]] && echo true || echo false)"
+    assert "$gscript, guard $gmode: stdout carries no verdict" \
+      "$([[ -z "$output" ]] && echo true || echo false)"
+    assert "$gscript, guard $gmode: says on stderr that it could not load the guard" \
+      "$(echo "$errout" | grep -q 'verdict-guard.sh' && echo true || echo false)"
+  done
+  run_present "$gdir/check-structure.sh" --json tests/fixtures/f01/valid-full
+  assert "check-structure.sh --json, guard $gmode: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+  assert "check-structure.sh --json, guard $gmode: never reports passed true" \
+    "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+done
 
 # --- The guard emits JSON, whatever the message holds ---
 #
@@ -336,17 +455,33 @@ assert "structure --json, unreadable child payload: payload carries DEP002" "$(e
 # interpolating an unescaped message makes the promise conditional on every
 # caller passing a string with no quote, backslash or control character — a
 # convention no caller is checked against. Pin the promise, not the convention.
+#
+# The encoder's own `case` is an enumeration like any other, so the message
+# below carries one character from every arm of it — the six named escapes, the
+# quote and backslash, and two characters that fall to the \u00xx arm at the
+# edges of the control range. A message that exercised only the arms someone
+# thought of is how an encoder ships escaping most of what it is handed.
 
 GUARD=skills/skill-audit/scripts/verdict-guard.sh
 assert "verdict-guard.sh sits beside the scripts that source it" "$([[ -f "$GUARD" ]] && echo true || echo false)"
 
-guard_nasty=$'he said "boom" \\ then a tab\there'
+guard_nasty=$'he said "boom" \\ then a tab\there, a newline\na return\ra formfeed\fa backspace\bthen \x01 and \x1f'
 guard_out="$(bash -c 'source "$1"; cannot_compute DEP002 "$2" true' _ "$GUARD" "$guard_nasty" 2>/dev/null || true)"
-assert "guard: payload is valid JSON when the message holds a quote and a backslash" "$(echo "$guard_out" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
+assert "guard: payload is valid JSON when the message holds every character the encoder escapes" "$(echo "$guard_out" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
 assert "guard: error field round-trips the message exactly" "$([[ "$(echo "$guard_out" | jq -r '.error' 2>/dev/null)" == "$guard_nasty" ]] && echo true || echo false)"
 assert "guard: finding message round-trips the message exactly" "$([[ "$(echo "$guard_out" | jq -r '.findings[0].message' 2>/dev/null)" == "$guard_nasty" ]] && echo true || echo false)"
 assert "guard: finding carries the rule it was given" "$([[ "$(echo "$guard_out" | jq -r '.findings[0].rule' 2>/dev/null)" == "DEP002" ]] && echo true || echo false)"
 assert "guard: payload never reports passed true" "$(echo "$guard_out" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+
+# The detail — a failed tool's own output — is the one thing the guard relays
+# verbatim, and it is exactly the thing that would corrupt the payload if it
+# went to stdout. It belongs on stderr, beside the reason, whatever it holds.
+
+run_present bash -c 'source "$1"; cannot_compute DEP002 "the reason" true "DETAIL-MARKER: {not json"' _ "$GUARD"
+assert "guard: detail reaches stderr" "$(echo "$errout" | grep -q 'DETAIL-MARKER' && echo true || echo false)"
+assert "guard: detail never reaches the payload channel" "$(echo "$output" | grep -q 'DETAIL-MARKER' && echo false || echo true)"
+assert "guard: stdout is still exactly the payload when a detail is relayed" "$(echo "$output" | jq -e '.findings[0].rule == "DEP002"' >/dev/null 2>&1 && echo true || echo false)"
+assert "guard: the reason reaches stderr too" "$(echo "$errout" | grep -q 'the reason' && echo true || echo false)"
 
 # The guard needs no jq to build its payload: it is what runs when jq is the
 # tool that went missing.
@@ -356,10 +491,12 @@ assert "guard: emits its payload with jq itself absent" "$(echo "$output" | jq -
 # --- stdout is the payload channel, on every exit path ---
 #
 # In --json mode a machine reads stdout. So stdout carries a payload or it
-# carries nothing; a diagnostic belongs on stderr. Argument errors and an
-# unresolvable target are the two exits that carry no payload — the script has
-# no target to render a verdict about — and that is the whole of the exception,
-# stated in both script headers and pinned here so it cannot quietly grow.
+# carries nothing; a diagnostic belongs on stderr. Three exits carry no payload:
+# an argument error and an unresolvable target, where the script has no target to
+# render a verdict about, and a guard that would not load, where the thing that
+# builds payloads is the thing that is missing. That is the whole of the
+# exception, stated in both script headers and pinned here — and, for the guard,
+# in the guard-load cases above — so it cannot quietly grow.
 
 run_present "$CHECK_PATHS" --json --bogus
 assert "paths --json, bad flag: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"

@@ -270,6 +270,68 @@ run_masked skillscore "$REPORT" tests/fixtures/f01/valid-full
 assert "audit-report, skillscore masked: still exits 0" "$([[ $code -eq 0 ]] && echo true || echo false)"
 assert "audit-report, skillscore masked: quality is null with a quality_error" "$(echo "$output" | jq -e '.quality == null and (.quality_error | test("skillscore"))' >/dev/null 2>&1 && echo true || echo false)"
 
+# --- A composer must not read an unreadable child payload as "no findings" ---
+#
+# This is where the guard's promise has to land. check-structure.sh emits a
+# passed:false payload naming why it reached no verdict, and exits 3 — and the
+# one machine consumer of that payload read it through `2>&1`, which mixed the
+# diagnostic into the payload channel and left nothing that parses as JSON. With
+# no else-branch, policy findings then stayed empty and the report said the
+# skill passed with zero findings: a missing verdict read as a clean one, which
+# is the exact failure the guard exists to prevent, surviving at the composition
+# boundary.
+#
+# The two halves of the invariant: a readable failing payload must reach the
+# report as findings, and an unreadable one must never read as no findings.
+
+# A scripts copy whose check-structure.sh cannot reach a verdict, because the
+# child it depends on is gone. It still emits a DEP002 payload and exits 3.
+broken_child_tree="$mask_root/no-check-paths"
+cp -R skills/skill-audit/scripts "$broken_child_tree"
+rm -f "$broken_child_tree/check-paths.sh"
+
+run_present "$broken_child_tree/audit-report.sh" tests/fixtures/f01/valid-full
+assert "audit-report, policy source reached no verdict: report is still produced (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert "audit-report, policy source reached no verdict: output is valid JSON" "$(echo "$output" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
+assert "audit-report, policy source reached no verdict: summary.passed is false" "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "false" ]] && echo true || echo false)"
+assert "audit-report, policy source reached no verdict: the DEP002 finding reaches the report" "$(echo "$output" | jq -e '.policy.findings[] | select(.rule == "DEP002")' >/dev/null 2>&1 && echo true || echo false)"
+assert "audit-report, policy source reached no verdict: total_findings is not zero" "$([[ "$(echo "$output" | jq -r '.summary.total_findings')" -gt 0 ]] && echo true || echo false)"
+
+# A scripts copy whose check-structure.sh produces nothing a consumer can parse.
+# There is no payload to relay, so the report must say so rather than infer an
+# empty findings list from it.
+unreadable_tree="$mask_root/unreadable-policy"
+cp -R skills/skill-audit/scripts "$unreadable_tree"
+printf '#!/usr/bin/env bash\necho "not json at all"\nexit 3\n' > "$unreadable_tree/check-structure.sh"
+chmod +x "$unreadable_tree/check-structure.sh"
+
+run_present "$unreadable_tree/audit-report.sh" tests/fixtures/f01/valid-full
+assert "audit-report, policy payload unreadable: report is still produced (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert "audit-report, policy payload unreadable: output is valid JSON" "$(echo "$output" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
+assert "audit-report, policy payload unreadable: summary.passed is false" "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "false" ]] && echo true || echo false)"
+assert "audit-report, policy payload unreadable: names the source it could not read" "$(echo "$output" | jq -e '.policy_error | test("check-structure")' >/dev/null 2>&1 && echo true || echo false)"
+
+# The same when the policy source is not there to run at all.
+absent_tree="$mask_root/absent-policy"
+cp -R skills/skill-audit/scripts "$absent_tree"
+rm -f "$absent_tree/check-structure.sh"
+
+run_present "$absent_tree/audit-report.sh" tests/fixtures/f01/valid-full
+assert "audit-report, policy source absent: summary.passed is false" "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "false" ]] && echo true || echo false)"
+assert "audit-report, policy source absent: names the source it could not run" "$(echo "$output" | jq -e '.policy_error | test("check-structure")' >/dev/null 2>&1 && echo true || echo false)"
+
+# Control: with the policy source intact the report is unchanged, and says so.
+run_present "$REPORT" tests/fixtures/f01/valid-full
+assert "audit-report, policy source intact: summary.passed is true" "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "true" ]] && echo true || echo false)"
+assert "audit-report, policy source intact: policy_error is null" "$([[ "$(echo "$output" | jq -r '.policy_error')" == "null" ]] && echo true || echo false)"
+assert "audit-report, policy source intact: stdout stays a single clean document" "$(echo "$output" | jq -e '.summary.total_findings == 0' >/dev/null 2>&1 && echo true || echo false)"
+
+# A failing policy payload still reaches the report as findings, unchanged: the
+# fix must not have turned "readable and failing" into "unreadable".
+run_present "$REPORT" tests/fixtures/f01/missing-script-ref
+assert "audit-report, policy source reports a path failure: PT001 reaches the report" "$(echo "$output" | jq -e '.policy.findings[] | select(.rule == "PT001")' >/dev/null 2>&1 && echo true || echo false)"
+assert "audit-report, policy source reports a path failure: policy_error is null" "$([[ "$(echo "$output" | jq -r '.policy_error')" == "null" ]] && echo true || echo false)"
+
 echo
 echo "$pass passed, $fail failed"
 if [[ "$fail" -gt 0 ]]; then
