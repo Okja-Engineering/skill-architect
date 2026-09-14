@@ -67,6 +67,144 @@ func TestOTLP_ConcatenatedObjectsNeedNoNewline(t *testing.T) {
 	assertTokenJSON(t, profile.Tokens.Value, `{"input":300}`)
 }
 
+// --- Where the file ends ---
+//
+// The reader's contract over a stream of batches is that every byte of the
+// capture is accounted for: read as a batch, or reported as a failure. Nothing
+// between the last batch that decoded and the end of the file may be passed
+// over. It is a contract easy to lose by accident, because there are two ways
+// to ask a JSON decoder whether the stream is done and they disagree about a
+// stray closing delimiter: "is there another element" answers no for a lone `}`
+// or `]` exactly as it does for the end of the file, so a walk driven by that
+// question stops at the first byte it cannot begin a value with, reports
+// whatever it had read up to there, and calls a partial read a measurement —
+// the one failure a profile has no way to show its reader.
+//
+// These pin the contract rather than the walk: however the walk is driven, a
+// tail that is not a batch fails the whole file, and whitespace is not a tail.
+
+// A file whose last batch is followed by anything the reader cannot decode is a
+// file whose end was never reached. Reporting the batches before it would report
+// part of a capture as a measurement of the capture.
+func TestOTLP_ATailThatIsNotABatchFailsTheWholeFile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tail string
+	}{
+		{"a stray closing brace", "}"},
+		{"a stray closing brace on its own line", "}\n"},
+		{"a stray closing bracket", "]"},
+		{"a stray closing bracket on its own line", "]\n"},
+		{"a stray comma, as unwrapping an array by hand leaves", ","},
+		{"text that is not JSON", "not json\n"},
+		{"a batch that ends mid-object", `{"resourceMetrics":`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := metricsBatchWith("100") + "\n" + tc.tail
+
+			// At the reader: the file has no readable end, so it has no value.
+			if export, err := readOTLP(strings.NewReader(content)); err == nil {
+				t.Fatalf("a file ending in %q read as %d batches and no failure; its tail was neither read nor reported",
+					tc.tail, len(export))
+			}
+
+			// At the adapter: what the person holding the file is told.
+			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, content)}
+			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := profile.Tokens.RawMetricResult
+			if got.State != MetricError {
+				t.Errorf("tokens state = %q carrying %v, want error: the first batch is not a measurement of this file",
+					got.State, profile.Tokens.Value)
+			}
+			if profile.Tokens.Value != nil {
+				t.Errorf("tokens value = %v; a file that could not be read to its end carries no count", profile.Tokens.Value)
+			}
+			// The tail is in the second batch position, and the reason says
+			// what became of the batch that did decode.
+			if !strings.Contains(got.Reason, "in batch 2") {
+				t.Errorf("reason = %q, want it to name batch 2 — the position the unreadable tail is in", got.Reason)
+			}
+			if !strings.Contains(got.Reason, "No data from earlier batches was used") {
+				t.Errorf("reason = %q, want it to say the earlier batch was not used", got.Reason)
+			}
+			if strings.Contains(got.Reason, "profiler.") {
+				t.Errorf("reason = %q names a Go type; it is read by users, not by the compiler", got.Reason)
+			}
+		})
+	}
+}
+
+// The tail that costs the most is the one with a real batch behind it: a
+// collector flush lands after a stray byte, and a reader that stops at the
+// stray byte drops a batch it never mentions. Neither number may be reported —
+// not the batch before the tail, which would be part of a capture reported as
+// the whole of it, and not the batch after it, which would be a parse failure
+// swallowed in order to keep reading.
+func TestOTLP_ABatchAfterAnUnreadableTailIsNotReadPast(t *testing.T) {
+	const dropped = "424242" // distinctive, so its absence is provable by search
+	content := metricsBatchWith("100") + "\n}\n" + metricsBatchWith(dropped) + "\n"
+
+	if export, err := readOTLP(strings.NewReader(content)); err == nil {
+		t.Fatalf("read %d batches and no failure across a stray `}`; the batch behind it was dropped in silence", len(export))
+	}
+
+	adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, content)}
+	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Tokens.State != MetricError {
+		t.Errorf("tokens state = %q carrying %v, want error", profile.Tokens.State, profile.Tokens.Value)
+	}
+	data, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), dropped) {
+		t.Errorf("the profile carries %s, from the batch behind the stray `}`: a parse failure was read past rather than reported\n%s",
+			dropped, data)
+	}
+}
+
+// Whitespace after the last batch is how every text file ends. It is the end of
+// the file, not a tail, and a reader strict about its end must still reach it.
+func TestOTLP_AFileEndsAtItsLastBatchOrTheWhitespaceAfterIt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		batches int
+		want    string
+	}{
+		{"one batch, no trailing byte", metricsBatchWith("100"), 1, `{"input":100}`},
+		{"a final newline", metricsBatchWith("100") + "\n", 1, `{"input":100}`},
+		{"blank lines and indentation", metricsBatchWith("100") + "\n\n  \t\r\n", 1, `{"input":100}`},
+		{"two batches", metricsBatchWith("100") + "\n" + metricsBatchWith("500"), 2, `{"input":600}`},
+		{"two batches and a final newline", metricsBatchWith("100") + "\n" + metricsBatchWith("500") + "\n", 2, `{"input":600}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			export, err := readOTLP(strings.NewReader(tc.content))
+			if err != nil {
+				t.Fatalf("a file that ends cleanly was refused: %v", err)
+			}
+			if len(export) != tc.batches {
+				t.Fatalf("read %d batches, want %d", len(export), tc.batches)
+			}
+			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, tc.content)}
+			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if profile.Tokens.State != MetricPresent {
+				t.Fatalf("tokens state = %q (reason %q), want present", profile.Tokens.State, profile.Tokens.Reason)
+			}
+			assertTokenJSON(t, profile.Tokens.Value, tc.want)
+		})
+	}
+}
+
 // A top-level value that is not an object is a JSON file, not an OTLP export.
 // The reason says which kind arrived, so the user can see what they pointed at,
 // and never quotes a Go type name at them.

@@ -596,6 +596,7 @@ var captureCases = []captureCase{
 	// Exports that cannot be read as OTLP/JSON at all.
 	{name: "malformed JSON", fixture: "malformed.json", absent: MetricError},
 	{name: "a partial final line", fixture: "truncated_final_line.ndjson", absent: MetricError},
+	{name: "a stray closing brace between two batches", fixture: "stray_close_then_batch.ndjson", absent: MetricError},
 	{name: "a value that does not fit the schema", fixture: "type_mismatch.json", absent: MetricError},
 	{name: "an array of exports", fixture: "top_level_array.json", absent: MetricError},
 	{name: "an empty file", fixture: "empty.json", absent: MetricError},
