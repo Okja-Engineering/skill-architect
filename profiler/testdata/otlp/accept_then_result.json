@@ -1,0 +1,36 @@
+{
+  "resourceLogs": [
+    {
+      "scopeLogs": [
+        {
+          "logRecords": [
+            {
+              "timeUnixNano": "1789332595300000000",
+              "body": { "stringValue": "claude_code.tool_decision" },
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "tool_decision" } },
+                { "key": "tool_name", "value": { "stringValue": "Read" } },
+                { "key": "tool_use_id", "value": { "stringValue": "toolu_01AAAA" } },
+                { "key": "decision", "value": { "stringValue": "accept" } },
+                { "key": "tool_source", "value": { "stringValue": "builtin" } },
+                { "key": "source", "value": { "stringValue": "config" } }
+              ]
+            },
+            {
+              "timeUnixNano": "1789332595460000000",
+              "body": { "stringValue": "claude_code.tool_result" },
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "tool_result" } },
+                { "key": "tool_name", "value": { "stringValue": "Read" } },
+                { "key": "tool_use_id", "value": { "stringValue": "toolu_01AAAA" } },
+                { "key": "success", "value": { "stringValue": "true" } },
+                { "key": "decision_type", "value": { "stringValue": "accept" } },
+                { "key": "decision_source", "value": { "stringValue": "config" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "resourceLogs": [
+    {
+      "scopeLogs": [
+        {
+          "logRecords": [
+            {
+              "timeUnixNano": "1789332595300000000",
+              "body": { "stringValue": "claude_code.tool_decision" },
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "tool_decision" } },
+                { "key": "tool_use_id", "value": { "stringValue": "toolu_01AAAA" } },
+                { "key": "decision", "value": { "stringValue": "reject" } },
+                { "key": "source", "value": { "stringValue": "user_reject" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

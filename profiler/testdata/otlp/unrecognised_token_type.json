@@ -1,0 +1,39 @@
+{
+  "resourceMetrics": [
+    {
+      "scopeMetrics": [
+        {
+          "metrics": [
+            {
+              "name": "claude_code.token.usage",
+              "unit": "tokens",
+              "sum": {
+                "aggregationTemporality": 1,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      { "key": "type", "value": { "stringValue": "reasoning" } },
+                      { "key": "model", "value": { "stringValue": "claude-sonnet-5" } }
+                    ],
+                    "startTimeUnixNano": "1789332594304000000",
+                    "timeUnixNano": "1789332596272000000",
+                    "asDouble": 4096
+                  },
+                  {
+                    "attributes": [
+                      { "key": "model", "value": { "stringValue": "claude-sonnet-5" } }
+                    ],
+                    "startTimeUnixNano": "1789332594304000000",
+                    "timeUnixNano": "1789332596272000000",
+                    "asDouble": 1523
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

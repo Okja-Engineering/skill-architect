@@ -1,0 +1,16 @@
+{
+  "name": "skill-architect",
+  "description": "The skill-architect plugin: skills for auditing and rewriting Agent Skills.",
+  "owner": {
+    "name": "Okja Engineering",
+    "url": "https://github.com/Okja-Engineering"
+  },
+  "plugins": [
+    {
+      "name": "skill-architect",
+      "source": "./",
+      "description": "Agent skills for auditing and improving Agent Skills against the spec, Anthropic best practices, and ICM context-management criteria.",
+      "version": "0.4.1"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "resourceLogs": [
+    {
+      "scopeLogs": [
+        {
+          "logRecords": [
+            {
+              "body": { "stringValue": "claude_code.api_request" },
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "api_request" } },
+                { "key": "event.timestamp", "value": { "stringValue": "2026-09-13T20:49:55.100Z" } },
+                { "key": "model", "value": { "stringValue": "claude-sonnet-5" } },
+                { "key": "duration_ms", "value": { "intValue": 1842 } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

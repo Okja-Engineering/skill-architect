@@ -3,20 +3,25 @@
 // the comparison engine (F04) reads profiles without knowing which adapter produced them.
 package profiler
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // MetricState represents the availability state of a metric.
 type MetricState string
 
 const (
-	MetricPresent MetricState = "present" // value captured from telemetry
-	MetricUnknown MetricState = "unknown" // no telemetry source available
-	MetricError   MetricState = "error"   // source existed but failed
+	MetricPresent MetricState = "present" // a value was read from telemetry
+	MetricUnknown MetricState = "unknown" // no telemetry source, or nothing readable in it
+	MetricError   MetricState = "error"   // the source existed and failed
 )
 
-// MetricResult wraps every metric so unavailable data is explicit, not silent.
-// Generics are avoided for JSON marshal/unmarshal simplicity; callers use typed
-// wrappers (TokenResult, ToolCallResult, etc.) that embed RawMetricResult.
+// RawMetricResult is the state every metric result carries, so unavailable data
+// is explicit rather than silent. There is no generic MetricResult[T]: type
+// parameters are avoided for JSON marshal/unmarshal simplicity, and each metric
+// category has its own wrapper (TokenResult, ToolCallResult, and the rest)
+// embedding this.
 type RawMetricResult struct {
 	State  MetricState `json:"state"`
 	Reason string      `json:"reason,omitempty"` // present when State != "present"
@@ -55,12 +60,26 @@ type CapabilityReport struct {
 }
 
 // CaptureOpts carries optional configuration for a capture session.
+//
+// ExportFile and APIKey are the input contract for adapters that do not exist
+// yet, and no shipped adapter reads either: the Claude Code adapter refuses an
+// ExportFile rather than ignoring it, and there is no CLI flag for an API key
+// at all. They are kept because they are the shape the Devin and Cursor
+// adapters need in 0.5.0, and removing them now would be a breaking change to
+// this struct twice over.
 type CaptureOpts struct {
-	OtelEndpoint string `json:"otel_endpoint,omitempty"` // OTLP receiver URL
-	ExportFile   string `json:"export_file,omitempty"`   // ATIF export or session transcript path
-	APIKey       string `json:"api_key,omitempty"`       // server API auth (Devin)
-	SnapshotHash string `json:"snapshot_hash"`           // git SHA or content hash of the skill being profiled
-	SkillDir     string `json:"skill_dir"`               // path to the skill being profiled
+	ExportFile   string `json:"export_file,omitempty"` // ATIF export or session transcript path; reserved for 0.5.0
+	APIKey       string `json:"api_key,omitempty"`     // server API auth; reserved for the Devin and Cursor adapters in 0.5.0
+	SnapshotHash string `json:"snapshot_hash"`         // git SHA or content hash of the skill being profiled
+	SkillDir     string `json:"skill_dir"`             // path to the skill being profiled
+}
+
+// ExportFileUnsupportedError is the refusal for a CaptureOpts.ExportFile the
+// selected adapter cannot read. The adapter owns the contract and returns this
+// from Capture; the CLI raises the same error before it gets that far, so the
+// two cannot drift into telling the caller different things.
+func ExportFileUnsupportedError(harness string) error {
+	return fmt.Errorf("--export-file is not read by the %s adapter; supply an OTel export with --otel-file", harness)
 }
 
 // ProfilerAdapter is implemented by each harness adapter.
@@ -77,13 +96,30 @@ type ProfilerAdapter interface {
 }
 
 // TokenCounts holds per-session token usage.
+//
+// Every count is a pointer because "the export said nothing about this" and
+// "the export said zero" are different answers, and a profile that turns the
+// first into the second reports a measurement nobody made — a cache-only
+// export claiming the session used no input and no output tokens. A count that
+// was not read has no key in the JSON at all; a count read as zero has its key,
+// with 0 in it. The key names are schema v1 and unchanged.
 type TokenCounts struct {
-	Input         int `json:"input"`
-	Output        int `json:"output"`
-	CacheRead     int `json:"cache_read,omitempty"`
-	CacheCreation int `json:"cache_creation,omitempty"`
-	Reasoning     int `json:"reasoning,omitempty"`
+	Input         *int `json:"input,omitempty"`
+	Output        *int `json:"output,omitempty"`
+	CacheRead     *int `json:"cache_read,omitempty"`
+	CacheCreation *int `json:"cache_creation,omitempty"`
+	// Reasoning has no source in Claude Code's OTel surface: its token.usage
+	// type attribute is exactly input, output, cacheRead and cacheCreation.
+	// Left unpopulated there, so its key is absent rather than reporting a zero
+	// that was never measured. The field is harness-agnostic and stays for an
+	// adapter that does have the signal.
+	Reasoning *int `json:"reasoning,omitempty"`
 }
+
+// Count is a token count a caller read, including a measured zero. Counts are
+// pointers so an unread one can be told from a zero one; this is how a caller
+// says "I read this".
+func Count(n int) *int { return &n }
 
 // ToolCallEntry records a single tool invocation.
 type ToolCallEntry struct {
@@ -117,40 +153,48 @@ type Attribution struct {
 	SkillName string `json:"skill_name"`
 }
 
-// TokenResult is a typed MetricResult for token counts.
+// TokenResult is the metric result for token counts.
 // Value is a pointer so omitempty works — nil means no value (unknown/error states).
 type TokenResult struct {
 	RawMetricResult
 	Value *TokenCounts `json:"value,omitempty"`
 }
 
-// ToolCallResult is a typed MetricResult for tool call entries.
-// Value is a pointer so omitempty works — nil means no value (unknown/error states).
+// ToolCallResult is the metric result for tool call entries. Value is a slice,
+// and omitempty drops its key when it is nil or empty — which is the same thing
+// here, because a result with no entries is never present.
 type ToolCallResult struct {
 	RawMetricResult
 	Value []ToolCallEntry `json:"value,omitempty"`
 }
 
-// ActivationResult is a typed MetricResult for skill activation events.
+// ActivationResult is the metric result for skill activation events. Value is a
+// slice, like ToolCallResult's, and has no Error constructor: skill activation
+// is a property of the harness and of this adapter, not of any export, so no
+// export can fail it.
 type ActivationResult struct {
 	RawMetricResult
 	Value []ActivationEntry `json:"value,omitempty"`
 }
 
-// TimingResult is a typed MetricResult for timing data.
+// TimingResult is the metric result for timing data.
 // Value is a pointer so omitempty works — nil means no value (unknown/error states).
 type TimingResult struct {
 	RawMetricResult
 	Value *TimingData `json:"value,omitempty"`
 }
 
-// AttributionResult is a typed MetricResult for attribution data.
+// AttributionResult is the metric result for attribution data. Value is a
+// pointer so omitempty drops the key for unknown states, and there is no Error
+// constructor for the same reason ActivationResult has none.
 type AttributionResult struct {
 	RawMetricResult
 	Value *AttributionData `json:"value,omitempty"`
 }
 
-// Profile is the serialized, snapshot-pinned artifact that F04 reads.
+// Profile is the serialized artifact that F04 reads. SnapshotHash is the
+// caller-supplied id labelling the skill version; it is recorded verbatim and
+// is not derived from, or validated against, SkillDir.
 type Profile struct {
 	Schema       string           `json:"schema"` // "skill-architect/profile/v1"
 	ProfiledAt   string           `json:"profiled_at"`
@@ -167,11 +211,27 @@ type Profile struct {
 	Attribution     AttributionResult `json:"attribution"`
 }
 
+// SignalStates is the state of every signal in the profile, keyed by the name
+// the capability report uses. It is the one place the profile's five results
+// are enumerated together, so a caller asking "did this capture read anything"
+// cannot walk four of them and believe it walked the set.
+func (p Profile) SignalStates() map[MetricName]MetricState {
+	return map[MetricName]MetricState{
+		MetricTokens:          p.Tokens.State,
+		MetricToolCalls:       p.ToolCalls.State,
+		MetricSkillActivation: p.SkillActivation.State,
+		MetricTiming:          p.Timing.State,
+		MetricAttribution:     p.Attribution.State,
+	}
+}
+
 // ProfileSchema is the version string embedded in every profile.
 const ProfileSchema = "skill-architect/profile/v1"
 
-// AdapterVersion is the current adapter implementation version.
-const AdapterVersion = "0.1.0"
+// AdapterVersion is the current adapter implementation version. It is
+// recorded in every CapabilityReport, so it is bumped whenever the adapter
+// changes what a profile contains for the same input — as 0.4.1 did.
+const AdapterVersion = "0.4.1"
 
 // MarshalJSON for Profile ensures the schema field is always set.
 func (p Profile) MarshalJSON() ([]byte, error) {
@@ -216,6 +276,11 @@ func UnknownToolCallResult(reason string) ToolCallResult {
 	return ToolCallResult{RawMetricResult: RawMetricResult{State: MetricUnknown, Reason: reason}}
 }
 
+// ErrorToolCallResult creates a ToolCallResult with state "error".
+func ErrorToolCallResult(reason string) ToolCallResult {
+	return ToolCallResult{RawMetricResult: RawMetricResult{State: MetricError, Reason: reason}}
+}
+
 // --- ActivationResult constructors ---
 
 // PresentActivationResult creates an ActivationResult with state "present".
@@ -244,6 +309,11 @@ func PresentTimingResult(v TimingData, source string) TimingResult {
 // UnknownTimingResult creates a TimingResult with state "unknown".
 func UnknownTimingResult(reason string) TimingResult {
 	return TimingResult{RawMetricResult: RawMetricResult{State: MetricUnknown, Reason: reason}}
+}
+
+// ErrorTimingResult creates a TimingResult with state "error".
+func ErrorTimingResult(reason string) TimingResult {
+	return TimingResult{RawMetricResult: RawMetricResult{State: MetricError, Reason: reason}}
 }
 
 // --- AttributionResult constructors ---

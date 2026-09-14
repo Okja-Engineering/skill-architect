@@ -31,6 +31,23 @@ jobs:
         run: tests/test_f02.sh
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version-file: profiler/go.mod
+          # The profiler module has no dependencies and so no go.sum. setup-go
+          # caches on a go.sum hash and warns on every run when it finds none.
+          cache: false
+      # The same four commands the release checklist runs locally. A diff that
+      # adds a parser and claims vet, gofmt and the race detector were run has
+      # to be a diff CI would have caught if they had not been.
+      - name: Check profiler formatting
+        run: |
+          cd profiler
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt would rewrite these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: Build and vet the profiler
+        run: cd profiler && go build ./... && go vet ./...
       - name: Run profiler tests
-        run: cd profiler && go test ./...
+        run: cd profiler && go test -race -count=1 ./...
