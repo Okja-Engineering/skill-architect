@@ -22,7 +22,12 @@
 # exists to prevent. The shape claimed differs per source, because what is read
 # out of each of them differs.
 # Rule IDs reach the report only by relay, from the policy source, except PL001
-# for a missing license, which this file checks inline and adds itself.
+# for a missing license, which this file checks inline and adds itself, and
+# DEP001, which it raises for itself when jq is absent. What relays is
+# check-structure.sh's whole findings array, so PL002, PL003, PL004, PL005,
+# PT001, PT002, PATH and DEP002 all reach a consumer through here without this
+# file naming any of them in a finding it built — which is exactly why they are
+# enumerated rather than left implied.
 # Exit codes: 0=report generated, 3=execution error.
 set -euo pipefail
 
