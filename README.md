@@ -94,7 +94,7 @@ key, because "nothing was said about output tokens" is not "no output tokens". A
 read as zero keeps its key, with `0` in it. No key names changed; the profile schema is
 still `skill-architect/profile/v1`.
 
-Two known limits of how those counts are merged, both **fixed together in 0.5.0** and
+Two known limits of how those counts are merged, both **fixed together in 0.4.2** and
 both confined to cumulative temporality — Claude Code's default is delta, where neither
 arises. Resource and instrumentation-scope identity are not part of the series key, so a
 capture that aggregates several resources under cumulative temporality merges their series
