@@ -3,13 +3,20 @@
 # Finds executable script references (./ or $ prefixed) in code blocks
 # and markdown links, then resolves them against the filesystem.
 # Exit codes: 0=pass, 1=path failure, 3=execution error.
-# Use --json for machine-readable output: {"findings": [...], "passed": bool}
+# Findings carry rule IDs: PT001 missing script/reference, PT002 missing
+# markdown link, DEP001 a required tool is absent.
+# Use --json for machine-readable output: {"findings": [...], "passed": bool},
+# plus an "error" key on the exit-3 payload naming why no verdict was reached.
 # --json builds its verdict with jq and requires it.
+# In --json mode stdout is the payload channel: it carries a payload or it
+# carries nothing, and every diagnostic goes to stderr. The two exits that
+# carry no payload are a usage error and an unresolvable target, where there
+# is no skill to render a verdict about.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/verdict-guard.sh
-source "$script_dir/lib/verdict-guard.sh"
+# shellcheck source=verdict-guard.sh
+source "$script_dir/verdict-guard.sh"
 
 json_output=false
 skill_dir=""

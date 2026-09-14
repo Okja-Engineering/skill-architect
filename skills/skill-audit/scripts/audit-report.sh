@@ -4,8 +4,17 @@
 #   1. skill-validator check -o json  (spec, structure, content, contamination)
 #   2. skillscore --json              (7-dimension quality scoring)
 #   3. House-policy checks            (PL001-PL005, PT001-PT002)
+# Composes them with jq and requires it: without jq there is no report to
+# generate, so it says which tool is missing and exits 3 (DEP001) rather than
+# dying part-way through with the shell's own "command not found".
+# skill-validator and skillscore stay soft: the report still generates and
+# names in-band the source it could not read.
 # Exit codes: 0=report generated, 3=execution error.
 set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=verdict-guard.sh
+source "$script_dir/verdict-guard.sh"
 
 skill_dir=""
 for arg in "$@"; do
@@ -26,7 +35,8 @@ if [[ ! -f "$skill_md" ]]; then
   exit 3
 fi
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+require_tool jq false
+
 timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 # --- Source 1: skill-validator (spec + structure + content + contamination) ---

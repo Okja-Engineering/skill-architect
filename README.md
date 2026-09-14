@@ -244,12 +244,20 @@ The skills shell out to three external tools. Install them before running an aud
 |---|---|---|
 | [`skill-validator`](https://github.com/agent-ecosystem/skill-validator) | `brew install agent-ecosystem/tap/skill-validator` | `skill-audit` stops at its structural-checks stage with `skill-validator not found` and exit 1 — that guard is what protects you. `audit-report.sh` also detects it: `spec` is `null`, `spec_error` names the tool, and `summary.passed` is `false`. `check-frontmatter.sh` run on its own detects it too: it exits 3 with `required tool not found: skill-validator` and never reaches the license gate, so a missing validator can neither pass a skill nor be mistaken for a policy failure. |
 | [`skillscore`](https://www.npmjs.com/package/skillscore) | `npm install -g skillscore` | `skill-audit` stops at the same stage with `skillscore not found` and exit 1. `check-quality.sh` exits 3. `audit-report.sh` emits `quality: null` with `quality_error`, and `quality_score` / `quality_grade` are `null`. |
-| `jq` | `brew install jq` (macOS) · `apt-get install jq` (Debian/Ubuntu) | `audit-report.sh` dies with `jq: command not found` (exit 127). `check-paths.sh --json` and `check-structure.sh --json` require jq unconditionally: without it they exit 3 with `required tool not found: jq` and a `passed: false` payload carrying a `DEP001` finding, whatever the skill contains. Text mode needs no jq and is unaffected. |
+| `jq` | `brew install jq` (macOS) · `apt-get install jq` (Debian/Ubuntu) | `audit-report.sh` composes its whole report with jq, so without it there is no report to generate: it exits 3 with `required tool not found: jq` and writes nothing to stdout, rather than dying part-way through. `check-paths.sh --json` and `check-structure.sh --json` require jq unconditionally too: they exit 3 with the same message and a `passed: false` payload carrying a `DEP001` finding, whatever the skill contains. Text mode needs no jq and is unaffected. |
 
 These checks are deliberately loud — a missing tool fails the audit instead of
 quietly scoring an unchecked skill as a pass. That holds for `jq` as well: a script
 that cannot reach a verdict says which tool is missing and exits 3, rather than
 reporting a result it did not compute.
+
+The same rule covers the case where every tool is present but one of them answers
+with something the caller cannot interpret. `check-structure.sh` exits 3 with a
+`DEP002` finding when `check-paths.sh` returns an unenumerated status or a payload
+it cannot read, and `check-frontmatter.sh` does the same on stderr for
+`skill-validator`. `DEP001` and `DEP002` are the only rule IDs an exit 3 emits, and
+[`skills/skill-audit/SKILL.md`](skills/skill-audit/SKILL.md) lists them beside the
+`PL`/`PT` findings for a `--json` consumer.
 
 Building the profiler additionally needs Go, at the version declared in
 [`profiler/go.mod`](profiler/go.mod).

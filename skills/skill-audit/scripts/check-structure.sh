@@ -4,13 +4,21 @@
 # skill-validator handles spec compliance and link resolution separately;
 # this script covers our repository-specific policy rules (PL002-PL005, PT001-PT002).
 # Exit codes: 0=pass, 1=path failure, 2=policy failure, 3=execution error.
-# Use --json for machine-readable output: {"findings": [...], "passed": bool}
+# Findings carry rule IDs: PL002-PL005 and PT001-PT002 as above, DEP001 a
+# required tool is absent, DEP002 check-paths.sh returned a result this
+# script cannot interpret.
+# Use --json for machine-readable output: {"findings": [...], "passed": bool},
+# plus an "error" key on the exit-3 payload naming why no verdict was reached.
 # --json builds its verdict with jq and requires it.
+# In --json mode stdout is the payload channel: it carries a payload or it
+# carries nothing, and every diagnostic goes to stderr. The two exits that
+# carry no payload are a usage error and an unresolvable target, where there
+# is no skill to render a verdict about.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/verdict-guard.sh
-source "$script_dir/lib/verdict-guard.sh"
+# shellcheck source=verdict-guard.sh
+source "$script_dir/verdict-guard.sh"
 
 json_output=false
 skill_dir=""
@@ -31,7 +39,7 @@ fi
 skill_md="$skill_dir/SKILL.md"
 
 if [[ ! -f "$skill_md" ]]; then
-  echo "FAIL: SKILL.md not found in $skill_dir"
+  echo "ERROR: SKILL.md not found in $skill_dir" >&2
   exit 3
 fi
 

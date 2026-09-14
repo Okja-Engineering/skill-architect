@@ -3,12 +3,15 @@
 # skill-validator handles: frontmatter format, name, description, YAML validity.
 # We add: license requirement (house policy, not spec).
 # Exit codes: 0=pass, 1=spec failure, 2=policy failure, 3=execution error.
+# Execution errors are reported as DEP001 (a required tool is absent) or
+# DEP002 (skill-validator returned a status this script cannot interpret).
+# This script has no --json mode, so both reach the caller on stderr.
 # Spec validation requires skill-validator.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/verdict-guard.sh
-source "$script_dir/lib/verdict-guard.sh"
+# shellcheck source=verdict-guard.sh
+source "$script_dir/verdict-guard.sh"
 
 if [[ $# -ne 1 ]]; then
   echo "Usage: check-frontmatter.sh <skill-dir>" >&2
@@ -19,7 +22,7 @@ skill_dir="$1"
 skill_md="$skill_dir/SKILL.md"
 
 if [[ ! -f "$skill_md" ]]; then
-  echo "FAIL: SKILL.md not found in $skill_dir"
+  echo "ERROR: SKILL.md not found in $skill_dir" >&2
   exit 3
 fi
 
