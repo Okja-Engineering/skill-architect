@@ -625,7 +625,7 @@ done
 # has to cover the whole set rather than whichever names a caller listed. Adding
 # a guard to the shared file without adding it to that set fails here.
 
-for gdrop in json_string cannot_compute require_tool payload_is_conforming verdict_guard_ready; do
+for gdrop in json_string cannot_compute require_tool json_document_conforms payload_is_conforming verdict_guard_ready; do
   gdir="$(guard_broken_tree "drop-$gdrop")"
   run_present "$gdir/check-structure.sh" --json tests/fixtures/f01/valid-full
   assert "check-structure.sh --json, guard missing $gdrop: exits 3, not a status meaning a verdict" \

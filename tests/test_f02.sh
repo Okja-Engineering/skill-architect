@@ -388,6 +388,9 @@ policy_case findings-string      '{"passed": true, "findings": "oops"}'         
 policy_case findings-null        '{"passed": true, "findings": null}'                      no
 policy_case element-number       '{"passed": true, "findings": [42]}'                      no
 policy_case element-null         '{"passed": true, "findings": [null]}'                    no
+# A conforming element beside a non-conforming one: the one arrangement
+# every row above leaves indistinguishable from "some element conforms".
+policy_case element-mixed        "{\"passed\": false, \"findings\": [$P_FAIL, 42]}"       no
 policy_case element-no-rule      '{"passed": false, "findings": [{"level": "fail", "message": "m"}]}'             no
 policy_case element-rule-number  '{"passed": false, "findings": [{"level": "fail", "rule": 123, "message": "m"}]}' no
 policy_case not-json             'not json at all'                                         no

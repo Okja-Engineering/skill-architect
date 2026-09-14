@@ -13,9 +13,14 @@
 # say — an unread spec or policy source leaves summary.passed false. Quality is
 # a score rather than a verdict, so quality_error leaves the score null and the
 # verdict alone.
-# The policy source's payload is proven to be the documented shape before any
-# of it is read, elements included, so "could not read it" covers every way it
-# can be misshapen rather than the one way this file happened to check for.
+# Every source is proven to carry the shape it is about to be read as — one
+# document, of the type being indexed, as far down as the read goes — before any
+# of it is read, so "could not read it" covers every way a source can be
+# misshapen rather than the one way this file happened to check for. "It parsed"
+# is not that proof: a number parses, and then indexing it raises inside the
+# merge below and there is no report at all, which is the one outcome this file
+# exists to prevent. The shape claimed differs per source, because what is read
+# out of each of them differs.
 # Rule IDs reach the report only by relay, from the policy source, except PL001
 # for a missing license, which this file checks inline and adds itself.
 # Exit codes: 0=report generated, 3=execution error.
@@ -57,11 +62,13 @@ require_tool jq false
 timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 # --- Source 1: skill-validator (spec + structure + content + contamination) ---
+# Read as `.passed`, `.errors` and `.warnings` of one document, so one document
+# that is an object is the whole of what has to hold before any of it is read.
 spec_json="null"
 spec_error=""
 if command -v skill-validator &>/dev/null; then
   spec_raw="$(skill-validator check -o json "$skill_dir" 2>&1)" || true
-  if echo "$spec_raw" | jq -e . >/dev/null 2>&1; then
+  if json_document_conforms "$spec_raw" 'type == "object"'; then
     spec_json="$spec_raw"
   else
     spec_error="$spec_raw"
@@ -71,11 +78,20 @@ else
 fi
 
 # --- Source 2: skillscore (7-dimension quality scoring) ---
+# Read two levels in, at `.overallScore.percentage` and `.overallScore.
+# letterGrade`, so the claim reaches two levels in: proving the top level and
+# then indexing `.overallScore` would be the same defect one level down. It
+# reaches no further than the read does — a source carrying no `overallScore` at
+# all is read, and leaves the score null, because null is what the read yields.
 quality_json="null"
 quality_error=""
 if command -v skillscore &>/dev/null; then
   quality_raw="$(skillscore "$skill_dir" --json 2>&1)" || true
-  if echo "$quality_raw" | jq -e . >/dev/null 2>&1; then
+  if json_document_conforms "$quality_raw" '
+       if type != "object" then false
+       elif (.overallScore | type) == "null" then true
+       else (.overallScore | type) == "object"
+       end'; then
     quality_json="$quality_raw"
   else
     quality_error="$quality_raw"
