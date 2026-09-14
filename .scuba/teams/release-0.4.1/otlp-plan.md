@@ -77,6 +77,9 @@ The `bool` second return is round 1's assimilated-value rule made mechanical: ab
 
 ### 2.4 Token accumulator — series-keyed, merged across batches
 
+> **Superseded 2026-09-13 17:05 (chief of staff override b):** unreadable/absent/0 temporality is REFUSED and counted, not treated as cumulative. The shipped code (`claude_code.go`, fixture `unreadable_temporality.json`) and mandate.md carry the override; the sentence below is retained for history only.
+
+
 **D7 — one accumulator for the whole file, keyed by series, reduced to `TokenCounts` at the end.** A per-`otlpSum` `map[string]float64` cannot express "last value by `timeUnixNano` per series across batches", which is exactly what cumulative temporality requires.
 
 ```go

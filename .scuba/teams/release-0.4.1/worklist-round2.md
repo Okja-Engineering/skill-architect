@@ -1,0 +1,47 @@
+# PR #2 release/0.4.1 — reconciled worklist, round 2 (final swarm on 82ae271)
+
+_Chief of staff, 2026-09-13 18:15. Four hunters (code, DoD conformance, docs truth, test discipline). External reviewer silent past the window; hunters are the gate. Verdict on 82ae271: NOT CLEAN. Merge hold stands._
+
+Clean under all four lenses: boundaries, version surfaces (except X3), commit hygiene, probe/capture agreement across all 28 fixtures, accumulator delta/cumulative arithmetic, collector config, route (a) capture (executed live by the docs hunter against Claude Code v2.1.221 with the README's receiver and env block; the adapter read the resulting NDJSON correctly), item-1 and item-19 RED/GREEN reproduced, all 13 gate-round-2 items closed in code, nine implementer departures judged justified.
+
+## Root 1 — leaf readers check decoding, not representability (code, REAL)
+Invariant: a leaf reader returns ok=false when a value exists but cannot be represented in the target domain; never a substituted default. A data point value reaches the accumulator only if it is a finite, non-negative number exactly representable as an int64 count.
+- **X1 (HIGH)** `otlp.go:452-457` `value()` and `:328-335` `jsonFloat64`: `asDouble` 1e300 / NaN / Inf / -Inf / 9.3e18 → `int64(math.Round(f))` garbage; reproduced arm64 = MaxInt64, amd64 = MinInt64 for the same file; negative `asDouble: -500` assimilated verbatim. Fix at the leaf; fixture + unit; the same export must give the same profile on both architectures (pin with a value ≥ 2^63).
+- **X2 (MEDIUM)** `otlp.go:419-441` `seriesKey`/`text()`: arrayValue, kvlistValue, bytesValue, and absent value all key as ""; `{}` and `{"stringValue":""}` collide; separator `\x01`/`\x00` unescaped so `{m:"a\x01b"}` == `{"m\x01a":"b"}`; `intValue` 5 vs "5" are two keys. Key on a canonical encoding (kind tag + canonical scalar text, escaped separators, or a length-prefixed encoding). Fixture: two cumulative series differing only by a non-string attribute must not merge (today 300 → 200).
+- **X4 (MEDIUM)** `types.go:93-94`: unread `input`/`output` serialize as 0 ("cache-only" export → `input:0, output:0, cache_read:20480`). Decision: unread counts are omitted; a read zero serializes as 0; JSON keys unchanged when present; spec states absence = unread. Go representation is yours (pointer fields or a read-set). Also `as_double_rounding.json` currently ships `output: 0` for an unreadable point.
+
+## Root 2 — reasons and classification wording (code, REAL)
+- **X5** `claude_code.go:103-106`: `{"resourceMetrics":[]}` → "not OTLP/JSON: no resourceMetrics or resourceLogs found". False; it is a well-formed export with no telemetry. Reason must match spec:213's definition of `unknown`.
+- **X6** `claude_code.go:288-291`: absent temporality → "declared an aggregationTemporality that is neither 1 nor 2". Nothing was declared. Word it for absent vs unreadable vs 0; add an absent-temporality fixture.
+- **X7** `otlp.go:218` vs `:231`: two byte-offset conventions (bytes-consumed+prelude vs raw batch start). One convention: 0-based file offset of the first byte the decoder could not accept; unexpected-EOF names the file length, not the batch start (`malformed.json` today says byte 0 for an 87-byte truncated file). Assert offsets numerically in tests, including a BOM/whitespace prelude case (T5).
+- **X8** plurals in six clause strings (`1 data points`, `1 events`).
+- **X9** `capture` exits 0 when every signal is `error` (missing/unreadable export). Decision: exit 2 when all readable signals are `error`; 0 otherwise; document in README and spec; test in cmd.
+- **X10 (LOW)** `types.go:65` `CaptureOpts.APIKey` unreferenced. Keep, with a comment "reserved for the Devin/Cursor adapters landing in 0.5.0"; do not delete.
+- **X11 (LOW)** `tokenAccumulator`/`tokenSeries` names bind harness vocabulary inside otlp.go; three copies of "failed to read OTel export file". Rename generically; one owner for the string.
+- **X12 (tracked, not 0.4.1)** whole-export slurp (~6x RSS). Record under found-not-fixed for 0.5.0.
+
+## Root 3 — tests pin the patch, not the invariant (tests, REAL)
+Invariant: every decided behaviour has at least one test that goes RED when it is inverted. Mutation-test your own fixes.
+- **T1 (HIGH)** no fixture with an unrecognised `token.usage` `type`; weakening `isTokenType` to `s != ""` is green while the CLI reports present-with-zeros. Add the fixture; assert the read==0 reason verbatim.
+- **T2** one-instance shapes: >1 resourceLogs/scopeLogs; body vs event.name disagreement (body must win); asDouble+asInt both present (asDouble wins); two untimed calls (file order among themselves); cumulative tie-breaks (equal time, timed-beats-untimed, both-untimed greater value); mixed temporality on one series (stays cumulative); non-string attributes in the series key (with X2); enum-name temporality strings; fractional `jsonInt64` rejected.
+- **T3** `TestProfileSchemaField` compares the constant to itself; assert the literal `skill-architect/profile/v1`. Assert `AdapterVersion == "0.4.1"` in Go and in `tests/test_skill.sh` beside the manifests; extend the manifest loop to `.claude-plugin/marketplace.json` (X3, a fifth version surface with no assert).
+- **T4** verbatim reason strings the spec quotes are asserted verbatim: the fallback reason (`claude_code.go:88`, spec:237) and the activation reason (`:200-202`, spec:232). `wantIn` substrings must not accept an inverted sentence.
+- **T5** byte offsets asserted numerically (with X7), including a prelude case.
+- **T6** `clampToInt` is vacuous on 64-bit; make the bound injectable for the unit or drop the "pinned by a unit" claim from plan/status. Prefer injectable.
+- **T7** `.github/workflows/ci.yml`: add `go vet ./...`, `gofmt -l` (fail on output), and `go test -race` to the Go step. Three lines; the diff adds 590 lines of parser and status claims these were run.
+- **T8 (LOW)** `TestCapabilityReport_ClaudeCode_EmptyOtelFile` name no longer matches its input (`no_envelope.json`) and skips two metrics for no reason.
+
+## Root 4 — prose beside the code, churn as change, stale PR body (docs, REAL)
+Invariant: every sentence inside this PR's diff is true of this PR's head, derived from the code, and a changelog bullet describes a change relative to the last released state (0.4.0 = 541af3e; 30f374c was never released).
+- **D1 (HIGH)** PR #2 body is the 7cb32e2 text: says found-not-fixed #3/#4 are unfixed (both fixed), narrates `AnySource` (deleted), says `--export-file` is ignored (refused), "17 test functions" (33/65), omits item 19 entirely (otlp.go, 28 fixtures, the `Success` semantic change, AdapterVersion bump, marketplace.json), stale cites. Rewrite from head via `gh pr edit`.
+- **D2** README:65 tool_calls predicate is a disjunction ("or"), not "plus". README:64 and spec:220 tokens condition omits temporality (must read as 1 or 2). README:73-76 and spec:214 claim every error reason names batch and byte; only malformed-JSON does (1 of 5 shapes) — scope the sentence. spec:61-63 "pair" → triples exist (`ErrorToolCallResult`, `ErrorTimingResult`). spec:105 describes otel+error divergence that cannot happen at head (contradicts AC9/AC11). spec:68 quotes a reason no code emits. spec:209 and :229 say the reason counts skipped points/outcomes; :212 (true) says a present result carries no reason — align to :212 (see X4 for what the profile can say). types.go:145 "Value is a pointer" over a slice. otlp.go:362 "in practice" for two shapes with no evidence. testdata README:47 (counted in the reason — false), :7-9 (single pretty-printed object — false for three files), :57 (byte 0).
+- **D3** Privacy: README:170-171 scrub list is a closed enumeration missing `user.id`, `user.account_id`, `user.account_uuid`, and `tool_input`/`tool_parameters` under the details flag. README:107-108: `OTEL_LOG_TOOL_DETAILS=1` widens what is exported (tool_input, untruncated full_command, full error text, verbatim prompt command names) and the adapter reads none of it. Decision: remove it from the recipe; mention it once in a privacy note as "not needed; widens the export".
+- **D4** CHANGELOG:25 says `AnySource` was removed — it never existed in a release; drop. CHANGELOG:32 / RELEASE_NOTES:14 say 0.4.0 shipped per-signal probe detection — it arrived in 30f374c (unreleased) and was rewritten here; reword as "since 0.4.0". CHANGELOG:69 / RELEASE_NOTES:39 skill-audit score is 94 (A) at head and was 94 at 3e2efd8. CHANGELOG:38 keep or reword; not blocking.
+- **D5** README Devin/Codex/Cursor install rows are unverified beside verified routes; mark "not verified in this release" (Devin's documented form is `./name`, and this release documents `.` vs `./` for Claude Code).
+- **D6** Route (a) was executed live in review: README:96-97/:161 are true; update status.md "Not claimed" to record the live capture (evidence: the docs hunter's run; keep the "no end-to-end collector run" statement).
+- **D7 (LOW)** status.md per-item table header says "at PR head" while cites are at 7cb32e2; fix the header or the cites.
+
+## Dispositions
+- REAL → bug-fixer, one integration pass: X1, X2, X4–X11, T1–T8, D1–D7.
+- Tracked open items (0.5.0), record in status found-not-fixed: X12 slurp; `profiler/cmd` 3.9% coverage; pinned CI installs; W4 rename.
+- INVALID: conformance's "route (a) exercised" suspicion (the research capture and the docs hunter's live run both confirm it).
