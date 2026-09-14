@@ -80,9 +80,13 @@ array, say) has no path inside it to name, and that reason names the batch alone
 malformed JSON has a single byte to point at, so only it carries an offset: the 0-based
 offset of the first byte the decoder could not accept, or the file's length when the file
 ended mid-object. If it parses but carries no telemetry, the signals come back
-`unknown` instead: JSON with neither a `resourceMetrics` nor a `resourceLogs` key is
-reported as not being an OTLP export rather than as a broken one, and an export that has
-the key with nothing under it gets a per-signal "none of mine is in here" reason.
+`unknown` instead. What makes a file an OTLP export is a *value* under `resourceMetrics`
+or `resourceLogs`, not the key: an empty list is a value, so `{"resourceMetrics":[]}` is
+an export of a session that emitted nothing and each signal gets its own "none of mine is
+in here" reason. A JSON `null` is not a value — ProtoJSON reads `null` as the field's
+default, so `{"resourceMetrics":null}` said nothing about metrics — and JSON carrying a
+value for neither field is reported as not being an OTLP export rather than as a broken
+one.
 
 A token count the export said nothing about is **absent** from the profile rather than
 reported as `0`: a cache-only export gives you `cache_read` and no `input` or `output`

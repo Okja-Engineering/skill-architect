@@ -108,8 +108,10 @@ func TestOTLP_TopLevelValueThatIsNotAnObject(t *testing.T) {
 // nothing about metrics, and a file that says nothing about either signal is
 // not an OTLP export — which is a different thing to tell its owner than "your
 // export is empty". The key written as an empty list *is* an export, of a
-// session that emitted nothing. Neither belongs in a reviewed fixture: the
-// whole difference is one word on one line.
+// session that emitted nothing; testdata/otlp/empty_envelope.json is that case
+// as a reviewed fixture. The null spelling gets no fixture of its own and is
+// pinned inline here beside it, because a second file differing from the first
+// by one word on one line is one a reviewer reads straight past as a duplicate.
 func TestOTLP_ANullEnvelopeIsNoEnvelope(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -355,7 +357,10 @@ func kindName(k valueKind) string {
 // count is where a decoded number becomes a count, and it is the one leaf
 // reader whose boundary a float64 cannot land on. There is no float64 for
 // MaxInt64: the literal 9223372036854775807 parses to exactly 2^63 — the first
-// value an int64 cannot hold — and so does every literal within 512 of it. The
+// value an int64 cannot hold — and so does every literal down to
+// 9223372036854775296, the midpoint between 2^63 and the largest float64 below
+// it, which the table below pins. Not "within 512 of MaxInt64": MaxInt64−512 is
+// 9223372036854775295, one below that midpoint, and it rounds down. The
 // accepted window has to close *below* the bound rather than at it, and no
 // fixture can show the difference: 9.3e+18 is refused either way, while a
 // capture carrying MaxInt64 would be assimilated as MaxInt64 on arm64 and
@@ -415,6 +420,10 @@ func TestOTLP_CountIsExactlyTheValuesAnInt64Holds(t *testing.T) {
 		// counter as one; asInt is the fallback a collector in the path leaves.
 		{"asDouble is read before asInt", `{"asDouble":1523,"asInt":"9"}`, valueRead, 1523},
 		{"asInt is read when asDouble is not a number", `{"asDouble":"tokens","asInt":"9"}`, valueRead, 9},
+		// NaN is refused by the float leaf rather than answered by it, so it
+		// does not shadow asInt the way an out-of-range finite double does.
+		// This is the case docs/profiler-spec.md had classified as a refusal.
+		{"asInt is read when asDouble is NaN", `{"asDouble":"NaN","asInt":"9"}`, valueRead, 9},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var p otlpDataPoint
