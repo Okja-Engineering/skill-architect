@@ -1720,3 +1720,240 @@ PR #2 still has **no review threads** — the `reviewThreads` GraphQL connection
 returns 0 nodes, and every round including this one arrived as an issue comment.
 Nothing to resolve or reply to. The PR body is updated to head `f7311f8`, with
 the diff totals refreshed (58 files, +5,092/-409).
+
+## History cleaned before merge (2026-09-13 ~21:40)
+
+All 47 commits on `release/0.4.1` carried a `Co-Authored-By: Claude` trailer. The user does not want AI co-authorship on this work. Stripped with `git filter-repo` in a fresh clone (the primary repo and both worktrees untouched), force-pushed with a lease.
+
+Head `f7311f8` -> `847b7dc`. Proof nothing but messages changed: `git diff f7311f8 847b7dc` is empty and the tree hash is `dcabe9ec` on both. 47 commits, subjects byte-identical, authorship entirely `imagineux`, zero trailers anywhere, CI success on the new head. `origin/main` never carried a trailer, so no published history was rewritten.
+
+Every SHA cited in the round 1-5 sections above refers to the pre-rewrite commits. They are accurate as a record of what happened; their post-rewrite equivalents differ only in the removed trailer line.
+
+Standing rule from here: no `Co-Authored-By` trailer for Claude or any AI agent, in any commit.
+
+## Round 6 — malformed tail
+
+Head `82ecdbb` → `f3c51a4`. Three commits, 9 files, +181/−8. One routed defect,
+fixed at the root; two further defects verified, reproduced, and recorded below
+for 0.5.0 with the accumulator untouched, as routed.
+
+| # | Finding | Disposition | Evidence |
+|---|---|---|---|
+| 1 | `readOTLP` accepts a malformed tail and silently drops real data (`profiler/otlp.go:189`, `dec.More()` as the loop condition) | REAL, fixed | Reproduced at `82ecdbb` through the built CLI (table below), then fixed in `1196254`. `dec.More()` returns false on a stray `}` or `]` without an error, so the walk exited cleanly and everything after the stray byte was ignored — including whole batches |
+| 2 | Resource and instrumentation-scope identity are not part of the series key | REAL, deferred to 0.5.0 | Reproduced at `82ecdbb` (table below). Shares one root with #3; documented as a known limit in `docs/profiler-spec.md`, `README.md`, `CHANGELOG.md`, `RELEASE_NOTES.md` and the PR body |
+| 3 | `startTimeUnixNano` is not read, so a cumulative counter reset inside one capture discards the earlier run | REAL, deferred to 0.5.0 | Reproduced at `82ecdbb` (table below). Same root as #2; same documentation |
+
+### Commits (3, oldest first)
+
+```
+47b557d  test(profiler): pin that a capture is read to its end or reported as a failure
+1196254  fix(profiler): end the batch walk at the end of the file, not at the first byte that cannot start one
+f3c51a4  docs: record the malformed-tail fix and the two series-key limits deferred to 0.5.0
+```
+
+The red repro is recorded first and the fix sits on top of it: `47b557d` is RED
+on its own, `1196254` turns it GREEN, and no test changed after the fix landed.
+
+### Verifying #1 before fixing it, at `82ecdbb`
+
+Binary built from `82ecdbb` into `$(mktemp -d)`; fixtures generated into a
+scratch dir from `testdata/otlp/multi_batch_delta.ndjson`'s first line (delta,
+100 input tokens) and a copy carrying 500. Run as `capture --harness claude_code
+--session s1 --snapshot abc --skill-dir /skills/x --otel-file <f>`:
+
+| input | exit | `tokens` |
+|---|---|---|
+| valid batch + `\n}` | 0 | `present {"input":100}` |
+| valid batch + `\n]` | 0 | `present {"input":100}` |
+| valid batch + `\n}\n` + a real batch carrying 500 | 0 | **`present {"input":100}`** — the 500 vanished |
+| two valid batches (control) | 0 | `present {"input":600}` |
+| valid batch + `\nnot json` (control) | 2 | `error`, `malformed JSON at byte 476 in batch 2: ...` |
+
+Row 3 is the defect at its worst: a complete measurement reported over a file
+two thirds of which was never read. It contradicts `docs/profiler-spec.md:221`
+("A parse failure is never swallowed: nothing from earlier batches is used") and
+breaks the invariant that a `present` result is a complete measurement — the one
+failure a profile in schema v1 has no field to disclose.
+
+### Root cause
+
+`encoding/json`'s `Decoder.More` reports whether another *element* follows, and
+its answer is "no" for `]`, `}` **and** the end of the stream alike — three
+different facts behind one boolean. Driving the batch walk on it made "this byte
+cannot begin a value" indistinguishable from "the file is over", so the walk
+stopped at the first such byte, returned the batches it had, and left the rest of
+the file unread and unmentioned. The failure is structural, not a missing case:
+no additional check inside the loop body could have told the two apart, because
+the loop was never entered for the stray byte.
+
+Decoding is what tells them apart, so decoding now ends the walk
+(`profiler/otlp.go:189-204`): `io.EOF` is the file ending *between* batches —
+`Decoder.Decode` returns it only when nothing but whitespace remains, which is
+exactly a clean end of a text file — and every other error goes through
+`decodeFailure` with the batch index and offset unchanged. One consequence in
+`decodeFailure`: `io.EOF` can no longer mean a truncated object, so that arm now
+owns `io.ErrUnexpectedEOF` alone instead of claiming both. Nothing else changed;
+the accumulator, the series key, metric iteration and `otlpDataPoint` were not
+touched.
+
+The invariant the tests pin, rather than the loop: **every byte of the capture is
+either consumed as a batch or reported as a failure; nothing between the last
+decoded batch and end-of-file is ignored.**
+
+### RED → GREEN → revert-RED
+
+RED, at `82ecdbb` with the new tests applied and `otlp.go` untouched:
+
+```
+--- FAIL: TestOTLP_ATailThatIsNotABatchFailsTheWholeFile
+    --- FAIL: .../a_stray_closing_brace
+        otlp_test.go:107: a file ending in "}" read as 1 batches and no failure; its tail was neither read nor reported
+    --- FAIL: .../a_stray_closing_brace_on_its_own_line
+    --- FAIL: .../a_stray_closing_bracket
+    --- FAIL: .../a_stray_closing_bracket_on_its_own_line
+--- FAIL: TestOTLP_ABatchAfterAnUnreadableTailIsNotReadPast
+    otlp_test.go:151: read 1 batches and no failure across a stray `}`; the batch behind it was dropped in silence
+--- FAIL: TestCaptureDeliversEverySignalProbeAdvertises/a_stray_closing_brace_between_two_batches
+    profiler_test.go:714: tokens: state = "present", want "error"
+```
+
+The other three subtests of the first function (a stray comma, text that is not
+JSON, a batch that ends mid-object) and all five of
+`TestOTLP_AFileEndsAtItsLastBatchOrTheWhitespaceAfterIt` passed at `82ecdbb` and
+still pass: they are the controls, and a fix that tightened the end-of-file rule
+into refusing trailing whitespace would have failed them.
+
+GREEN after `1196254`: all 8 + 1 + 5 + 1 pass, and `go test -race -count=1 ./...`
+is clean across both packages.
+
+Revert-RED: `profiler/` copied to a scratch dir, the loop alone reverted to
+`for batchIdx := 1; dec.More(); batchIdx++` with the tests left exactly as
+committed — the four stray-delimiter subtests, the dropped-batch test and the
+fixture case all go RED again with the same messages. The fix is not vacuous.
+
+### The five reproductions re-run after the fix
+
+Binary built from `f3c51a4` into `$(mktemp -d)`, same fixtures, same command:
+
+| input | exit | `tokens` |
+|---|---|---|
+| valid batch + `\n}` | 2 | `error`, `malformed JSON at byte 475 in batch 2: invalid character '}' looking for beginning of value. No data from earlier batches was used; ...` |
+| valid batch + `\n]` | 2 | `error`, `malformed JSON at byte 475 in batch 2: invalid character ']' looking for beginning of value. ...` |
+| valid batch + `\n}\n` + a real batch carrying 500 | 2 | `error`, byte 475, batch 2 — and the 500 appears nowhere in the profile |
+| two valid batches (control) | 0 | `present {"input":600}` |
+| valid batch + `\nnot json` (control) | 2 | `error`, `malformed JSON at byte 476 in batch 2: invalid character 'o' in literal null (expecting 'u'). ...` |
+
+Byte 475 is the stray byte itself: the first batch is 475 bytes including its
+newline, so the file's offsets 0–474 are the batch and 475 is the `}`. The batch
+index is 2 — the position the tail occupies — and the existing "No data from
+earlier batches was used; if the collector was stopped mid-write, delete the
+final partial line and retry" advice is true of it. The offset convention and
+the reason wording are unchanged.
+
+### Recount at `f3c51a4`
+
+```
+$ cd profiler
+$ go test -count=1 -v ./... | grep -c '^=== RUN   [^/]*$'      # functions
+58
+$ go test -count=1 -v ./... | grep '^=== RUN' | grep -c '/'    # subtests, all depths
+179
+$ go test -count=1 -v . | grep -c '^=== RUN   [^/]*$'          # profiler pkg
+53
+$ go test -count=1 -v ./cmd | grep -c '^=== RUN   [^/]*$'      # cmd pkg
+5
+$ ls testdata/otlp/*.json testdata/otlp/*.ndjson | wc -l       # fixtures
+39
+```
+
+Round 6 added 3 test functions, 13 subtests (7 + 5 + the new fixture's contract
+case) and 1 fixture. Nested-deeper subtests are unchanged at 27, so the split is
+152 direct + 27 nested. The baseline was re-counted from a clean `git archive` of
+`82ecdbb` before the change and came back 55 / 166, matching what the docs
+claimed.
+
+```
+$ cd profiler && go build ./... && go vet ./... && gofmt -l . && go test -race -count=1 ./...
+ok  	github.com/Okja-Engineering/skill-architect/profiler	1.386s
+ok  	github.com/Okja-Engineering/skill-architect/profiler/cmd	2.341s
+
+$ tests/test_skill.sh; tests/test_walk.sh; tests/test_f01.sh; tests/test_f02.sh
+25 passed, 0 failed   19 passed, 0 failed   32 passed, 0 failed   58 passed, 0 failed
+```
+
+Shell assertions **134**, unchanged. `CHANGELOG.md:45`, `RELEASE_NOTES.md:25`,
+the PR body and this file all now state 58 / 179 / 134 / 39.
+
+### Found, not fixed — round 6 (both 0.5.0, and one change)
+
+Both are REAL, both were reproduced at `82ecdbb` before being written down, and
+both are deliberately deferred: they share one root, and repairing that root
+means changing the accumulator, the series key, metric iteration and
+`otlpDataPoint`'s fields — all of which this round was scoped out of, and none of
+which belongs in a patch release.
+
+The shared root: **the accumulator models a time series as the data-point
+attribute set alone**, where the OTel data model identifies a series by resource
++ instrumentation scope + metric + attributes, and a *cumulative* series also
+needs `startTimeUnixNano` to mark its reset boundaries. Both defects need
+cumulative temporality to bite, which is off Claude Code's default — delta,
+`aggregationTemporality: 1`, observed live — so neither can be reached by a
+default-configured Claude Code capture today.
+
+1. **Resource and scope identity are not part of the series key, so a capture
+   aggregating several resources under cumulative temporality undercounts.**
+   Reproduced at `82ecdbb`: two `resourceMetrics` entries with distinct
+   `service.instance.id`, identical data-point attributes, cumulative, carrying
+   100 and 200 → `present {"input":200}`; the capture holds 300. The two
+   resources merge into one series, and cumulative means the latest point
+   supersedes rather than adds. The same pair under delta correctly gives 300,
+   which is the control that isolates the cause to the series key rather than to
+   the walk.
+
+2. **`startTimeUnixNano` is not read, so a cumulative counter reset inside one
+   capture discards the earlier run.** Reproduced at `82ecdbb`: one resource,
+   cumulative, `startTimeUnixNano` 1→10 carrying 100, then 11→20 carrying 20 →
+   `present {"input":20}`; the capture holds 120. A new start time is a new
+   series by the OTel data model, and the adapter cannot see it.
+
+Shipped as known limits, in the reader's words rather than the model's:
+`docs/profiler-spec.md` (in the series-key bullet, beside the sentences that
+already scope what the adapter does), `README.md` (one line each, beside the
+token-count paragraph), `CHANGELOG.md`, `RELEASE_NOTES.md`, and the PR body's
+known-limits list. Each says plainly that the capture undercounts, and that both
+are fixed together in 0.5.0.
+
+### Judgement calls, and one thing not done
+
+- **No bespoke reason for a stray delimiter.** The routed direction allowed one
+  if the raw syntax error read poorly. It does not: `malformed JSON at byte 475
+  in batch 2: invalid character '}' looking for beginning of value` names the
+  shape, the batch and the exact byte, quotes no Go type, and is the same wording
+  class the existing `not json` control already produces. Writing a
+  stray-delimiter-specific reason would need the offending byte plumbed out of
+  the decoder — `json.SyntaxError` carries an offset, not the byte — which is
+  more machinery than the evidence asks for. Declined, deliberately.
+- **`decodeFailure`'s `io.EOF` arm removed rather than left as a defensive
+  duplicate.** With the walk ending on `io.EOF`, that arm was unreachable, and
+  leaving two sites disagreeing about what `io.EOF` means is the seam this bug
+  lived in. `io.ErrUnexpectedEOF` — the truncated-object case, which
+  `malformed.json` and `truncated_final_line.ndjson` both pin — is untouched and
+  still names the file's length.
+- **One reviewable fixture, not seven.** `stray_close_then_batch.ndjson` is the
+  dangerous shape (a real batch behind a stray byte), so it earns a file a
+  reviewer can read and a row in `testdata/otlp/README.md`. The one-byte tail
+  variants are pinned inline in `otlp_test.go`, per the rule the fixture README
+  already states: a file differing from another by one byte is one a reviewer
+  reads straight past.
+- **The accumulator was not touched**, nor the series key, metric iteration, or
+  `otlpDataPoint`'s fields.
+
+### Threads
+
+PR #2 still has **no review threads** — the `reviewThreads` GraphQL connection
+returns 0 nodes, and this round arrived as an issue comment like the five before
+it. Nothing to resolve. A round-6 comment citing `1196254` and `f3c51a4` is
+posted on the PR, and the PR body is updated to head `f3c51a4` with the diff
+totals, the recount, the new fix section and the two new known limits.
+
+**The merge hold stands. Nothing was merged.**
