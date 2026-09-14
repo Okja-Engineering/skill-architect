@@ -332,6 +332,107 @@ run_present "$REPORT" tests/fixtures/f01/missing-script-ref
 assert "audit-report, policy source reports a path failure: PT001 reaches the report" "$(echo "$output" | jq -e '.policy.findings[] | select(.rule == "PT001")' >/dev/null 2>&1 && echo true || echo false)"
 assert "audit-report, policy source reports a path failure: policy_error is null" "$([[ "$(echo "$output" | jq -r '.policy_error')" == "null" ]] && echo true || echo false)"
 
+# --- The composer over the same shape-space as its child ---
+#
+# `audit-report.sh` is the other consumer of the documented
+# {"findings": [{level, rule, message}, ...], "passed": bool} payload, and it
+# had the same split as `check-structure.sh` did: it proved one thing about the
+# payload — that `.findings` is an array — and then read a great deal more,
+# selecting on `.level` and calling `startswith` on `.rule` of every element.
+# A payload that satisfied the partial check and broke the full assumption took
+# jq down inside the final merge, and the composer exited 5 with no report at
+# all: outside the {0, 3} its header documents, and the opposite of the
+# "the report still generates, and names the source it could not read" promise
+# the whole file is built around.
+#
+# So the composer is driven over the same shape-space, and the contract is the
+# same one in both places: the payload is the documented shape or it is a source
+# this report could not read.
+
+policy_stub_tree() {
+  local name="$1"
+  local payload="$2"
+  local dir="$mask_root/policy-$name"
+  if [[ ! -d "$dir" ]]; then
+    cp -R skills/skill-audit/scripts "$dir"
+    printf '%s' "$payload" > "$dir/stub-policy-payload"
+    printf '#!/usr/bin/env bash\ncat "$(dirname "$0")/stub-policy-payload"\nexit 0\n' \
+      > "$dir/check-structure.sh"
+    chmod +x "$dir/check-structure.sh"
+  fi
+  echo "$dir/audit-report.sh"
+}
+
+P_FAIL='{"level": "fail", "rule": "PT001", "message": "script/reference path not found: ./scripts/nope.sh"}'
+P_UNVER='{"level": "unverified", "rule": "PATH", "message": "dynamic/glob path: ./scripts/*"}'
+
+# name | payload | readable: yes = relayed as findings, no = named in policy_error
+policy_names=()
+policy_payloads=()
+policy_readable=()
+policy_case() {
+  policy_names+=("$1")
+  policy_payloads+=("$2")
+  policy_readable+=("$3")
+}
+
+policy_case conforming-pass      "{\"passed\": true, \"findings\": []}"                   yes
+policy_case conforming-fail      "{\"passed\": false, \"findings\": [$P_FAIL]}"            yes
+policy_case conforming-unverified "{\"passed\": true, \"findings\": [$P_UNVER]}"           yes
+policy_case top-number           '123'                                                     no
+policy_case top-error-object     '{"error": "x"}'                                          no
+policy_case passed-absent        '{"findings": []}'                                        no
+policy_case passed-string        '{"passed": "yes", "findings": []}'                       no
+policy_case findings-absent      '{"passed": true}'                                        no
+policy_case findings-string      '{"passed": true, "findings": "oops"}'                    no
+policy_case findings-null        '{"passed": true, "findings": null}'                      no
+policy_case element-number       '{"passed": true, "findings": [42]}'                      no
+policy_case element-null         '{"passed": true, "findings": [null]}'                    no
+policy_case element-no-rule      '{"passed": false, "findings": [{"level": "fail", "message": "m"}]}'             no
+policy_case element-rule-number  '{"passed": false, "findings": [{"level": "fail", "rule": 123, "message": "m"}]}' no
+policy_case not-json             'not json at all'                                         no
+policy_case empty                ''                                                        no
+policy_case trailing-garbage     '{"passed": true, "findings": []} {"x": 1}'               no
+
+for i in "${!policy_names[@]}"; do
+  pname="${policy_names[$i]}"
+  run_present "$(policy_stub_tree "$pname" "${policy_payloads[$i]}")" tests/fixtures/f01/valid-full
+
+  assert "audit-report, policy payload $pname: exits inside the documented set" \
+    "$([[ $code -eq 0 || $code -eq 3 ]] && echo true || echo false)"
+  assert "audit-report, policy payload $pname: a report is still produced" \
+    "$([[ $code -eq 0 ]] && echo "$output" | jq -e '.summary.passed != null' >/dev/null 2>&1 && echo true || echo false)"
+
+  if [[ "${policy_readable[$i]}" == "yes" ]]; then
+    assert "audit-report, policy payload $pname: is read, so no policy_error is raised" \
+      "$([[ "$(echo "$output" | jq -r '.policy_error' 2>/dev/null)" == "null" ]] && echo true || echo false)"
+  else
+    assert "audit-report, policy payload $pname: names the source it could not read" \
+      "$(echo "$output" | jq -e '.policy_error | test("check-structure")' >/dev/null 2>&1 && echo true || echo false)"
+    assert "audit-report, policy payload $pname: does not claim the skill passed over a source it could not read" \
+      "$([[ "$(echo "$output" | jq -r '.summary.passed' 2>/dev/null)" == "false" ]] && echo true || echo false)"
+  fi
+done
+
+# The policy source carries its own verdict, and the report's job is to compose
+# the verdicts it was given, not to re-derive them from the findings that came
+# with them. A source saying it failed, for a reason it did not enumerate as a
+# `level: "fail"` finding, is still a source saying it failed.
+run_present "$(policy_stub_tree says-failed '{"passed": false, "findings": []}')" tests/fixtures/f01/valid-full
+assert "audit-report, policy source says it failed: summary.passed is false" \
+  "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "false" ]] && echo true || echo false)"
+assert "audit-report, policy source says it failed: the source is read, not errored" \
+  "$([[ "$(echo "$output" | jq -r '.policy_error')" == "null" ]] && echo true || echo false)"
+
+# And a source saying it passed, over a skill whose license the report itself
+# checks, still fails on that: the composer's own PL001 is not the child's to
+# overrule.
+run_present "$(policy_stub_tree says-passed '{"passed": true, "findings": []}')" tests/fixtures/f01/no-license
+assert "audit-report, policy source passes but the license is missing: summary.passed is false" \
+  "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "false" ]] && echo true || echo false)"
+assert "audit-report, policy source passes but the license is missing: PL001 is in the findings" \
+  "$(echo "$output" | jq -e '.policy.findings[] | select(.rule == "PL001")' >/dev/null 2>&1 && echo true || echo false)"
+
 echo
 echo "$pass passed, $fail failed"
 if [[ "$fail" -gt 0 ]]; then

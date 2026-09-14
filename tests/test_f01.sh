@@ -205,9 +205,21 @@ PAYLOAD_DEP='{"findings": [{"level": "fail", "rule": "DEP001", "message": "requi
 
 # guard_broken_tree <mode>
 #
-# A copy of the scripts directory whose shared verdict-guard.sh is unusable:
-# absent, syntactically broken, or present but defining none of the guards.
+# A copy of the scripts directory whose shared verdict-guard.sh is unusable.
 # Echoes the path to the copied directory. Cached per mode.
+#
+#   missing      no guard file at all
+#   malformed    a file that will not parse
+#   empty        a file that parses and defines nothing
+#   half         a file defining one guard and not the others
+#   drop-<name>  the real guard with <name>'s definition cut out
+#
+# The last two matter because "the guard loaded" is not one proposition. A file
+# that stopped short — truncated, or edited down — defines some of its guards
+# and not others, and a caller that only confirmed the ones it happened to name
+# runs on until `command not found` at the point it needed the one that is gone.
+# A mode defining a proper subset is the only witness that tells a complete
+# check apart from a partial one.
 guard_broken_tree() {
   local mode="$1"
   local dir="$mask_root/guard-$mode"
@@ -217,6 +229,9 @@ guard_broken_tree() {
       missing)   rm -f "$dir/verdict-guard.sh" ;;
       malformed) printf 'if then fi (\n' > "$dir/verdict-guard.sh" ;;
       empty)     printf '# a guard that defines no guards\n' > "$dir/verdict-guard.sh" ;;
+      half)      printf 'cannot_compute() { echo "ERROR: $2" >&2; exit 3; }\n' > "$dir/verdict-guard.sh" ;;
+      drop-*)    sed "/^${mode#drop-}() {\$/,/^}\$/d" \
+                   skills/skill-audit/scripts/verdict-guard.sh > "$dir/verdict-guard.sh" ;;
     esac
   fi
   echo "$dir"
@@ -410,6 +425,148 @@ run_present "$(stub_paths_tree u42 42 "")" --json tests/fixtures/f01/valid-full
 assert "structure --json, child exits 42: DEP002 names the status" \
   "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP002") | select(.message | test("42"))' >/dev/null 2>&1 && echo true || echo false)"
 
+# --- check-structure.sh over shape-space, walked independently of status-space ---
+#
+# The table above varies which canned payload pairs with which exit status. It
+# never varies a payload's internal type-shape, and the predicate it was written
+# against answered two questions in one expression — "is this payload
+# well-formed?" and "what verdict does it carry?" — joined by an `and` that
+# short-circuits. So the well-formedness half ran only on the branch the verdict
+# took: a payload saying `"passed": false` had its findings elements checked by
+# nothing, a misshapen element reached the read-back below, and the script died
+# with jq's own exit 5 — outside the {0,1,2,3} this contract documents, with
+# nothing at all on the payload channel.
+#
+# Shape is therefore driven here as an axis of its own, crossed with status
+# rather than folded into it: every way the documented
+# {"findings": [{level, rule, message}, ...], "passed": bool} shape can break,
+# at both of `.passed`'s truth values wherever the break is below the top level,
+# each against both statuses a conforming child may exit with. Nothing below is
+# pinned to the arm that enforces the contract, only to the contract itself — a
+# child payload is the documented shape, agrees with itself, and agrees with the
+# status it arrived with, or it is a DEP002 no-verdict — and, over every row, no
+# child result of any kind may push this script outside its documented exit set.
+
+F_FAIL='{"level": "fail", "rule": "PT001", "message": "script/reference path not found: ./scripts/nope.sh"}'
+F_UNVER='{"level": "unverified", "rule": "PATH", "message": "dynamic/glob path: ./scripts/*"}'
+
+shape_names=()
+shape_payloads=()
+shape_at0=()
+shape_at1=()
+
+# shape_case <name> <payload> <outcome when the child exits 0> <outcome when it exits 1>
+#
+# pass = exit 0 and a passing payload; fail = exit 1 and a failing payload;
+# dep  = exit 3 and a DEP002 payload, this script's one way of saying it read no
+# verdict there. Each outcome is written out per row rather than derived, so the
+# table states the contract instead of restating the implementation.
+shape_case() {
+  shape_names+=("$1")
+  shape_payloads+=("$2")
+  shape_at0+=("$3")
+  shape_at1+=("$4")
+}
+
+# Conforming payloads. The shape holds, so the verdict is read — and then judged
+# against itself and against the status it arrived with.
+shape_case conforming-pass         "{\"passed\": true, \"findings\": []}"        pass dep
+shape_case conforming-fail         "{\"passed\": false, \"findings\": [$F_FAIL]}" dep  fail
+shape_case conforming-unverified   "{\"passed\": true, \"findings\": [$F_UNVER]}" pass dep
+shape_case conforming-false-empty  "{\"passed\": false, \"findings\": []}"       dep  fail
+# A payload that claims it passed while carrying a finding saying it failed is
+# self-contradictory whatever status it arrives with. Neither half can be
+# believed over the other, so no verdict is read from it at either status. This
+# is the row the previous table never carried: the assertion that claimed to pin
+# this invariant could not fire, because no row paired `passed: true` with a
+# `level: "fail"` finding.
+shape_case self-contradictory      "{\"passed\": true, \"findings\": [$F_FAIL]}"  dep  dep
+
+# The top level is not the documented object.
+shape_case top-number              '42'                                          dep dep
+shape_case top-string              '"a payload"'                                 dep dep
+shape_case top-array               '[{"passed": true, "findings": []}]'          dep dep
+
+# `.passed` is not a boolean. A truthy string here is what read as a computed
+# pass when only the findings half of the shape was proven.
+shape_case passed-string           '{"passed": "yes", "findings": []}'           dep dep
+shape_case passed-number           '{"passed": 1, "findings": []}'               dep dep
+shape_case passed-null             '{"passed": null, "findings": []}'            dep dep
+shape_case passed-absent           '{"findings": []}'                            dep dep
+
+# `.findings` is not an array.
+shape_case findings-string         '{"passed": true, "findings": "none"}'        dep dep
+shape_case findings-object         '{"passed": true, "findings": {}}'            dep dep
+shape_case findings-null           '{"passed": true, "findings": null}'          dep dep
+shape_case findings-absent         '{"passed": true}'                            dep dep
+
+# An element is not an object — at both truth values of `.passed`, because it
+# was `.passed` deciding whether these were looked at that let them through.
+shape_case element-number-true     '{"passed": true, "findings": [42]}'          dep dep
+shape_case element-number-false    '{"passed": false, "findings": [42]}'         dep dep
+shape_case element-string-true     '{"passed": true, "findings": ["x"]}'         dep dep
+shape_case element-string-false    '{"passed": false, "findings": ["x"]}'        dep dep
+shape_case element-array-true      '{"passed": true, "findings": [[1]]}'         dep dep
+shape_case element-array-false     '{"passed": false, "findings": [[1]]}'        dep dep
+shape_case element-null-true       '{"passed": true, "findings": [null]}'        dep dep
+shape_case element-null-false      '{"passed": false, "findings": [null]}'       dep dep
+
+# An element is an object, but not the documented one. Relaying these verbatim
+# is how a parent fabricates a finding: jq stringifies an absent field as the
+# four characters `null`, and the merged payload then carries
+# {"level": "null", "rule": "null", "message": "null"} as though the child had
+# said it.
+shape_case element-no-level-true   '{"passed": true, "findings": [{"rule": "PT001", "message": "m"}]}'                 dep dep
+shape_case element-no-level-false  '{"passed": false, "findings": [{"rule": "PT001", "message": "m"}]}'                dep dep
+shape_case element-level-number    '{"passed": false, "findings": [{"level": 1, "rule": "PT001", "message": "m"}]}'    dep dep
+shape_case element-no-rule         '{"passed": false, "findings": [{"level": "fail", "message": "m"}]}'                dep dep
+shape_case element-rule-number     '{"passed": false, "findings": [{"level": "fail", "rule": 123, "message": "m"}]}'   dep dep
+shape_case element-no-message      '{"passed": false, "findings": [{"level": "fail", "rule": "PT001"}]}'               dep dep
+
+# One document is the contract. A stream of them is not, whichever position the
+# conforming one holds in it.
+shape_case trailing-garbage        '{"passed": true, "findings": []} {"x": 1}'                             dep dep
+shape_case leading-garbage         '{"x": 1} {"passed": true, "findings": []}'                             dep dep
+shape_case two-payloads            '{"passed": true, "findings": []} {"passed": false, "findings": []}'    dep dep
+
+for i in "${!shape_names[@]}"; do
+  sname="${shape_names[$i]}"
+  for sstatus in 0 1; do
+    if [[ $sstatus -eq 0 ]]; then swant="${shape_at0[$i]}"; else swant="${shape_at1[$i]}"; fi
+    run_present "$(stub_paths_tree "shape-$sname-$sstatus" "$sstatus" "${shape_payloads[$i]}")" \
+      --json tests/fixtures/f01/valid-full
+
+    assert "structure --json, child payload $sname at exit $sstatus: exits inside the documented set" \
+      "$([[ $code -eq 0 || $code -eq 1 || $code -eq 2 || $code -eq 3 ]] && echo true || echo false)"
+    assert "structure --json, child payload $sname at exit $sstatus: stdout is a payload" \
+      "$(echo "$output" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
+    assert "structure --json, child payload $sname at exit $sstatus: never claims passed beside a fail finding" \
+      "$(echo "$output" | jq -e '.passed == true and ([.findings[] | select(.level == "fail")] | length > 0)' >/dev/null 2>&1 && echo false || echo true)"
+
+    sgot=false
+    case "$swant" in
+      pass)
+        if [[ $code -eq 0 && "$(echo "$output" | jq -r '.passed' 2>/dev/null)" == "true" ]]; then sgot=true; fi
+        assert "structure --json, child payload $sname at exit $sstatus: is a clean pass" "$sgot" ;;
+      fail)
+        if [[ $code -eq 1 && "$(echo "$output" | jq -r '.passed' 2>/dev/null)" == "false" ]]; then sgot=true; fi
+        assert "structure --json, child payload $sname at exit $sstatus: is a path failure" "$sgot" ;;
+      dep)
+        if [[ $code -eq 3 && "$(echo "$output" | jq -r '.passed' 2>/dev/null)" == "false" ]] \
+           && echo "$output" | jq -e '.findings[] | select(.rule == "DEP002")' >/dev/null 2>&1; then sgot=true; fi
+        assert "structure --json, child payload $sname at exit $sstatus: is a DEP002 no-verdict" "$sgot" ;;
+    esac
+  done
+done
+
+# A non-conforming element is refused, so nothing is fabricated out of it: the
+# merged findings never contain the string "null" standing in for a field the
+# child did not send.
+run_present "$(stub_paths_tree shape-element-null-false 1 '{"passed": false, "findings": [null]}')" \
+  --json tests/fixtures/f01/valid-full
+assert "structure --json, child sends a null finding: no finding is fabricated from it" \
+  "$(echo "$output" | jq -e '[.findings[] | select(.level == "null" or .rule == "null" or .message == "null")] | length == 0' >/dev/null 2>&1 && echo true || echo false)"
+
 # Text mode reads no payload, so only the exit-status enumeration applies — and
 # it applies identically: a child that reached no verdict leaves us with none.
 run_present "$(stub_paths_tree pass0 0 "$PAYLOAD_PASS")" tests/fixtures/f01/valid-full
@@ -432,7 +589,7 @@ assert "structure text, child exits 42: exits 3" "$([[ $code -eq 3 ]] && echo tr
 # computed. A missing guard must read as "no verdict reached", like every other
 # unmet precondition, in the exit status and on the payload channel alike.
 
-for gmode in missing malformed empty; do
+for gmode in missing malformed empty half; do
   gdir="$(guard_broken_tree "$gmode")"
   for gscript in check-structure.sh check-paths.sh check-frontmatter.sh audit-report.sh; do
     run_present "$gdir/$gscript" tests/fixtures/f01/valid-full
@@ -447,6 +604,26 @@ for gmode in missing malformed empty; do
   assert "check-structure.sh --json, guard $gmode: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
   assert "check-structure.sh --json, guard $gmode: never reports passed true" \
     "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+done
+
+# "The guard loaded" is not one proposition, and a caller that checks it by
+# naming the guards it happens to remember is checking a proper subset of it.
+# The `half` mode above defines one guard and not the rest; a caller confirming
+# only that one runs on to `command not found`, or — worse, and reproduced —
+# straight through to a clean exit 0 with no guard behind the verdict at all.
+# These modes take the real guard and cut out one definition each, so the check
+# has to cover the whole set rather than whichever names a caller listed. Adding
+# a guard to the shared file without adding it to that set fails here.
+
+for gdrop in json_string cannot_compute require_tool payload_is_conforming verdict_guard_ready; do
+  gdir="$(guard_broken_tree "drop-$gdrop")"
+  run_present "$gdir/check-structure.sh" --json tests/fixtures/f01/valid-full
+  assert "check-structure.sh --json, guard missing $gdrop: exits 3, not a status meaning a verdict" \
+    "$([[ $code -eq 3 ]] && echo true || echo false)"
+  assert "check-structure.sh --json, guard missing $gdrop: stdout carries no verdict" \
+    "$([[ -z "$output" ]] && echo true || echo false)"
+  assert "check-structure.sh --json, guard missing $gdrop: says on stderr that it could not load the guard" \
+    "$(echo "$errout" | grep -q 'verdict-guard.sh' && echo true || echo false)"
 done
 
 # --- The guard emits JSON, whatever the message holds ---
@@ -472,6 +649,34 @@ assert "guard: error field round-trips the message exactly" "$([[ "$(echo "$guar
 assert "guard: finding message round-trips the message exactly" "$([[ "$(echo "$guard_out" | jq -r '.findings[0].message' 2>/dev/null)" == "$guard_nasty" ]] && echo true || echo false)"
 assert "guard: finding carries the rule it was given" "$([[ "$(echo "$guard_out" | jq -r '.findings[0].rule' 2>/dev/null)" == "DEP002" ]] && echo true || echo false)"
 assert "guard: payload never reports passed true" "$(echo "$guard_out" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+
+# A message is bytes, not ASCII, and the encoder exists because a future caller
+# relaying a tool's own output would break the interpolated form it replaced.
+# Deciding what needs escaping by reading a character's ordinal is what broke
+# that: the shell yields a *negative* ordinal for any byte at or above 0x80, so
+# every byte of a multi-byte character took the control-character branch and
+# came back as ￿ffffffffffc3. The payload still parsed — the shape promise
+# held — while the message it carried no longer said what it was given, which is
+# the encoder's whole job. So the round-trip is asserted over text that is
+# actually multi-byte, not only over an ASCII nasty string.
+
+guard_utf8=$'caf\xc3\xa9 \xf0\x9f\x98\x80 na\xc3\xafve \xe2\x80\x94 \xc2\xa0 \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e'
+guard_utf8_out="$(bash -c 'source "$1"; cannot_compute DEP002 "$2" true' _ "$GUARD" "$guard_utf8" 2>/dev/null || true)"
+assert "guard: payload is valid JSON when the message is multi-byte UTF-8" \
+  "$(echo "$guard_utf8_out" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
+assert "guard: error field round-trips multi-byte UTF-8 exactly" \
+  "$([[ "$(echo "$guard_utf8_out" | jq -r '.error' 2>/dev/null)" == "$guard_utf8" ]] && echo true || echo false)"
+assert "guard: finding message round-trips multi-byte UTF-8 exactly" \
+  "$([[ "$(echo "$guard_utf8_out" | jq -r '.findings[0].message' 2>/dev/null)" == "$guard_utf8" ]] && echo true || echo false)"
+
+# Control characters and multi-byte characters in one message, straight through
+# the encoder: neither may be read as the other.
+guard_mixed=$'"\\ caf\xc3\xa9\ttab\nnewline\x01 \xf0\x9f\x98\x80 \x1f end'
+guard_mixed_out="$(bash -c 'source "$1"; json_string "$2"' _ "$GUARD" "$guard_mixed")"
+assert "guard: json_string emits valid JSON for control characters beside multi-byte ones" \
+  "$(echo "$guard_mixed_out" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
+assert "guard: json_string round-trips control characters beside multi-byte ones exactly" \
+  "$([[ "$(echo "$guard_mixed_out" | jq -r . 2>/dev/null)" == "$guard_mixed" ]] && echo true || echo false)"
 
 # The detail — a failed tool's own output — is the one thing the guard relays
 # verbatim, and it is exactly the thing that would corrupt the payload if it
@@ -521,6 +726,96 @@ assert "structure --json, no SKILL.md: diagnostic is on stderr" "$(echo "$errout
 run_present "$CHECK_FM" "$mask_root/no-such-skill"
 assert "frontmatter, no SKILL.md: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
 assert "frontmatter, no SKILL.md: diagnostic is on stderr" "$(echo "$errout" | grep -q 'SKILL.md not found' && echo true || echo false)"
+
+# --- Every rule ID these scripts can emit is registered, and no other ---
+#
+# A rule ID is consumer-visible: it reaches a `--json` consumer in the findings
+# array, and a consumer that meets one it has never been told about cannot tell
+# a policy failure from an execution error. SKILL.md's rule-ID line therefore
+# claims to be the whole set. That claim was false — `PATH`, the level-
+# `unverified` finding check-paths.sh raises for a reference built from a glob
+# or a variable, appeared in no document, no script header and no test, and
+# propagated through check-structure.sh --json into audit-report.sh's
+# policy.findings all the same.
+#
+# A sentence claiming to be exhaustive needs something that keeps it exhaustive,
+# so the two sides are compared here rather than restated: every rule literal
+# the scripts can emit, against every rule ID the registry line names. Either
+# side growing without the other fails.
+
+SCRIPTS_DIR=skills/skill-audit/scripts
+
+# rules_emitted_by <file...> — every rule literal these scripts can put in a
+# finding: the pipe-delimited entries they build, the IDs they hand the guard,
+# the objects they compose directly, and the IDs they print in text mode.
+rules_emitted_by() {
+  {
+    grep -hoE 'findings\+=\("[a-z]+\|[A-Z][A-Z0-9]*\|' "$@" | sed -E 's/.*\|([A-Z][A-Z0-9]*)\|/\1/'
+    grep -hoE 'cannot_compute [A-Z][A-Z0-9]*' "$@" | sed -E 's/.* //'
+    grep -hoE '"rule": "[A-Z][A-Z0-9]*"' "$@" | sed -E 's/.*"([A-Z][A-Z0-9]*)"/\1/'
+    grep -hoE '\[[A-Z][A-Z0-9]*\]' "$@" | tr -d '[]'
+  } | sort -u
+}
+
+emitted_rules="$(rules_emitted_by "$SCRIPTS_DIR"/*.sh)"
+registry_line="$(grep -m1 '^Exit codes:' skills/skill-audit/SKILL.md)"
+registered_rules="$(printf '%s\n' "$registry_line" \
+  | grep -oE '\b(PL[0-9]{3}|PT[0-9]{3}|DEP[0-9]{3}|PATH)\b' | sort -u)"
+
+assert "SKILL.md's rule-ID line names a rule the scripts emit" "$([[ -n "$registered_rules" ]] && echo true || echo false)"
+assert "SKILL.md registers every rule ID the scripts emit, and registers no ID none of them emits" \
+  "$([[ "$registered_rules" == "$emitted_rules" ]] && echo true || echo false)"
+if [[ "$registered_rules" != "$emitted_rules" ]]; then
+  echo "  emitted   : $(echo "$emitted_rules" | tr '\n' ' ')"
+  echo "  registered: $(echo "$registered_rules" | tr '\n' ' ')"
+fi
+
+# Each script's own header registers what that script emits, because a reader
+# reaches for the header of the script in front of them before the skill's docs.
+for rscript in "$SCRIPTS_DIR"/*.sh; do
+  rheader="$(awk 'NR > 1 && !/^#/ && NF { exit } { print }' "$rscript")"
+  for rrule in $(rules_emitted_by "$rscript"); do
+    assert "$(basename "$rscript") header registers $rrule, which it emits" \
+      "$(printf '%s\n' "$rheader" | grep -q "$rrule" && echo true || echo false)"
+  done
+done
+
+# The two IDs no test reached before, pinned where they are produced rather than
+# where they are written down.
+
+# PATH — level `unverified`, and not a failure: an unresolvable reference the
+# scripts decline to judge is not the same as one they judged and rejected.
+run_present "$CHECK_PATHS" --json tests/fixtures/f01/glob-paths
+assert "paths --json, a glob reference: emits rule PATH at level unverified" \
+  "$(echo "$output" | jq -e '.findings[] | select(.rule == "PATH" and .level == "unverified")' >/dev/null 2>&1 && echo true || echo false)"
+assert "paths --json, a glob reference: an unverified finding is not a failure (exit 0)" \
+  "$([[ $code -eq 0 && "$(echo "$output" | jq -r '.passed')" == "true" ]] && echo true || echo false)"
+
+run_present "$CHECK_PATHS" --json tests/fixtures/f01/dynamic-paths
+assert "paths --json, a variable reference: emits rule PATH at level unverified" \
+  "$(echo "$output" | jq -e '.findings[] | select(.rule == "PATH" and .level == "unverified")' >/dev/null 2>&1 && echo true || echo false)"
+
+run_present "$CHECK_STRUCT" --json tests/fixtures/f01/glob-paths
+assert "structure --json: relays the child's PATH finding at its own level" \
+  "$(echo "$output" | jq -e '.findings[] | select(.rule == "PATH" and .level == "unverified")' >/dev/null 2>&1 && echo true || echo false)"
+
+# PL003 — the line-count rule. No fixture was ever long enough to raise it.
+big_skill="$mask_root/over-the-line-limit"
+mkdir -p "$big_skill"
+{
+  printf -- '---\nname: over-the-line-limit\ndescription: A skill whose SKILL.md is longer than house policy allows.\nlicense: MIT\n---\n\n'
+  printf '## When to use\n\n- a list item\n\n```bash\necho hi\n```\n\n'
+  i=1
+  while [[ $i -le 520 ]]; do printf 'filler line %s\n' "$i"; i=$((i + 1)); done
+} > "$big_skill/SKILL.md"
+
+run_present "$CHECK_STRUCT" --json "$big_skill"
+assert "structure --json, SKILL.md over the line limit: emits PL003" \
+  "$(echo "$output" | jq -e '.findings[] | select(.rule == "PL003" and .level == "fail")' >/dev/null 2>&1 && echo true || echo false)"
+assert "structure --json, SKILL.md over the line limit: exits 2 (policy failure)" \
+  "$([[ $code -eq 2 ]] && echo true || echo false)"
+assert "structure --json, SKILL.md over the line limit: the message names the count and the limit" \
+  "$(echo "$output" | jq -e '.findings[] | select(.rule == "PL003") | select(.message | test("500"))' >/dev/null 2>&1 && echo true || echo false)"
 
 echo
 echo "$pass passed, $fail failed"
