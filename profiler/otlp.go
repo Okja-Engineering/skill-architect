@@ -135,11 +135,13 @@ type otlpAttrValue struct {
 // no separator at all are the same input to this reader.
 type otlpExport []otlpBatch
 
-// hasEnvelope reports whether any batch named an OTLP envelope — the key, not
-// entries under it. A file that parses as JSON but names neither
-// resourceMetrics nor resourceLogs is not a broken export; it is not an export.
-// One that names either and carries nothing under it is an export with no
-// telemetry in it, and each signal reports that for itself.
+// hasEnvelope reports whether any batch carried an OTLP envelope — a
+// resourceMetrics or resourceLogs value, not entries under it. A JSON null is
+// not a value: ProtoJSON reads null as the field default, so a batch written as
+// {"resourceMetrics":null} said nothing about metrics at all. A file that
+// parses as JSON but carries neither value is not a broken export; it is not an
+// export. One that carries either — an empty list included — is an export with
+// no telemetry in it, and each signal reports that for itself.
 func (e otlpExport) hasEnvelope() bool {
 	for _, b := range e {
 		if b.ResourceMetrics != nil || b.ResourceLogs != nil {
@@ -599,14 +601,17 @@ const maxCountPlusOne = float64(1 << 63)
 // re-serialise the same number as asInt, as digits or as a string.
 //
 // Round, never truncate: a float64 standing in for an integral count can land a
-// hair low, and 1522.7 tokens were 1523 tokens.
+// hair low, and 1522.7 tokens were 1523 tokens. The rule below is applied to
+// the rounded value, which is what makes a true zero that drifted to -0.4 the
+// zero it was, while -0.5 is a number the exporter meant to be negative.
 //
-// A count is never negative and never larger than an int64 holds. A value
-// outside that range decoded, but it is not a count, and Go leaves the
-// conversion of an out-of-range float to an integer type up to the
-// architecture: assimilating one made the same export read as MaxInt64 on arm64
-// and MinInt64 on amd64. It is refused here, where the caller can count it and
-// say so, rather than converted into whichever answer the machine gives.
+// A count is the rounded value when that is at least 0 and below 2^63 — the
+// bound maxCountPlusOne names. Anything else decoded, but it is not a count,
+// and Go leaves the conversion of an out-of-range float to an integer type up
+// to the architecture: assimilating one made the same export read as MaxInt64
+// on arm64 and MinInt64 on amd64. It is refused here, where the caller can
+// count it and say so, rather than converted into whichever answer the machine
+// gives.
 func (p otlpDataPoint) count() (int64, valueKind) {
 	if f, ok := jsonFloat64(p.AsDouble); ok {
 		r := math.Round(f)

@@ -103,6 +103,99 @@ func TestOTLP_TopLevelValueThatIsNotAnObject(t *testing.T) {
 	}
 }
 
+// An envelope key written as null carries no envelope. ProtoJSON reads null as
+// the field's default, so an exporter that wrote {"resourceMetrics":null} said
+// nothing about metrics, and a file that says nothing about either signal is
+// not an OTLP export — which is a different thing to tell its owner than "your
+// export is empty". The key written as an empty list *is* an export, of a
+// session that emitted nothing. Neither belongs in a reviewed fixture: the
+// whole difference is one word on one line.
+func TestOTLP_ANullEnvelopeIsNoEnvelope(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		wantIn  string
+		wantOut string
+	}{
+		{"null", `{"resourceMetrics":null,"resourceLogs":null}`,
+			"OTel export is not OTLP/JSON", "no claude_code.token.usage metric found"},
+		{"an empty list", `{"resourceMetrics":[]}`,
+			"no claude_code.token.usage metric found", "not OTLP/JSON"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, tc.content)}
+			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := profile.Tokens.RawMetricResult
+			if got.State != MetricUnknown {
+				t.Fatalf("state = %q (reason %q), want unknown — the file parsed", got.State, got.Reason)
+			}
+			if !strings.Contains(got.Reason, tc.wantIn) {
+				t.Errorf("reason = %q, want it to contain %q", got.Reason, tc.wantIn)
+			}
+			if strings.Contains(got.Reason, tc.wantOut) {
+				t.Errorf("reason = %q, want it not to contain %q", got.Reason, tc.wantOut)
+			}
+		})
+	}
+}
+
+// A value that does not fit the OTLP schema names the field path it was found
+// at — when the decoder has one to give. It does not for a batch whose own top
+// level is the wrong shape: there is no path *inside* the batch to name, so the
+// reason names the batch and stops. Both wordings are what a user reads, and
+// the docs describe both, so both are pinned here. Only the first batch of a
+// file gets the "top-level JSON value is an array" reading; every batch after
+// it reaches the decoder, which is why this takes two.
+func TestOTLP_ASchemaMismatchNamesAFieldPathOnlyWhenThereIsOne(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		wantIn  []string
+		wantOut []string
+	}{
+		{
+			name:    "a wrong type inside a batch names the path to it",
+			content: `{"resourceMetrics":[{"scopeMetrics":"nope"}]}`,
+			wantIn:  []string{"does not fit the OTLP schema", "value at resourceMetrics", "in batch 1"},
+		},
+		{
+			name:    "a batch that is not an object has no path to name",
+			content: "{\"resourceMetrics\":[]}\n[1,2]\n",
+			wantIn:  []string{"does not fit the OTLP schema", "a value in batch 2"},
+			wantOut: []string{"value at"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, tc.content)}
+			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := profile.Tokens.RawMetricResult
+			if got.State != MetricError {
+				t.Fatalf("state = %q (reason %q), want error", got.State, got.Reason)
+			}
+			for _, want := range tc.wantIn {
+				if !strings.Contains(got.Reason, want) {
+					t.Errorf("reason = %q, want it to contain %q", got.Reason, want)
+				}
+			}
+			for _, unwanted := range tc.wantOut {
+				if strings.Contains(got.Reason, unwanted) {
+					t.Errorf("reason = %q, want it not to contain %q", got.Reason, unwanted)
+				}
+			}
+			if strings.Contains(got.Reason, "profiler.") {
+				t.Errorf("reason = %q names a Go type; it is read by users, not by the compiler", got.Reason)
+			}
+		})
+	}
+}
+
 // The accumulator's totals are int64 and the profile's counts are int. Nothing
 // a real session costs comes near either limit, but a malformed export can, and
 // a wrapped total serialises as a negative number of tokens — an answer that is
@@ -242,6 +335,100 @@ func TestOTLP_IntegerLeafRefusesWhatIsNotADecimalInteger(t *testing.T) {
 		if !ok || got != tc.want {
 			t.Errorf("jsonInt64(%s) = %d, %v; want %d, true", tc.raw, got, ok, tc.want)
 		}
+	}
+}
+
+// kindName is for the failure messages below: valueKind is an unnamed int, and
+// "read as 1" tells the reader nothing about what went wrong.
+func kindName(k valueKind) string {
+	switch k {
+	case valueUnreadable:
+		return "valueUnreadable"
+	case valueNotACount:
+		return "valueNotACount"
+	case valueRead:
+		return "valueRead"
+	}
+	return "valueKind(" + strconv.Itoa(int(k)) + ")"
+}
+
+// count is where a decoded number becomes a count, and it is the one leaf
+// reader whose boundary a float64 cannot land on. There is no float64 for
+// MaxInt64: the literal 9223372036854775807 parses to exactly 2^63 — the first
+// value an int64 cannot hold — and so does every literal within 512 of it. The
+// accepted window has to close *below* the bound rather than at it, and no
+// fixture can show the difference: 9.3e+18 is refused either way, while a
+// capture carrying MaxInt64 would be assimilated as MaxInt64 on arm64 and
+// MinInt64 on amd64, the same export yielding two different profiles.
+//
+// The invariant, stated where it can fail: a value becomes a count if and only
+// if it is finite and 0 <= round(v) < 2^63, and the count it becomes is the
+// same number on every architecture. The three-way answer is part of it — a
+// number a count cannot be is a different defect, with a different thing to go
+// and look at in the capture, from a leaf that carried no number at all.
+func TestOTLP_CountIsExactlyTheValuesAnInt64Holds(t *testing.T) {
+	const (
+		// The largest float64 below 2^63: the spacing between neighbours up
+		// there is 1024, so this is the largest count an asDouble can carry.
+		maxCountAsDouble = 9223372036854774784
+		// Halfway between that neighbour and 2^63, which ties-to-even resolves
+		// *up* to 2^63. It is under MaxInt64 as written and still not a count.
+		roundsUpToTheBound = "9223372036854775296"
+	)
+	for _, tc := range []struct {
+		name  string
+		wire  string
+		want  valueKind
+		count int64
+	}{
+		// The boundary itself, in the spellings an exporter writes.
+		{"MaxInt64 as a bare double", `{"asDouble":9223372036854775807}`, valueNotACount, 0},
+		{"MaxInt64 as a quoted double", `{"asDouble":"9223372036854775807"}`, valueNotACount, 0},
+		{"2^63 itself", `{"asDouble":9223372036854775808}`, valueNotACount, 0},
+		{"a double that rounds up to 2^63", `{"asDouble":` + roundsUpToTheBound + `}`, valueNotACount, 0},
+		{"the largest double below 2^63", `{"asDouble":9223372036854774784}`, valueRead, maxCountAsDouble},
+		{"far past the bound", `{"asDouble":1e300}`, valueNotACount, 0},
+
+		// The rest of the accepted window.
+		{"a count in range", `{"asDouble":1523}`, valueRead, 1523},
+		{"a fractional count rounds, never truncates", `{"asDouble":1522.7}`, valueRead, 1523},
+		{"zero", `{"asDouble":0}`, valueRead, 0},
+		// Float drift on a true zero lands a hair under it. Rounding carries
+		// it back to the zero it was, and nothing below -0.5 is absorbed.
+		{"drift below zero rounds back to zero", `{"asDouble":-0.4}`, valueRead, 0},
+		{"a half count below zero rounds away from it", `{"asDouble":-0.5}`, valueNotACount, 0},
+		{"a negative count", `{"asDouble":-500}`, valueNotACount, 0},
+
+		// Not a number at all: refused by the float leaf, so the point carried
+		// no readable value rather than an unusable one.
+		{"NaN", `{"asDouble":"NaN"}`, valueUnreadable, 0},
+		{"infinity", `{"asDouble":"Infinity"}`, valueUnreadable, 0},
+		{"no value at all", `{}`, valueUnreadable, 0},
+
+		// asInt is read as an integer, so it holds exactly the value the float
+		// path cannot, and overflows out of the reader instead of past it.
+		{"MaxInt64 as an int", `{"asInt":"9223372036854775807"}`, valueRead, math.MaxInt64},
+		{"an int past MaxInt64", `{"asInt":"9223372036854775808"}`, valueUnreadable, 0},
+		{"a negative int", `{"asInt":"-1"}`, valueNotACount, 0},
+
+		// asDouble first, because Claude Code's own exporter writes every
+		// counter as one; asInt is the fallback a collector in the path leaves.
+		{"asDouble is read before asInt", `{"asDouble":1523,"asInt":"9"}`, valueRead, 1523},
+		{"asInt is read when asDouble is not a number", `{"asDouble":"tokens","asInt":"9"}`, valueRead, 9},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var p otlpDataPoint
+			if err := json.Unmarshal([]byte(tc.wire), &p); err != nil {
+				t.Fatalf("data point %s does not decode: %v", tc.wire, err)
+			}
+			got, kind := p.count()
+			if kind != tc.want {
+				t.Fatalf("count(%s) read as %s, want %s", tc.wire, kindName(kind), kindName(tc.want))
+			}
+			if got != tc.count {
+				t.Errorf("count(%s) = %d, want %d", tc.wire, got, tc.count)
+			}
+		})
 	}
 }
 

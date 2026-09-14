@@ -103,6 +103,63 @@ func TestCapture_ExitStatusSaysWhetherAnythingWasRead(t *testing.T) {
 	}
 }
 
+// The rule is "no signal was read AND at least one failed", and the second half
+// of it cannot be reached through the CLI. claude_code reads one export, so when
+// that export cannot be used every OTel signal errors together and the other two
+// are unknown: a capture that mixes a read signal with a failed one has never
+// existed, which makes `failed > 0` indistinguishable from `failed > 0 && read
+// == 0` in every end-to-end case above. The second adapter will mix them — that
+// is what a second source is — so the mixed profile is pinned here, over a
+// synthetic profile, where it can be reached at all.
+func TestCaptureExitCode_TwoMeansNothingWasReadAndSomethingFailed(t *testing.T) {
+	// In SignalStates order: tokens, tool calls, skill activation, timing,
+	// attribution.
+	profileWith := func(states ...profiler.MetricState) profiler.Profile {
+		t.Helper()
+		var p profiler.Profile
+		p.Tokens.State = states[0]
+		p.ToolCalls.State = states[1]
+		p.SkillActivation.State = states[2]
+		p.Timing.State = states[3]
+		p.Attribution.State = states[4]
+		if got := len(p.SignalStates()); got != len(states) {
+			t.Fatalf("the profile carries %d signals and these cases set %d — a new signal must be set here too",
+				got, len(states))
+		}
+		return p
+	}
+	const (
+		present = profiler.MetricPresent
+		unknown = profiler.MetricUnknown
+		failed  = profiler.MetricError
+	)
+	for _, tc := range []struct {
+		name  string
+		p     profiler.Profile
+		want  int
+		about string
+	}{
+		{"every signal failed", profileWith(failed, failed, failed, failed, failed), 2,
+			"nothing was read and the export was supplied"},
+		{"the OTel signals failed and the rest are unknown", profileWith(failed, failed, unknown, failed, unknown), 2,
+			"the shape a claude_code capture takes when its export cannot be used"},
+		{"one signal read, one failed", profileWith(present, failed, unknown, unknown, unknown), 0,
+			"the capture produced something, so a wrapper must not treat it as a dead run"},
+		{"one signal read, the rest unknown", profileWith(unknown, present, unknown, unknown, unknown), 0,
+			"a signal was read"},
+		{"every signal read", profileWith(present, present, present, present, present), 0,
+			"nothing failed"},
+		{"every signal unknown", profileWith(unknown, unknown, unknown, unknown, unknown), 0,
+			"no telemetry was configured — an answer about the session, not a failed run"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := captureExitCode(tc.p); got != tc.want {
+				t.Errorf("captureExitCode = %d, want %d — %s", got, tc.want, tc.about)
+			}
+		})
+	}
+}
+
 // Exit 2 has to mean one thing, or a script branching on it cannot act. The
 // flag package exits 2 of its own accord on an unrecognised flag, which would
 // put "you typed the flag wrong" and "the capture read nothing" behind the same
