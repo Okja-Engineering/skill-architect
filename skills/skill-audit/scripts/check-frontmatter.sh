@@ -4,15 +4,20 @@
 # We add: license requirement (house policy, not spec).
 # Exit codes: 0=pass, 1=spec failure, 2=policy failure, 3=execution error.
 # The policy failure carries rule ID PL001, a missing license.
-# Execution errors are reported as DEP001 (a required tool is absent) or
-# DEP002 (skill-validator returned a status this script cannot interpret), and
-# a verdict-guard.sh that would not load is a third, reported before either ID
-# exists to name it. This script has no --json mode, so all of them reach the
-# caller on stderr.
+# An execution error is one of three: a required tool is absent, which the
+# rule registry calls DEP001; skill-validator returned a status this script
+# cannot interpret, DEP002; or a verdict-guard.sh that would not load, reported
+# before either ID exists to name it.
+# Those IDs classify the exits; they are not printed. This script has no --json
+# mode, so an exit 3 carries the guard's message on stderr — "required tool not
+# found: skill-validator" — and no rule ID reaches the caller at all. The IDs
+# above say which class an exit belongs to, for a reader of the registry; a
+# consumer that needs to read one out of a payload wants --json, which only the
+# two scripts that have it can give.
 # Spec validation requires skill-validator.
 set -euo pipefail
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 verdict_guard="$script_dir/verdict-guard.sh"
 # The guard is the one dependency it cannot announce itself, so loading it is
 # checked before and after — see its header for why an unchecked source would

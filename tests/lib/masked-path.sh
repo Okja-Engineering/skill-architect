@@ -22,15 +22,38 @@ masked_path() {
     return 0
   fi
   mkdir -p "$farm"
-  local dirs d f b
+  local dirs d f b abs_d
   IFS=: read -ra dirs <<< "$PATH"
   for d in "${dirs[@]}"; do
     [[ -d "$d" ]] || continue
+    # A PATH entry may be relative, and the farm is not the cwd it is relative
+    # to. Resolving it here is what keeps the links below pointing at the binary
+    # they name.
+    #
+    # `CDPATH=` and `--` are what make the resolution the caller's environment's
+    # to decide and not CDPATH's. With CDPATH exported, `cd bin` searches it
+    # first, lands in some other `bin`, and *echoes the directory it chose* —
+    # which puts a second line into this value, so every `ln` below names a path
+    # that does not exist, the farm comes up empty, and the run the caller built
+    # it for dies at exit 127 having tested nothing. That vacuous 127 is the
+    # outcome this file exists to prevent; CDPATH is another door into it. `--`
+    # keeps an entry beginning with a dash from being read as an option.
+    abs_d="$(CDPATH= cd -P -- "$d" && pwd -P)" || continue
     for f in "$d"/*; do
       b="${f##*/}"
       [[ "$b" == "$hide" ]] && continue
-      [[ -e "$farm/$b" ]] && continue
-      ln -s "$f" "$farm/$b" 2>/dev/null || true
+      # A name already taken stays taken, whether or not what it points at
+      # resolves. `-e` alone is false for a broken symlink, so a dangling entry
+      # would fall through to the `ln` below, fail because the name exists, and
+      # be left shadowing the working binary a later PATH directory offers.
+      [[ -e "$farm/$b" || -L "$farm/$b" ]] && continue
+      # Nothing enters the farm under a name that does not resolve — which also
+      # drops the literal `dir/*` an empty directory's glob leaves behind. A
+      # broken link masks a second binary the caller never asked to hide, and
+      # turns the run it was built for into a vacuous exit 127 rather than a
+      # test of the script.
+      [[ -e "$abs_d/$b" ]] || continue
+      ln -s "$abs_d/$b" "$farm/$b" 2>/dev/null || true
     done
   done
   echo "$farm"

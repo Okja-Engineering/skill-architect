@@ -1,27 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/harness.sh"
+harness_init
 
-cd "$(dirname "$0")/.."
-
-pass=0
-fail=0
-
-assert() {
-  local label="$1"
-  shift
-  if "$@"; then
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $label"
-    fail=$((fail + 1))
-  fi
-}
-
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+tmp="$harness_scratch/walk"
+mkdir -p "$tmp"
 
 # The distributable unit is a plugin; skills live under skills/.
-test_plugin_layout() {
+#
+# The manifest read is a function rather than a bare heredoc followed by
+# `assert … true`, because a check on one line and the assertion that reports it
+# on the next are not the same statement: errexit kills the suite at the check
+# and the label is never printed, or bash 3.2 runs on and prints PASS. The
+# assertion has to *be* the check.
+plugin_points_to_canonical_skill_dir() {
   python3 - <<'PY'
 import json
 with open('.devin-plugin/plugin.json') as f:
@@ -29,7 +21,11 @@ with open('.devin-plugin/plugin.json') as f:
 assert manifest['name'] == 'skill-architect'
 assert manifest['skills'] == 'skills'
 PY
-  assert "plugin points to canonical skill directory" true
+}
+
+test_plugin_layout() {
+  assert "plugin points to canonical skill directory" \
+    quietly plugin_points_to_canonical_skill_dir
   assert "no skill contains a plugin manifest" test ! -e skills/skill-audit/.devin-plugin/plugin.json
   assert "no skill contains a plugin manifest" test ! -e skills/skill-rewrite/.devin-plugin/plugin.json
 }
@@ -66,7 +62,8 @@ EOF
 # Rewrite drafts a plan for the broken skill.
 test_rewrite_drafts_plan() {
   local bad="$tmp/bad-skill"
-  skills/skill-rewrite/scripts/draft-rewrite.sh -t "$bad" >/dev/null
+  assert "rewrite drafts a plan for a broken skill" \
+    quietly skills/skill-rewrite/scripts/draft-rewrite.sh -t "$bad"
   assert "rewrite draft created" test -f "$bad/REWRITE-DRAFT.md"
   assert "rewrite draft mentions When to use" grep -q "When to use" "$bad/REWRITE-DRAFT.md"
   assert "rewrite draft mentions Examples" grep -q "Examples" "$bad/REWRITE-DRAFT.md"
@@ -158,22 +155,22 @@ echo "example"
 EOF
   chmod +x "$fixed/scripts/example.sh"
 
-  skills/skill-audit/scripts/check-frontmatter.sh "$fixed" >/dev/null
-  assert "fixed skill frontmatter passes" true
-  skills/skill-audit/scripts/check-structure.sh "$fixed" >/dev/null
-  assert "fixed skill structure passes" true
+  assert "fixed skill frontmatter passes" \
+    quietly skills/skill-audit/scripts/check-frontmatter.sh "$fixed"
+  assert "fixed skill structure passes" \
+    quietly skills/skill-audit/scripts/check-structure.sh "$fixed"
 }
 
 # The skill-audit skill can audit the skill-rewrite skill and vice versa.
 test_skills_audit_each_other() {
-  skills/skill-audit/scripts/check-frontmatter.sh skills/skill-rewrite >/dev/null
-  assert "skill-audit can audit skill-rewrite frontmatter" true
-  skills/skill-audit/scripts/check-structure.sh skills/skill-rewrite >/dev/null
-  assert "skill-audit can audit skill-rewrite structure" true
-  skills/skill-audit/scripts/check-frontmatter.sh skills/skill-audit >/dev/null
-  assert "skill-audit can audit itself frontmatter" true
-  skills/skill-audit/scripts/check-structure.sh skills/skill-audit >/dev/null
-  assert "skill-audit can audit itself structure" true
+  assert "skill-audit can audit skill-rewrite frontmatter" \
+    quietly skills/skill-audit/scripts/check-frontmatter.sh skills/skill-rewrite
+  assert "skill-audit can audit skill-rewrite structure" \
+    quietly skills/skill-audit/scripts/check-structure.sh skills/skill-rewrite
+  assert "skill-audit can audit itself frontmatter" \
+    quietly skills/skill-audit/scripts/check-frontmatter.sh skills/skill-audit
+  assert "skill-audit can audit itself structure" \
+    quietly skills/skill-audit/scripts/check-structure.sh skills/skill-audit
 }
 
 test_plugin_layout
@@ -182,8 +179,4 @@ test_rewrite_drafts_plan
 test_fixes_improve_audit
 test_skills_audit_each_other
 
-echo
-echo "$pass passed, $fail failed"
-if [[ "$fail" -gt 0 ]]; then
-  exit 1
-fi
+harness_summary

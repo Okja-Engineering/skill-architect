@@ -1,22 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/harness.sh"
+harness_init
 
-cd "$(dirname "$0")/.."
-
-pass=0
-fail=0
-
-assert() {
-  local label="$1"
-  local condition="$2"
-  if [[ "$condition" == "true" ]]; then
-    echo "PASS: $label"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $label"
-    fail=$((fail + 1))
-  fi
-}
+# This suite's assertions compute their verdict inside a command substitution
+# and hand the harness the result, so they call `assert_value` rather than
+# `assert`. Both live in tests/lib/harness.sh and both count into the same
+# summary; what they do not have is a copy here to drift from it.
+#
+# The value shape is the weaker of the two, because once the call is made a
+# computed "true" and a written one are the same bytes. What holds it is
+# tests/lib/audit-suites.sh, which reads the call sites and refuses a verdict
+# with nothing in it to expand.
 
 # Locate tools.
 SV="skill-validator"
@@ -44,105 +39,105 @@ run_sv() {
 
 # valid-minimal: spec passes (name + description only)
 run_sv tests/fixtures/f01/valid-minimal
-assert "valid-minimal: spec passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "valid-minimal: spec passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
 
 # valid-full: spec passes
 run_sv tests/fixtures/f01/valid-full
-assert "valid-full: spec passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "valid-full: spec passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
 
 # malformed-yaml: spec fails
 run_sv tests/fixtures/f01/malformed-yaml
-assert "malformed-yaml: spec fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
-assert "malformed-yaml: reports YAML error" "$(echo "$output" | grep -qi 'yaml\|parse' && echo true || echo false)"
+assert_value "malformed-yaml: spec fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert_value "malformed-yaml: reports YAML error" "$(echo "$output" | grep -qi 'yaml\|parse' && echo true || echo false)"
 
 # invalid-name-format: spec fails
 run_sv tests/fixtures/f01/invalid-name-format
-assert "invalid-name-format: spec fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
-assert "invalid-name-format: reports name error" "$(echo "$output" | grep -qi 'name' && echo true || echo false)"
+assert_value "invalid-name-format: spec fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert_value "invalid-name-format: reports name error" "$(echo "$output" | grep -qi 'name' && echo true || echo false)"
 
 # name-mismatch: spec fails
 run_sv tests/fixtures/f01/name-mismatch
-assert "name-mismatch: spec fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
-assert "name-mismatch: reports match error" "$(echo "$output" | grep -qi 'match\|directory' && echo true || echo false)"
+assert_value "name-mismatch: spec fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert_value "name-mismatch: reports match error" "$(echo "$output" | grep -qi 'match\|directory' && echo true || echo false)"
 
 # missing-description: spec fails
 run_sv tests/fixtures/f01/missing-description
-assert "missing-description: spec fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
-assert "missing-description: reports description missing" "$(echo "$output" | grep -qi 'description' && echo true || echo false)"
+assert_value "missing-description: spec fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert_value "missing-description: reports description missing" "$(echo "$output" | grep -qi 'description' && echo true || echo false)"
 
 # description-too-long: spec fails
 run_sv tests/fixtures/f01/description-too-long
-assert "description-too-long: spec fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
-assert "description-too-long: reports exceeds limit" "$(echo "$output" | grep -qi 'exceeds\|1024' && echo true || echo false)"
+assert_value "description-too-long: spec fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert_value "description-too-long: reports exceeds limit" "$(echo "$output" | grep -qi 'exceeds\|1024' && echo true || echo false)"
 
 # no-license: spec passes (license is optional per spec)
 run_sv tests/fixtures/f01/no-license
-assert "no-license: spec passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "no-license: spec passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
 
 # --- Policy validation (check-frontmatter.sh for license, check-structure.sh for headings) ---
 
 # valid-minimal: policy fails (no license)
 run "$CHECK_FM" tests/fixtures/f01/valid-minimal
-assert "valid-minimal: frontmatter fails (exit 2)" "$([[ $code -eq 2 ]] && echo true || echo false)"
-assert "valid-minimal: reports PL001" "$(echo "$output" | grep -q 'PL001' && echo true || echo false)"
+assert_value "valid-minimal: frontmatter fails (exit 2)" "$([[ $code -eq 2 ]] && echo true || echo false)"
+assert_value "valid-minimal: reports PL001" "$(echo "$output" | grep -q 'PL001' && echo true || echo false)"
 
 # valid-full: frontmatter passes
 run "$CHECK_FM" tests/fixtures/f01/valid-full
-assert "valid-full: frontmatter passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "valid-full: frontmatter passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
 
 # no-license: spec passes, policy fails
 run "$CHECK_FM" tests/fixtures/f01/no-license
-assert "no-license: frontmatter fails (exit 2)" "$([[ $code -eq 2 ]] && echo true || echo false)"
-assert "no-license: reports PL001" "$(echo "$output" | grep -q 'PL001' && echo true || echo false)"
+assert_value "no-license: frontmatter fails (exit 2)" "$([[ $code -eq 2 ]] && echo true || echo false)"
+assert_value "no-license: reports PL001" "$(echo "$output" | grep -q 'PL001' && echo true || echo false)"
 
 # --- Structure/policy checks (check-structure.sh) ---
 
 # valid-full: structure passes
 run "$CHECK_STRUCT" tests/fixtures/f01/valid-full
-assert "valid-full: structure passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "valid-full: structure passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
 
 # --- Path validation (check-paths.sh) ---
 
 # missing-script-ref: path check fails
 run "$CHECK_PATHS" tests/fixtures/f01/missing-script-ref
-assert "missing-script-ref: paths fail (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
-assert "missing-script-ref: reports PT001" "$(echo "$output" | grep -q 'PT001' && echo true || echo false)"
+assert_value "missing-script-ref: paths fail (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert_value "missing-script-ref: reports PT001" "$(echo "$output" | grep -q 'PT001' && echo true || echo false)"
 
 # missing-markdown-ref: path check fails
 run "$CHECK_PATHS" tests/fixtures/f01/missing-markdown-ref
-assert "missing-markdown-ref: paths fail (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
-assert "missing-markdown-ref: reports PT002" "$(echo "$output" | grep -q 'PT002' && echo true || echo false)"
+assert_value "missing-markdown-ref: paths fail (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert_value "missing-markdown-ref: reports PT002" "$(echo "$output" | grep -q 'PT002' && echo true || echo false)"
 
 # dynamic-paths: path check reports unverified, not failure
 run "$CHECK_PATHS" tests/fixtures/f01/dynamic-paths
-assert "dynamic-paths: paths pass (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
-assert "dynamic-paths: reports UNVERIFIED" "$(echo "$output" | grep -qi 'unverified' && echo true || echo false)"
+assert_value "dynamic-paths: paths pass (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "dynamic-paths: reports UNVERIFIED" "$(echo "$output" | grep -qi 'unverified' && echo true || echo false)"
 
 # glob-paths: path check reports unverified, not failure
 run "$CHECK_PATHS" tests/fixtures/f01/glob-paths
-assert "glob-paths: paths pass (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
-assert "glob-paths: reports UNVERIFIED" "$(echo "$output" | grep -qi 'unverified' && echo true || echo false)"
+assert_value "glob-paths: paths pass (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "glob-paths: reports UNVERIFIED" "$(echo "$output" | grep -qi 'unverified' && echo true || echo false)"
 
 # --- Quality scoring (check-quality.sh / skillscore) ---
 
 # valid-full: quality scoring produces JSON with categories
 run "$CHECK_QUALITY" tests/fixtures/f01/valid-full
-assert "valid-full: quality scoring succeeds (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
-assert "valid-full: quality JSON has categories" "$(echo "$output" | grep -q 'categories' && echo true || echo false)"
+assert_value "valid-full: quality scoring succeeds (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "valid-full: quality JSON has categories" "$(echo "$output" | grep -q 'categories' && echo true || echo false)"
 
 # --- Bash entrypoint backward compatibility ---
 
 # check-frontmatter.sh on valid-full should pass
 run "$CHECK_FM" tests/fixtures/f01/valid-full
-assert "check-frontmatter.sh valid-full passes" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "check-frontmatter.sh valid-full passes" "$([[ $code -eq 0 ]] && echo true || echo false)"
 
 # check-frontmatter.sh on no-license should fail (policy)
 run "$CHECK_FM" tests/fixtures/f01/no-license
-assert "check-frontmatter.sh no-license fails" "$([[ $code -ne 0 ]] && echo true || echo false)"
+assert_value "check-frontmatter.sh no-license fails" "$([[ $code -ne 0 ]] && echo true || echo false)"
 
 # check-structure.sh on valid-full should pass
 run "$CHECK_STRUCT" tests/fixtures/f01/valid-full
-assert "check-structure.sh valid-full passes" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "check-structure.sh valid-full passes" "$([[ $code -eq 0 ]] && echo true || echo false)"
 
 # --- Dependency guards: never report a verdict a missing tool could not compute ---
 #
@@ -154,8 +149,8 @@ assert "check-structure.sh valid-full passes" "$([[ $code -eq 0 ]] && echo true 
 # Masked PATHs are symlink farms of the real PATH minus one binary. Nothing is
 # deleted, moved or uninstalled.
 
-mask_root="$(mktemp -d)"
-trap 'rm -rf "$mask_root"' EXIT
+mask_root="$harness_scratch/mask"
+mkdir -p "$mask_root"
 
 # masked_path / run_on_path / run_masked / run_present live in the shared
 # harness, because test_f02.sh needs the same masking for audit-report.sh.
@@ -244,81 +239,81 @@ PATH_FAULT=tests/fixtures/f01/path-fault-only
 # S1 (a policy finding never round-trips through jq), and they would still pass.
 
 run_present "$CHECK_STRUCT" --json "$PATH_FAULT"
-assert "path-fault-only: structure --json fails with jq present (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
-assert "path-fault-only: structure --json reports passed false with jq present" "$([[ "$(echo "$output" | jq -r '.passed')" == "false" ]] && echo true || echo false)"
-assert "path-fault-only: has a PT001 finding" "$(echo "$output" | jq -e '.findings[] | select(.rule == "PT001")' >/dev/null 2>&1 && echo true || echo false)"
-assert "path-fault-only: has no PL policy finding (keeps S1 under test)" "$([[ "$(echo "$output" | jq -r '[.findings[] | select(.rule | startswith("PL"))] | length')" -eq 0 ]] && echo true || echo false)"
+assert_value "path-fault-only: structure --json fails with jq present (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert_value "path-fault-only: structure --json reports passed false with jq present" "$([[ "$(echo "$output" | jq -r '.passed')" == "false" ]] && echo true || echo false)"
+assert_value "path-fault-only: has a PT001 finding" "$(echo "$output" | jq -e '.findings[] | select(.rule == "PT001")' >/dev/null 2>&1 && echo true || echo false)"
+assert_value "path-fault-only: has no PL policy finding (keeps S1 under test)" "$([[ "$(echo "$output" | jq -r '[.findings[] | select(.rule | startswith("PL"))] | length')" -eq 0 ]] && echo true || echo false)"
 
 # --- S1: check-structure.sh --json must not pass a failing skill when jq is gone ---
 
 run_masked jq "$CHECK_STRUCT" --json "$PATH_FAULT"
-assert "S1 structure --json, jq masked: exits non-zero" "$([[ $code -ne 0 ]] && echo true || echo false)"
-assert "S1 structure --json, jq masked: exits 3 (execution error)" "$([[ $code -eq 3 ]] && echo true || echo false)"
-assert "S1 structure --json, jq masked: names the missing tool" "$(echo "$errout" | grep -q 'jq' && echo true || echo false)"
-assert "S1 structure --json, jq masked: never reports passed true" "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
-assert "S1 structure --json, jq masked: payload is valid JSON" "$(echo "$output" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
-assert "S1 structure --json, jq masked: payload passed is false" "$([[ "$(echo "$output" | jq -r '.passed')" == "false" ]] && echo true || echo false)"
-assert "S1 structure --json, jq masked: payload carries DEP001 naming jq" "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP001") | select(.message | test("jq"))' >/dev/null 2>&1 && echo true || echo false)"
+assert_value "S1 structure --json, jq masked: exits non-zero" "$([[ $code -ne 0 ]] && echo true || echo false)"
+assert_value "S1 structure --json, jq masked: exits 3 (execution error)" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "S1 structure --json, jq masked: names the missing tool" "$(echo "$errout" | grep -q 'jq' && echo true || echo false)"
+assert_value "S1 structure --json, jq masked: never reports passed true" "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+assert_value "S1 structure --json, jq masked: payload is valid JSON" "$(echo "$output" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
+assert_value "S1 structure --json, jq masked: payload passed is false" "$([[ "$(echo "$output" | jq -r '.passed')" == "false" ]] && echo true || echo false)"
+assert_value "S1 structure --json, jq masked: payload carries DEP001 naming jq" "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP001") | select(.message | test("jq"))' >/dev/null 2>&1 && echo true || echo false)"
 
 # --- --json requires jq unconditionally, including on a clean skill ---
 # The requirement is a stated precondition, not a function of what the skill
 # happens to contain; a data-dependent dependency is what let S1 hide.
 
 run_masked jq "$CHECK_STRUCT" --json tests/fixtures/f01/valid-full
-assert "structure --json, jq masked, clean skill: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
-assert "structure --json, jq masked, clean skill: names the missing tool" "$(echo "$errout" | grep -q 'jq' && echo true || echo false)"
-assert "structure --json, jq masked, clean skill: never reports passed true" "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+assert_value "structure --json, jq masked, clean skill: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "structure --json, jq masked, clean skill: names the missing tool" "$(echo "$errout" | grep -q 'jq' && echo true || echo false)"
+assert_value "structure --json, jq masked, clean skill: never reports passed true" "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
 
 run_masked jq "$CHECK_PATHS" --json tests/fixtures/f01/valid-full
-assert "paths --json, jq masked, clean skill: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
-assert "paths --json, jq masked, clean skill: names the missing tool" "$(echo "$errout" | grep -q 'jq' && echo true || echo false)"
-assert "paths --json, jq masked, clean skill: never reports passed true" "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+assert_value "paths --json, jq masked, clean skill: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "paths --json, jq masked, clean skill: names the missing tool" "$(echo "$errout" | grep -q 'jq' && echo true || echo false)"
+assert_value "paths --json, jq masked, clean skill: never reports passed true" "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
 
 # --- check-paths.sh --json under the same missing tool ---
 
 run_masked jq "$CHECK_PATHS" --json "$PATH_FAULT"
-assert "paths --json, jq masked: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
-assert "paths --json, jq masked: names the missing tool" "$(echo "$errout" | grep -q 'jq' && echo true || echo false)"
-assert "paths --json, jq masked: payload passed is false" "$([[ "$(echo "$output" | jq -r '.passed')" == "false" ]] && echo true || echo false)"
-assert "paths --json, jq masked: payload carries DEP001 naming jq" "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP001") | select(.message | test("jq"))' >/dev/null 2>&1 && echo true || echo false)"
+assert_value "paths --json, jq masked: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "paths --json, jq masked: names the missing tool" "$(echo "$errout" | grep -q 'jq' && echo true || echo false)"
+assert_value "paths --json, jq masked: payload passed is false" "$([[ "$(echo "$output" | jq -r '.passed')" == "false" ]] && echo true || echo false)"
+assert_value "paths --json, jq masked: payload carries DEP001 naming jq" "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP001") | select(.message | test("jq"))' >/dev/null 2>&1 && echo true || echo false)"
 
 # --- Text mode needs no jq and is unaffected by its absence ---
 
 run_masked jq "$CHECK_PATHS" "$PATH_FAULT"
-assert "paths text, jq masked: still fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
-assert "paths text, jq masked: still reports PT001" "$(echo "$output" | grep -q 'PT001' && echo true || echo false)"
+assert_value "paths text, jq masked: still fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert_value "paths text, jq masked: still reports PT001" "$(echo "$output" | grep -q 'PT001' && echo true || echo false)"
 
 run_masked jq "$CHECK_STRUCT" "$PATH_FAULT"
-assert "structure text, jq masked: still fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
-assert "structure text, jq masked: still reports PT001" "$(echo "$output" | grep -q 'PT001' && echo true || echo false)"
+assert_value "structure text, jq masked: still fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert_value "structure text, jq masked: still reports PT001" "$(echo "$output" | grep -q 'PT001' && echo true || echo false)"
 
 run_masked jq "$CHECK_PATHS" tests/fixtures/f01/valid-full
-assert "paths text, jq masked, clean skill: still passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "paths text, jq masked, clean skill: still passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
 
 run_masked jq "$CHECK_STRUCT" tests/fixtures/f01/valid-full
-assert "structure text, jq masked, clean skill: still passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "structure text, jq masked, clean skill: still passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
 
 # --- S2: check-frontmatter.sh must not pass when skill-validator is gone ---
 
 run_masked skill-validator "$CHECK_FM" tests/fixtures/f01/valid-full
-assert "S2 frontmatter, validator masked: exits non-zero" "$([[ $code -ne 0 ]] && echo true || echo false)"
-assert "S2 frontmatter, validator masked: exits 3 (execution error)" "$([[ $code -eq 3 ]] && echo true || echo false)"
-assert "S2 frontmatter, validator masked: names the missing tool" "$(echo "$errout" | grep -q 'skill-validator' && echo true || echo false)"
-assert "S2 frontmatter, validator masked: never prints frontmatter OK" "$(echo "$output" | grep -q 'frontmatter OK' && echo false || echo true)"
+assert_value "S2 frontmatter, validator masked: exits non-zero" "$([[ $code -ne 0 ]] && echo true || echo false)"
+assert_value "S2 frontmatter, validator masked: exits 3 (execution error)" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "S2 frontmatter, validator masked: names the missing tool" "$(echo "$errout" | grep -q 'skill-validator' && echo true || echo false)"
+assert_value "S2 frontmatter, validator masked: never prints frontmatter OK" "$(echo "$output" | grep -q 'frontmatter OK' && echo false || echo true)"
 
 # A missing validator must not reclassify a spec failure as a policy failure.
 run_masked skill-validator "$CHECK_FM" tests/fixtures/f01/malformed-yaml
-assert "S2 frontmatter, validator masked, broken spec: exits 3 not 2" "$([[ $code -eq 3 ]] && echo true || echo false)"
-assert "S2 frontmatter, validator masked, broken spec: does not report PL001" "$(echo "$output" | grep -q 'PL001' && echo false || echo true)"
+assert_value "S2 frontmatter, validator masked, broken spec: exits 3 not 2" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "S2 frontmatter, validator masked, broken spec: does not report PL001" "$(echo "$output" | grep -q 'PL001' && echo false || echo true)"
 
 # Controls: with the validator present, behaviour is unchanged.
 run_present "$CHECK_FM" tests/fixtures/f01/valid-full
-assert "frontmatter, validator present: valid-full passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
-assert "frontmatter, validator present: valid-full prints frontmatter OK" "$(echo "$output" | grep -q 'frontmatter OK' && echo true || echo false)"
+assert_value "frontmatter, validator present: valid-full passes (exit 0)" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "frontmatter, validator present: valid-full prints frontmatter OK" "$(echo "$output" | grep -q 'frontmatter OK' && echo true || echo false)"
 
 run_present "$CHECK_FM" tests/fixtures/f01/malformed-yaml
-assert "frontmatter, validator present: malformed-yaml fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
-assert "frontmatter, validator present: malformed-yaml reports SPEC FAIL" "$(echo "$output" | grep -q 'SPEC FAIL' && echo true || echo false)"
+assert_value "frontmatter, validator present: malformed-yaml fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert_value "frontmatter, validator present: malformed-yaml reports SPEC FAIL" "$(echo "$output" | grep -q 'SPEC FAIL' && echo true || echo false)"
 
 # --- Every enumeration the guard introduced, walked at both edges ---
 #
@@ -343,13 +338,13 @@ for spec in "0:0:ok" "1:1:no" "2:0:ok" "3:3:no" "4:3:no" "42:3:no"; do
   vwant="${vrest%%:*}"
   vverdict="${vrest#*:}"
   run_on_path "$(stub_tool_path skill-validator "$vcode")" "$CHECK_FM" tests/fixtures/f01/valid-full
-  assert "frontmatter, validator exits $vcode: exits $vwant" \
+  assert_value "frontmatter, validator exits $vcode: exits $vwant" \
     "$([[ $code -eq $vwant ]] && echo true || echo false)"
   if [[ "$vverdict" == "ok" ]]; then
-    assert "frontmatter, validator exits $vcode: prints frontmatter OK" \
+    assert_value "frontmatter, validator exits $vcode: prints frontmatter OK" \
       "$(echo "$output" | grep -q 'frontmatter OK' && echo true || echo false)"
   else
-    assert "frontmatter, validator exits $vcode: never prints frontmatter OK" \
+    assert_value "frontmatter, validator exits $vcode: never prints frontmatter OK" \
       "$(echo "$output" | grep -q 'frontmatter OK' && echo false || echo true)"
   fi
 done
@@ -357,11 +352,11 @@ done
 # The unenumerated arm still names what it could not interpret, and the
 # enumerated exit-3 arm names the tool that failed to run.
 run_on_path "$(stub_tool_path skill-validator 42)" "$CHECK_FM" tests/fixtures/f01/valid-full
-assert "frontmatter, validator exits 42: names the tool and the status" \
+assert_value "frontmatter, validator exits 42: names the tool and the status" \
   "$(echo "$errout" | grep -q 'skill-validator' && echo "$errout" | grep -q '42' && echo true || echo false)"
 
 run_on_path "$(stub_tool_path skill-validator 3)" "$CHECK_FM" tests/fixtures/f01/valid-full
-assert "frontmatter, validator exits 3: names the tool that failed to run" \
+assert_value "frontmatter, validator exits 3: names the tool that failed to run" \
   "$(echo "$errout" | grep -q 'skill-validator' && echo true || echo false)"
 
 # --- check-structure.sh over every child result it can be handed ---
@@ -402,27 +397,27 @@ for i in "${!child_names[@]}"; do
   why="${child_why[$i]}"
   run_present "$(stub_paths_tree "${child_names[$i]}" "${child_codes[$i]}" "${child_payloads[$i]}")" \
     --json tests/fixtures/f01/valid-full
-  assert "structure --json, child gives $why: exits ${want_exit[$i]}" \
+  assert_value "structure --json, child gives $why: exits ${want_exit[$i]}" \
     "$([[ $code -eq ${want_exit[$i]} ]] && echo true || echo false)"
-  assert "structure --json, child gives $why: stdout is a payload" \
+  assert_value "structure --json, child gives $why: stdout is a payload" \
     "$(echo "$output" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
-  assert "structure --json, child gives $why: payload passed is ${want_passed[$i]}" \
+  assert_value "structure --json, child gives $why: payload passed is ${want_passed[$i]}" \
     "$([[ "$(echo "$output" | jq -r '.passed' 2>/dev/null)" == "${want_passed[$i]}" ]] && echo true || echo false)"
   if [[ -n "${want_rule[$i]}" ]]; then
-    assert "structure --json, child gives $why: payload carries ${want_rule[$i]}" \
+    assert_value "structure --json, child gives $why: payload carries ${want_rule[$i]}" \
       "$(echo "$output" | jq -e --arg r "${want_rule[$i]}" '.findings[] | select(.rule == $r)' >/dev/null 2>&1 && echo true || echo false)"
   fi
   # The invariant every arm above exists to hold, pinned over the whole boundary
   # so it survives any rework of the arms that currently enforce it: a payload
   # may never claim it passed while carrying a finding that says it failed.
-  assert "structure --json, child gives $why: never claims passed beside a fail finding" \
+  assert_value "structure --json, child gives $why: never claims passed beside a fail finding" \
     "$(echo "$output" | jq -e '.passed == true and ([.findings[] | select(.level == "fail")] | length > 0)' >/dev/null 2>&1 && echo false || echo true)"
 done
 
 # The DEP002 message names the status it could not interpret, so a consumer can
 # tell which child result it is looking at.
 run_present "$(stub_paths_tree u42 42 "")" --json tests/fixtures/f01/valid-full
-assert "structure --json, child exits 42: DEP002 names the status" \
+assert_value "structure --json, child exits 42: DEP002 names the status" \
   "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP002") | select(.message | test("42"))' >/dev/null 2>&1 && echo true || echo false)"
 
 # --- check-structure.sh over shape-space, walked independently of status-space ---
@@ -546,25 +541,25 @@ for i in "${!shape_names[@]}"; do
     run_present "$(stub_paths_tree "shape-$sname-$sstatus" "$sstatus" "${shape_payloads[$i]}")" \
       --json tests/fixtures/f01/valid-full
 
-    assert "structure --json, child payload $sname at exit $sstatus: exits inside the documented set" \
+    assert_value "structure --json, child payload $sname at exit $sstatus: exits inside the documented set" \
       "$([[ $code -eq 0 || $code -eq 1 || $code -eq 2 || $code -eq 3 ]] && echo true || echo false)"
-    assert "structure --json, child payload $sname at exit $sstatus: stdout is a payload" \
+    assert_value "structure --json, child payload $sname at exit $sstatus: stdout is a payload" \
       "$(echo "$output" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
-    assert "structure --json, child payload $sname at exit $sstatus: never claims passed beside a fail finding" \
+    assert_value "structure --json, child payload $sname at exit $sstatus: never claims passed beside a fail finding" \
       "$(echo "$output" | jq -e '.passed == true and ([.findings[] | select(.level == "fail")] | length > 0)' >/dev/null 2>&1 && echo false || echo true)"
 
     sgot=false
     case "$swant" in
       pass)
         if [[ $code -eq 0 && "$(echo "$output" | jq -r '.passed' 2>/dev/null)" == "true" ]]; then sgot=true; fi
-        assert "structure --json, child payload $sname at exit $sstatus: is a clean pass" "$sgot" ;;
+        assert_value "structure --json, child payload $sname at exit $sstatus: is a clean pass" "$sgot" ;;
       fail)
         if [[ $code -eq 1 && "$(echo "$output" | jq -r '.passed' 2>/dev/null)" == "false" ]]; then sgot=true; fi
-        assert "structure --json, child payload $sname at exit $sstatus: is a path failure" "$sgot" ;;
+        assert_value "structure --json, child payload $sname at exit $sstatus: is a path failure" "$sgot" ;;
       dep)
         if [[ $code -eq 3 && "$(echo "$output" | jq -r '.passed' 2>/dev/null)" == "false" ]] \
            && echo "$output" | jq -e '.findings[] | select(.rule == "DEP002")' >/dev/null 2>&1; then sgot=true; fi
-        assert "structure --json, child payload $sname at exit $sstatus: is a DEP002 no-verdict" "$sgot" ;;
+        assert_value "structure --json, child payload $sname at exit $sstatus: is a DEP002 no-verdict" "$sgot" ;;
     esac
   done
 done
@@ -574,19 +569,19 @@ done
 # child did not send.
 run_present "$(stub_paths_tree shape-element-null-false 1 '{"passed": false, "findings": [null]}')" \
   --json tests/fixtures/f01/valid-full
-assert "structure --json, child sends a null finding: no finding is fabricated from it" \
+assert_value "structure --json, child sends a null finding: no finding is fabricated from it" \
   "$(echo "$output" | jq -e '[.findings[] | select(.level == "null" or .rule == "null" or .message == "null")] | length == 0' >/dev/null 2>&1 && echo true || echo false)"
 
 # Text mode reads no payload, so only the exit-status enumeration applies — and
 # it applies identically: a child that reached no verdict leaves us with none.
 run_present "$(stub_paths_tree pass0 0 "$PAYLOAD_PASS")" tests/fixtures/f01/valid-full
-assert "structure text, child gives a conforming pass: exits 0" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "structure text, child gives a conforming pass: exits 0" "$([[ $code -eq 0 ]] && echo true || echo false)"
 
 run_present "$(stub_paths_tree dep3 3 "$PAYLOAD_DEP")" tests/fixtures/f01/valid-full
-assert "structure text, child exits 3 (no verdict): exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "structure text, child exits 3 (no verdict): exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
 
 run_present "$(stub_paths_tree u42 42 "")" tests/fixtures/f01/valid-full
-assert "structure text, child exits 42: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "structure text, child exits 42: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
 
 # DEP001's own registration is pinned by the jq-masked cases above, which assert
 # the rule ID in both check-structure.sh's and check-paths.sh's payloads.
@@ -603,16 +598,16 @@ for gmode in missing malformed empty half; do
   gdir="$(guard_broken_tree "$gmode")"
   for gscript in check-structure.sh check-paths.sh check-frontmatter.sh audit-report.sh; do
     run_present "$gdir/$gscript" tests/fixtures/f01/valid-full
-    assert "$gscript, guard $gmode: exits 3, not a status meaning a verdict" \
+    assert_value "$gscript, guard $gmode: exits 3, not a status meaning a verdict" \
       "$([[ $code -eq 3 ]] && echo true || echo false)"
-    assert "$gscript, guard $gmode: stdout carries no verdict" \
+    assert_value "$gscript, guard $gmode: stdout carries no verdict" \
       "$([[ -z "$output" ]] && echo true || echo false)"
-    assert "$gscript, guard $gmode: says on stderr that it could not load the guard" \
+    assert_value "$gscript, guard $gmode: says on stderr that it could not load the guard" \
       "$(echo "$errout" | grep -q 'verdict-guard.sh' && echo true || echo false)"
   done
   run_present "$gdir/check-structure.sh" --json tests/fixtures/f01/valid-full
-  assert "check-structure.sh --json, guard $gmode: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
-  assert "check-structure.sh --json, guard $gmode: never reports passed true" \
+  assert_value "check-structure.sh --json, guard $gmode: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+  assert_value "check-structure.sh --json, guard $gmode: never reports passed true" \
     "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
 done
 
@@ -628,11 +623,11 @@ done
 for gdrop in json_string cannot_compute require_tool json_document_conforms payload_is_conforming verdict_guard_ready; do
   gdir="$(guard_broken_tree "drop-$gdrop")"
   run_present "$gdir/check-structure.sh" --json tests/fixtures/f01/valid-full
-  assert "check-structure.sh --json, guard missing $gdrop: exits 3, not a status meaning a verdict" \
+  assert_value "check-structure.sh --json, guard missing $gdrop: exits 3, not a status meaning a verdict" \
     "$([[ $code -eq 3 ]] && echo true || echo false)"
-  assert "check-structure.sh --json, guard missing $gdrop: stdout carries no verdict" \
+  assert_value "check-structure.sh --json, guard missing $gdrop: stdout carries no verdict" \
     "$([[ -z "$output" ]] && echo true || echo false)"
-  assert "check-structure.sh --json, guard missing $gdrop: says on stderr that it could not load the guard" \
+  assert_value "check-structure.sh --json, guard missing $gdrop: says on stderr that it could not load the guard" \
     "$(echo "$errout" | grep -q 'verdict-guard.sh' && echo true || echo false)"
 done
 
@@ -650,15 +645,15 @@ done
 # thought of is how an encoder ships escaping most of what it is handed.
 
 GUARD=skills/skill-audit/scripts/verdict-guard.sh
-assert "verdict-guard.sh sits beside the scripts that source it" "$([[ -f "$GUARD" ]] && echo true || echo false)"
+assert_value "verdict-guard.sh sits beside the scripts that source it" "$([[ -f "$GUARD" ]] && echo true || echo false)"
 
 guard_nasty=$'he said "boom" \\ then a tab\there, a newline\na return\ra formfeed\fa backspace\bthen \x01 and \x1f'
 guard_out="$(bash -c 'source "$1"; cannot_compute DEP002 "$2" true' _ "$GUARD" "$guard_nasty" 2>/dev/null || true)"
-assert "guard: payload is valid JSON when the message holds every character the encoder escapes" "$(echo "$guard_out" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
-assert "guard: error field round-trips the message exactly" "$([[ "$(echo "$guard_out" | jq -r '.error' 2>/dev/null)" == "$guard_nasty" ]] && echo true || echo false)"
-assert "guard: finding message round-trips the message exactly" "$([[ "$(echo "$guard_out" | jq -r '.findings[0].message' 2>/dev/null)" == "$guard_nasty" ]] && echo true || echo false)"
-assert "guard: finding carries the rule it was given" "$([[ "$(echo "$guard_out" | jq -r '.findings[0].rule' 2>/dev/null)" == "DEP002" ]] && echo true || echo false)"
-assert "guard: payload never reports passed true" "$(echo "$guard_out" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+assert_value "guard: payload is valid JSON when the message holds every character the encoder escapes" "$(echo "$guard_out" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
+assert_value "guard: error field round-trips the message exactly" "$([[ "$(echo "$guard_out" | jq -r '.error' 2>/dev/null)" == "$guard_nasty" ]] && echo true || echo false)"
+assert_value "guard: finding message round-trips the message exactly" "$([[ "$(echo "$guard_out" | jq -r '.findings[0].message' 2>/dev/null)" == "$guard_nasty" ]] && echo true || echo false)"
+assert_value "guard: finding carries the rule it was given" "$([[ "$(echo "$guard_out" | jq -r '.findings[0].rule' 2>/dev/null)" == "DEP002" ]] && echo true || echo false)"
+assert_value "guard: payload never reports passed true" "$(echo "$guard_out" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
 
 # A message is bytes, not ASCII, and the encoder exists because a future caller
 # relaying a tool's own output would break the interpolated form it replaced.
@@ -672,20 +667,20 @@ assert "guard: payload never reports passed true" "$(echo "$guard_out" | grep -q
 
 guard_utf8=$'caf\xc3\xa9 \xf0\x9f\x98\x80 na\xc3\xafve \xe2\x80\x94 \xc2\xa0 \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e'
 guard_utf8_out="$(bash -c 'source "$1"; cannot_compute DEP002 "$2" true' _ "$GUARD" "$guard_utf8" 2>/dev/null || true)"
-assert "guard: payload is valid JSON when the message is multi-byte UTF-8" \
+assert_value "guard: payload is valid JSON when the message is multi-byte UTF-8" \
   "$(echo "$guard_utf8_out" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
-assert "guard: error field round-trips multi-byte UTF-8 exactly" \
+assert_value "guard: error field round-trips multi-byte UTF-8 exactly" \
   "$([[ "$(echo "$guard_utf8_out" | jq -r '.error' 2>/dev/null)" == "$guard_utf8" ]] && echo true || echo false)"
-assert "guard: finding message round-trips multi-byte UTF-8 exactly" \
+assert_value "guard: finding message round-trips multi-byte UTF-8 exactly" \
   "$([[ "$(echo "$guard_utf8_out" | jq -r '.findings[0].message' 2>/dev/null)" == "$guard_utf8" ]] && echo true || echo false)"
 
 # Control characters and multi-byte characters in one message, straight through
 # the encoder: neither may be read as the other.
 guard_mixed=$'"\\ caf\xc3\xa9\ttab\nnewline\x01 \xf0\x9f\x98\x80 \x1f end'
 guard_mixed_out="$(bash -c 'source "$1"; json_string "$2"' _ "$GUARD" "$guard_mixed" 2>/dev/null || true)"
-assert "guard: json_string emits valid JSON for control characters beside multi-byte ones" \
+assert_value "guard: json_string emits valid JSON for control characters beside multi-byte ones" \
   "$(echo "$guard_mixed_out" | jq -e . >/dev/null 2>&1 && echo true || echo false)"
-assert "guard: json_string round-trips control characters beside multi-byte ones exactly" \
+assert_value "guard: json_string round-trips control characters beside multi-byte ones exactly" \
   "$([[ "$(echo "$guard_mixed_out" | jq -r . 2>/dev/null)" == "$guard_mixed" ]] && echo true || echo false)"
 
 # The decision and the format have to be the same question. `\u00xx` can spell
@@ -712,7 +707,7 @@ for lcand in en_US.UTF-8 en_US.utf8 C.UTF-8 C.utf8; do
     break
   fi
 done
-assert "guard: a UTF-8 locale is available to drive the encoder under" \
+assert_value "guard: a UTF-8 locale is available to drive the encoder under" \
   "$([[ -n "$utf8_locale" ]] && echo true || echo false)"
 
 enc_names=(invalid-byte-80 invalid-byte-ff c1-control-nel c1-control-9f ascii-control del multi-byte)
@@ -727,11 +722,11 @@ for ei in "${!enc_names[@]}"; do
   enc_c="$(LC_ALL=C bash -c 'source "$1"; json_string "$2"' _ "$GUARD" "${enc_inputs[$ei]}" 2>/dev/null || true)"
   enc_u="$(LC_ALL="$utf8_locale" bash -c 'source "$1"; json_string "$2"' _ "$GUARD" "${enc_inputs[$ei]}" 2>/dev/null || true)"
 
-  assert "guard: json_string on $ename emits no escape wider than four hex digits, under C" \
+  assert_value "guard: json_string on $ename emits no escape wider than four hex digits, under C" \
     "$(printf '%s' "$enc_c" | grep -qE '\\u[0-9a-fA-F]{5}' && echo false || echo true)"
-  assert "guard: json_string on $ename emits no escape wider than four hex digits, under $utf8_locale" \
+  assert_value "guard: json_string on $ename emits no escape wider than four hex digits, under $utf8_locale" \
     "$(printf '%s' "$enc_u" | grep -qE '\\u[0-9a-fA-F]{5}' && echo false || echo true)"
-  assert "guard: json_string on $ename encodes identically under C and $utf8_locale" \
+  assert_value "guard: json_string on $ename encodes identically under C and $utf8_locale" \
     "$([[ "$enc_c" == "$enc_u" ]] && echo true || echo false)"
 done
 
@@ -744,12 +739,12 @@ done
 
 enc_c1_msg=$'before \xc2\x85 after'
 enc_c1_out="$(LC_ALL="$utf8_locale" bash -c 'source "$1"; json_string "$2"' _ "$GUARD" "$enc_c1_msg" 2>/dev/null || true)"
-assert "guard: json_string round-trips the C1 control U+0085 exactly under a UTF-8 locale" \
+assert_value "guard: json_string round-trips the C1 control U+0085 exactly under a UTF-8 locale" \
   "$([[ "$(printf '%s' "$enc_c1_out" | jq -r . 2>/dev/null)" == "$enc_c1_msg" ]] && echo true || echo false)"
 
 enc_raw_msg=$'a\x80z'
 enc_raw_out="$(LC_ALL="$utf8_locale" bash -c 'source "$1"; json_string "$2"' _ "$GUARD" "$enc_raw_msg" 2>/dev/null || true)"
-assert "guard: json_string passes an invalid UTF-8 byte through unchanged under a UTF-8 locale" \
+assert_value "guard: json_string passes an invalid UTF-8 byte through unchanged under a UTF-8 locale" \
   "$([[ "$enc_raw_out" == "\"$enc_raw_msg\"" ]] && echo true || echo false)"
 
 # The detail — a failed tool's own output — is the one thing the guard relays
@@ -757,15 +752,15 @@ assert "guard: json_string passes an invalid UTF-8 byte through unchanged under 
 # went to stdout. It belongs on stderr, beside the reason, whatever it holds.
 
 run_present bash -c 'source "$1"; cannot_compute DEP002 "the reason" true "DETAIL-MARKER: {not json"' _ "$GUARD"
-assert "guard: detail reaches stderr" "$(echo "$errout" | grep -q 'DETAIL-MARKER' && echo true || echo false)"
-assert "guard: detail never reaches the payload channel" "$(echo "$output" | grep -q 'DETAIL-MARKER' && echo false || echo true)"
-assert "guard: stdout is still exactly the payload when a detail is relayed" "$(echo "$output" | jq -e '.findings[0].rule == "DEP002"' >/dev/null 2>&1 && echo true || echo false)"
-assert "guard: the reason reaches stderr too" "$(echo "$errout" | grep -q 'the reason' && echo true || echo false)"
+assert_value "guard: detail reaches stderr" "$(echo "$errout" | grep -q 'DETAIL-MARKER' && echo true || echo false)"
+assert_value "guard: detail never reaches the payload channel" "$(echo "$output" | grep -q 'DETAIL-MARKER' && echo false || echo true)"
+assert_value "guard: stdout is still exactly the payload when a detail is relayed" "$(echo "$output" | jq -e '.findings[0].rule == "DEP002"' >/dev/null 2>&1 && echo true || echo false)"
+assert_value "guard: the reason reaches stderr too" "$(echo "$errout" | grep -q 'the reason' && echo true || echo false)"
 
 # The guard needs no jq to build its payload: it is what runs when jq is the
 # tool that went missing.
 run_masked jq bash -c 'source "$1"; cannot_compute DEP001 "required tool not found: jq" true' _ "$GUARD"
-assert "guard: emits its payload with jq itself absent" "$(echo "$output" | jq -e '.findings[0].rule == "DEP001"' >/dev/null 2>&1 && echo true || echo false)"
+assert_value "guard: emits its payload with jq itself absent" "$(echo "$output" | jq -e '.findings[0].rule == "DEP001"' >/dev/null 2>&1 && echo true || echo false)"
 
 # --- stdout is the payload channel, on every exit path ---
 #
@@ -778,28 +773,28 @@ assert "guard: emits its payload with jq itself absent" "$(echo "$output" | jq -
 # in the guard-load cases above — so it cannot quietly grow.
 
 run_present "$CHECK_PATHS" --json --bogus
-assert "paths --json, bad flag: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
-assert "paths --json, bad flag: stdout is empty" "$([[ -z "$output" ]] && echo true || echo false)"
-assert "paths --json, bad flag: diagnostic is on stderr" "$(echo "$errout" | grep -q 'Usage' && echo true || echo false)"
+assert_value "paths --json, bad flag: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "paths --json, bad flag: stdout is empty" "$([[ -z "$output" ]] && echo true || echo false)"
+assert_value "paths --json, bad flag: diagnostic is on stderr" "$(echo "$errout" | grep -q 'Usage' && echo true || echo false)"
 
 run_present "$CHECK_STRUCT" --json --bogus
-assert "structure --json, bad flag: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
-assert "structure --json, bad flag: stdout is empty" "$([[ -z "$output" ]] && echo true || echo false)"
-assert "structure --json, bad flag: diagnostic is on stderr" "$(echo "$errout" | grep -q 'Usage' && echo true || echo false)"
+assert_value "structure --json, bad flag: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "structure --json, bad flag: stdout is empty" "$([[ -z "$output" ]] && echo true || echo false)"
+assert_value "structure --json, bad flag: diagnostic is on stderr" "$(echo "$errout" | grep -q 'Usage' && echo true || echo false)"
 
 run_present "$CHECK_PATHS" --json "$mask_root/no-such-skill"
-assert "paths --json, no SKILL.md: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
-assert "paths --json, no SKILL.md: stdout is empty" "$([[ -z "$output" ]] && echo true || echo false)"
-assert "paths --json, no SKILL.md: diagnostic is on stderr" "$(echo "$errout" | grep -q 'SKILL.md not found' && echo true || echo false)"
+assert_value "paths --json, no SKILL.md: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "paths --json, no SKILL.md: stdout is empty" "$([[ -z "$output" ]] && echo true || echo false)"
+assert_value "paths --json, no SKILL.md: diagnostic is on stderr" "$(echo "$errout" | grep -q 'SKILL.md not found' && echo true || echo false)"
 
 run_present "$CHECK_STRUCT" --json "$mask_root/no-such-skill"
-assert "structure --json, no SKILL.md: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
-assert "structure --json, no SKILL.md: stdout is empty" "$([[ -z "$output" ]] && echo true || echo false)"
-assert "structure --json, no SKILL.md: diagnostic is on stderr" "$(echo "$errout" | grep -q 'SKILL.md not found' && echo true || echo false)"
+assert_value "structure --json, no SKILL.md: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "structure --json, no SKILL.md: stdout is empty" "$([[ -z "$output" ]] && echo true || echo false)"
+assert_value "structure --json, no SKILL.md: diagnostic is on stderr" "$(echo "$errout" | grep -q 'SKILL.md not found' && echo true || echo false)"
 
 run_present "$CHECK_FM" "$mask_root/no-such-skill"
-assert "frontmatter, no SKILL.md: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
-assert "frontmatter, no SKILL.md: diagnostic is on stderr" "$(echo "$errout" | grep -q 'SKILL.md not found' && echo true || echo false)"
+assert_value "frontmatter, no SKILL.md: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "frontmatter, no SKILL.md: diagnostic is on stderr" "$(echo "$errout" | grep -q 'SKILL.md not found' && echo true || echo false)"
 
 # --- Every rule ID these scripts can emit is registered, and no other ---
 #
@@ -816,28 +811,113 @@ assert "frontmatter, no SKILL.md: diagnostic is on stderr" "$(echo "$errout" | g
 # so the two sides are compared here rather than restated: every rule literal
 # the scripts can emit, against every rule ID the registry line names. Either
 # side growing without the other fails.
+#
+# Both sides read what is written rather than what is run, so both have to read
+# every form a rule ID reaches a consumer through, not only the forms that
+# happen to be literals. Three of them are not literals in the emitting script
+# at all: an ID handed to the guard is quoted at some call sites and bare at
+# others, `require_tool` raises DEP001 on behalf of every script that states a
+# tool precondition, and a script that runs a sibling with `--json` carries that
+# sibling's whole findings array out to its own consumer. A census blind to
+# those credits a script with none of the rules it actually emits, and then
+# passes while an unregistered ID reaches a `--json` consumer — which is the one
+# thing it exists to prevent.
 
 SCRIPTS_DIR=skills/skill-audit/scripts
 
-# rules_emitted_by <file...> — every rule literal these scripts can put in a
-# finding: the pipe-delimited entries they build, the IDs they hand the guard,
-# the objects they compose directly, and the IDs they print in text mode.
-rules_emitted_by() {
+# rules_emitted_directly_by <file...> — the rule IDs written in these files: the
+# pipe-delimited entries they build, the IDs they hand the guard quoted or bare,
+# the objects they compose directly, the IDs they print in text mode, and
+# DEP001 where a tool precondition is stated in a form that carries the ID to a
+# consumer. Each form tolerates no match, so a script that emits nothing yields
+# nothing instead of killing the suite.
+#
+# `require_tool <tool> <emit_json>` only reaches a consumer with the rule ID on
+# it when <emit_json> is `true`. With `false` the guard writes "required tool
+# not found: <tool>" to stderr and exits 3 with nothing on stdout, so no reader
+# of that script ever sees DEP001 from it. Crediting the ID anyway is not a
+# harmless over-count: it made this check demand DEP001 in the header of a
+# script that cannot emit it, and the header was duly changed to say something
+# untrue. Attribution that is only ever too generous still forces a lie.
+#
+# The argument is read, and the line start is not anchored, because a
+# precondition stated after a `&&` is the same precondition.
+rules_emitted_directly_by() {
   {
-    grep -hoE 'findings\+=\("[a-z]+\|[A-Z][A-Z0-9]*\|' "$@" | sed -E 's/.*\|([A-Z][A-Z0-9]*)\|/\1/'
-    grep -hoE 'cannot_compute [A-Z][A-Z0-9]*' "$@" | sed -E 's/.* //'
-    grep -hoE '"rule": "[A-Z][A-Z0-9]*"' "$@" | sed -E 's/.*"([A-Z][A-Z0-9]*)"/\1/'
-    grep -hoE '\[[A-Z][A-Z0-9]*\]' "$@" | tr -d '[]'
+    grep -hoE 'findings\+=\("[a-z]+\|[A-Z][A-Z0-9]*\|' "$@" | sed -E 's/.*\|([A-Z][A-Z0-9]*)\|/\1/' || true
+    grep -hoE 'cannot_compute[[:space:]]+"?[A-Z][A-Z0-9]*' "$@" | tr -d '"' | awk '{print $NF}' || true
+    # The spacing inside a composed object is the author's, not the contract's,
+    # so it is not read as if it were: an object built by a `printf` that omits
+    # the space after the colon emits the same rule to the same consumer.
+    grep -hoE '"rule"[[:space:]]*:[[:space:]]*"[A-Z][A-Z0-9]*"' "$@" | sed -E 's/.*"([A-Z][A-Z0-9]*)"/\1/' || true
+    grep -hoE '\[[A-Z][A-Z0-9]*\]' "$@" | tr -d '[]' || true
+    if grep -qE 'require_tool[[:space:]]+[^[:space:]]+[[:space:]]+true([[:space:]]|$)' "$@"; then
+      echo DEP001
+    fi
   } | sort -u
 }
 
-emitted_rules="$(rules_emitted_by "$SCRIPTS_DIR"/*.sh)"
-registry_line="$(grep -m1 '^Exit codes:' skills/skill-audit/SKILL.md)"
-registered_rules="$(printf '%s\n' "$registry_line" \
-  | grep -oE '\b(PL[0-9]{3}|PT[0-9]{3}|DEP[0-9]{3}|PATH)\b' | sort -u)"
+# rules_of <file> <chain> — what this file can emit, directly and through every
+# sibling it runs with `--json`. check-structure.sh rebuilds each of
+# check-paths.sh's findings from variables and audit-report.sh splices
+# check-structure.sh's array in whole, so neither leaves a rule literal of the
+# child's anywhere in the parent. Relaying is transitive, so this follows the
+# chain; <chain> carries the files already on the path so a cycle cannot
+# recurse forever.
+#
+# A relay is the sibling and `--json` on one line, in either order, rather than
+# `--json` immediately after the name. Where the flag sits among the arguments
+# is not what makes the child's findings arrive, and reading it as if it were
+# made the check blind to the same relay written `check-paths.sh "$dir" --json`.
+rules_of() {
+  local file="$1"
+  local chain="$2"
+  local child
+  case " $chain " in
+    *" $file "*) return 0 ;;
+  esac
+  rules_emitted_directly_by "$file"
+  for child in "$SCRIPTS_DIR"/*.sh; do
+    if [[ "$child" == "$file" ]]; then
+      continue
+    fi
+    if grep -hF -- "$(basename "$child")" "$file" | grep -qF -- '--json'; then
+      rules_of "$child" "$chain $file"
+    fi
+  done
+}
 
-assert "SKILL.md's rule-ID line names a rule the scripts emit" "$([[ -n "$registered_rules" ]] && echo true || echo false)"
-assert "SKILL.md registers every rule ID the scripts emit, and registers no ID none of them emits" \
+rules_emitted_by() {
+  local file
+  for file in "$@"; do
+    rules_of "$file" ""
+  done | sort -u
+}
+
+emitted_rules="$(rules_emitted_by "$SCRIPTS_DIR"/*.sh)"
+# Both reads tolerate finding nothing, and both are meant to. "The registry
+# line is gone" and "the registry line names no rule" are two of the things the
+# assertions below exist to report, and a `grep` that exits 1 under
+# `errexit`/`pipefail` would kill the suite at the assignment instead — the
+# check unable to report the very state it was written for, which is the defect
+# this whole cluster is about.
+registry_line="$(grep -m1 '^Exit codes:' skills/skill-audit/SKILL.md || true)"
+# Any rule-shaped token in backticks, not a fixed list of the prefixes in use. A
+# whitelist here would make the registry side unable to grow either: a new rule
+# announced under a new prefix would be invisible to the very line that claims
+# to name the whole set.
+#
+# The backticks are what make a registration a registration rather than a word
+# that happens to be capitalised. A bare rule-shaped token counted prose:
+# writing "the JSON payload" on this line registered a rule called JSON, the
+# comparison below went red, and the only way to quiet it was to avoid a capital
+# in a sentence of documentation. Rule IDs on that line are set in code because
+# they are code, which is a thing the line can carry and a paragraph cannot.
+registered_rules="$(printf '%s\n' "$registry_line" \
+  | { grep -oE '`[A-Z][A-Z0-9]{2,}`' || true; } | tr -d '`' | sort -u)"
+
+assert_value "SKILL.md's rule-ID line names a rule the scripts emit" "$([[ -n "$registered_rules" ]] && echo true || echo false)"
+assert_value "SKILL.md registers every rule ID the scripts emit, and registers no ID none of them emits" \
   "$([[ "$registered_rules" == "$emitted_rules" ]] && echo true || echo false)"
 if [[ "$registered_rules" != "$emitted_rules" ]]; then
   echo "  emitted   : $(echo "$emitted_rules" | tr '\n' ' ')"
@@ -849,7 +929,7 @@ fi
 for rscript in "$SCRIPTS_DIR"/*.sh; do
   rheader="$(awk 'NR > 1 && !/^#/ && NF { exit } { print }' "$rscript")"
   for rrule in $(rules_emitted_by "$rscript"); do
-    assert "$(basename "$rscript") header registers $rrule, which it emits" \
+    assert_value "$(basename "$rscript") header registers $rrule, which it emits" \
       "$(printf '%s\n' "$rheader" | grep -q "$rrule" && echo true || echo false)"
   done
 done
@@ -860,17 +940,17 @@ done
 # PATH — level `unverified`, and not a failure: an unresolvable reference the
 # scripts decline to judge is not the same as one they judged and rejected.
 run_present "$CHECK_PATHS" --json tests/fixtures/f01/glob-paths
-assert "paths --json, a glob reference: emits rule PATH at level unverified" \
+assert_value "paths --json, a glob reference: emits rule PATH at level unverified" \
   "$(echo "$output" | jq -e '.findings[] | select(.rule == "PATH" and .level == "unverified")' >/dev/null 2>&1 && echo true || echo false)"
-assert "paths --json, a glob reference: an unverified finding is not a failure (exit 0)" \
+assert_value "paths --json, a glob reference: an unverified finding is not a failure (exit 0)" \
   "$([[ $code -eq 0 && "$(echo "$output" | jq -r '.passed')" == "true" ]] && echo true || echo false)"
 
 run_present "$CHECK_PATHS" --json tests/fixtures/f01/dynamic-paths
-assert "paths --json, a variable reference: emits rule PATH at level unverified" \
+assert_value "paths --json, a variable reference: emits rule PATH at level unverified" \
   "$(echo "$output" | jq -e '.findings[] | select(.rule == "PATH" and .level == "unverified")' >/dev/null 2>&1 && echo true || echo false)"
 
 run_present "$CHECK_STRUCT" --json tests/fixtures/f01/glob-paths
-assert "structure --json: relays the child's PATH finding at its own level" \
+assert_value "structure --json: relays the child's PATH finding at its own level" \
   "$(echo "$output" | jq -e '.findings[] | select(.rule == "PATH" and .level == "unverified")' >/dev/null 2>&1 && echo true || echo false)"
 
 # PL003 — the line-count rule. No fixture was ever long enough to raise it.
@@ -884,15 +964,11 @@ mkdir -p "$big_skill"
 } > "$big_skill/SKILL.md"
 
 run_present "$CHECK_STRUCT" --json "$big_skill"
-assert "structure --json, SKILL.md over the line limit: emits PL003" \
+assert_value "structure --json, SKILL.md over the line limit: emits PL003" \
   "$(echo "$output" | jq -e '.findings[] | select(.rule == "PL003" and .level == "fail")' >/dev/null 2>&1 && echo true || echo false)"
-assert "structure --json, SKILL.md over the line limit: exits 2 (policy failure)" \
+assert_value "structure --json, SKILL.md over the line limit: exits 2 (policy failure)" \
   "$([[ $code -eq 2 ]] && echo true || echo false)"
-assert "structure --json, SKILL.md over the line limit: the message names the count and the limit" \
+assert_value "structure --json, SKILL.md over the line limit: the message names the count and the limit" \
   "$(echo "$output" | jq -e '.findings[] | select(.rule == "PL003") | select(.message | test("500"))' >/dev/null 2>&1 && echo true || echo false)"
 
-echo
-echo "$pass passed, $fail failed"
-if [[ "$fail" -gt 0 ]]; then
-  exit 1
-fi
+harness_summary

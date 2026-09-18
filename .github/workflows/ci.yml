@@ -20,7 +20,13 @@ jobs:
             | tar xz -C /usr/local/bin skill-validator
           skill-validator --version
       - name: Install skillscore
-        run: npm install -g skillscore
+        run: npm install -g skillscore@2.0.2
+      # First, because the four suites below are only worth running if their
+      # substrate can report a failure. This checks that every suite is on the
+      # shared harness, that none of them can reach a verdict without saying so,
+      # and that no assertion in any of them is incapable of failing.
+      - name: Run verification-harness tests
+        run: tests/test_harness.sh
       - name: Run skill layout tests
         run: tests/test_skill.sh
       - name: Run end-to-end walk tests

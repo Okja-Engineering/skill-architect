@@ -5,8 +5,10 @@
 #   2. skillscore --json              (7-dimension quality scoring)
 #   3. House-policy checks            (PL001-PL005, PT001-PT002)
 # Composes them with jq and requires it: without jq there is no report to
-# generate, so it says which tool is missing and exits 3 (DEP001) rather than
-# dying part-way through with the shell's own "command not found".
+# generate, so it says on stderr which tool is missing and exits 3 rather than
+# dying part-way through with the shell's own "command not found". That exit
+# carries nothing on stdout and no rule ID: stdout here is the report channel,
+# and the thing that builds a report is the thing that is missing.
 # Every source stays soft: the report still generates and names in-band, as
 # spec_error, quality_error or policy_error, the source it could not read. The
 # two sources that carry a verdict are never read as sources with nothing to
@@ -22,11 +24,21 @@
 # exists to prevent. The shape claimed differs per source, because what is read
 # out of each of them differs.
 # Rule IDs reach the report only by relay, from the policy source, except PL001
-# for a missing license, which this file checks inline and adds itself.
+# for a missing license, which this file checks inline and adds itself. What
+# relays is check-structure.sh's whole findings array, so DEP001, DEP002,
+# PL002, PL003, PL004, PL005, PT001, PT002 and PATH all reach a consumer
+# through here without this file naming any of them in a finding it built —
+# which is exactly why they are enumerated rather than left implied.
+# DEP001 is in that list and nowhere else in this file. Its own missing-jq exit
+# above builds no finding, so nothing a reader of this report sees ever carries
+# DEP001 unless check-structure.sh put it there; and since the only tool either
+# script requires is the same jq, the exit above gets there first. Enumerated
+# because the array can carry it, not because this file has been seen to
+# deliver it.
 # Exit codes: 0=report generated, 3=execution error.
 set -euo pipefail
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 verdict_guard="$script_dir/verdict-guard.sh"
 # The guard is the one dependency it cannot announce itself, so loading it is
 # checked before and after — see its header for why an unchecked source would
