@@ -828,15 +828,30 @@ SCRIPTS_DIR=skills/skill-audit/scripts
 # rules_emitted_directly_by <file...> — the rule IDs written in these files: the
 # pipe-delimited entries they build, the IDs they hand the guard quoted or bare,
 # the objects they compose directly, the IDs they print in text mode, and
-# DEP001 for stating a tool precondition. Each form tolerates no match, so a
-# script that emits nothing yields nothing instead of killing the suite.
+# DEP001 where a tool precondition is stated in a form that carries the ID to a
+# consumer. Each form tolerates no match, so a script that emits nothing yields
+# nothing instead of killing the suite.
+#
+# `require_tool <tool> <emit_json>` only reaches a consumer with the rule ID on
+# it when <emit_json> is `true`. With `false` the guard writes "required tool
+# not found: <tool>" to stderr and exits 3 with nothing on stdout, so no reader
+# of that script ever sees DEP001 from it. Crediting the ID anyway is not a
+# harmless over-count: it made this check demand DEP001 in the header of a
+# script that cannot emit it, and the header was duly changed to say something
+# untrue. Attribution that is only ever too generous still forces a lie.
+#
+# The argument is read, and the line start is not anchored, because a
+# precondition stated after a `&&` is the same precondition.
 rules_emitted_directly_by() {
   {
     grep -hoE 'findings\+=\("[a-z]+\|[A-Z][A-Z0-9]*\|' "$@" | sed -E 's/.*\|([A-Z][A-Z0-9]*)\|/\1/' || true
     grep -hoE 'cannot_compute[[:space:]]+"?[A-Z][A-Z0-9]*' "$@" | tr -d '"' | awk '{print $NF}' || true
-    grep -hoE '"rule": "[A-Z][A-Z0-9]*"' "$@" | sed -E 's/.*"([A-Z][A-Z0-9]*)"/\1/' || true
+    # The spacing inside a composed object is the author's, not the contract's,
+    # so it is not read as if it were: an object built by a `printf` that omits
+    # the space after the colon emits the same rule to the same consumer.
+    grep -hoE '"rule"[[:space:]]*:[[:space:]]*"[A-Z][A-Z0-9]*"' "$@" | sed -E 's/.*"([A-Z][A-Z0-9]*)"/\1/' || true
     grep -hoE '\[[A-Z][A-Z0-9]*\]' "$@" | tr -d '[]' || true
-    if grep -qE '^[[:space:]]*require_tool[[:space:]]' "$@"; then
+    if grep -qE 'require_tool[[:space:]]+[^[:space:]]+[[:space:]]+true([[:space:]]|$)' "$@"; then
       echo DEP001
     fi
   } | sort -u
@@ -849,6 +864,11 @@ rules_emitted_directly_by() {
 # child's anywhere in the parent. Relaying is transitive, so this follows the
 # chain; <chain> carries the files already on the path so a cycle cannot
 # recurse forever.
+#
+# A relay is the sibling and `--json` on one line, in either order, rather than
+# `--json` immediately after the name. Where the flag sits among the arguments
+# is not what makes the child's findings arrive, and reading it as if it were
+# made the check blind to the same relay written `check-paths.sh "$dir" --json`.
 rules_of() {
   local file="$1"
   local chain="$2"
@@ -861,7 +881,7 @@ rules_of() {
     if [[ "$child" == "$file" ]]; then
       continue
     fi
-    if grep -qE "$(basename "$child")\"? --json" "$file"; then
+    if grep -hF -- "$(basename "$child")" "$file" | grep -qF -- '--json'; then
       rules_of "$child" "$chain $file"
     fi
   done
@@ -875,13 +895,26 @@ rules_emitted_by() {
 }
 
 emitted_rules="$(rules_emitted_by "$SCRIPTS_DIR"/*.sh)"
-registry_line="$(grep -m1 '^Exit codes:' skills/skill-audit/SKILL.md)"
-# Any rule-shaped token, not a fixed list of the prefixes in use. A whitelist
-# here would make the registry side unable to grow either: a new rule announced
-# under a new prefix would be invisible to the very line that claims to name the
-# whole set.
+# Both reads tolerate finding nothing, and both are meant to. "The registry
+# line is gone" and "the registry line names no rule" are two of the things the
+# assertions below exist to report, and a `grep` that exits 1 under
+# `errexit`/`pipefail` would kill the suite at the assignment instead — the
+# check unable to report the very state it was written for, which is the defect
+# this whole cluster is about.
+registry_line="$(grep -m1 '^Exit codes:' skills/skill-audit/SKILL.md || true)"
+# Any rule-shaped token in backticks, not a fixed list of the prefixes in use. A
+# whitelist here would make the registry side unable to grow either: a new rule
+# announced under a new prefix would be invisible to the very line that claims
+# to name the whole set.
+#
+# The backticks are what make a registration a registration rather than a word
+# that happens to be capitalised. A bare rule-shaped token counted prose:
+# writing "the JSON payload" on this line registered a rule called JSON, the
+# comparison below went red, and the only way to quiet it was to avoid a capital
+# in a sentence of documentation. Rule IDs on that line are set in code because
+# they are code, which is a thing the line can carry and a paragraph cannot.
 registered_rules="$(printf '%s\n' "$registry_line" \
-  | grep -oE '\b[A-Z][A-Z0-9]{2,}\b' | sort -u)"
+  | { grep -oE '`[A-Z][A-Z0-9]{2,}`' || true; } | tr -d '`' | sort -u)"
 
 assert_value "SKILL.md's rule-ID line names a rule the scripts emit" "$([[ -n "$registered_rules" ]] && echo true || echo false)"
 assert_value "SKILL.md registers every rule ID the scripts emit, and registers no ID none of them emits" \
