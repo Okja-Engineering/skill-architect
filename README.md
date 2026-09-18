@@ -66,7 +66,25 @@ only when the export yields a value the adapter can actually read:
 | `timing` | `claude_code.api_request` events carrying a parseable timestamp |
 
 Anything else is `none`, and `capture` delivers exactly what `probe` advertised, because
-both read the export through the same extractor. A partial export carrying tool calls and
+both read the export through the same extractor.
+
+`none` is all a capability can say, so it covers two different situations: no telemetry was
+configured, and the export you named could not be read. `capture` tells them apart — the
+second is an `error` state with a reason, and exit 2 — and `probe` now says so too, on
+stderr, naming the same reason `capture` would put in the profile:
+
+```text
+$ ./profiler probe --harness claude_code --otel-file ./typo.json
+{ "harness": "claude_code", ..., "capabilities": { "tokens": "none", ... } }
+probe: failed to read OTel export file: open ./typo.json: no such file or directory
+```
+
+stdout is unchanged — the report is the same JSON a caller already parses — and the exit
+status is still 0. `probe` has no documented exit contract to extend, so giving it one is
+new surface rather than a repair and is **deferred to 0.5.0**; until then a script that has
+to branch on a bad export should use `capture`, which does have one. A `probe` that read a
+file and found nothing in it stays silent, because that is an answer about the session
+rather than a fault of the run. A partial export carrying tool calls and
 timing but no token metric yields those two `present` and `tokens` `unknown` with a
 reason, rather than discarding the run.
 
