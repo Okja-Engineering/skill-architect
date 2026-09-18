@@ -89,17 +89,50 @@ require_tool grep false
 
 timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
+# source_failure <source> <status> <output>
+#
+# The sentence this report puts in a *_error field: what this script asked, what
+# the source answered with, and what it said — in that order, and in this
+# script's own words.
+#
+# The fields used to carry the source's own output verbatim, and that is why a
+# source which exited 0 and printed nothing left `spec_error: null` beside
+# `spec_passed: false`: an empty answer and a working source produced the same
+# empty string, jq rendered it as null, and the report asserted a spec failure
+# while naming no reason for it. "The source said nothing" is a fact about the
+# source and has to be written down as one. The status is named for the same
+# reason — it used to be dropped with `|| true`, so a source that died was
+# indistinguishable from one that answered badly.
+source_failure() {
+  local source="$1"
+  local status="$2"
+  local said="$3"
+  if [[ -z "$said" ]]; then
+    printf '%s did not produce a readable report: it exited %s and said nothing at all on its output channel\n' \
+      "$source" "$status"
+  else
+    printf '%s did not produce a readable report: it exited %s and its output channel carried: %s\n' \
+      "$source" "$status" "$said"
+  fi
+}
+
 # --- Source 1: skill-validator (spec + structure + content + contamination) ---
 # Read as `.passed`, `.errors` and `.warnings` of one document, so one document
 # that is an object is the whole of what has to hold before any of it is read.
+#
+# Its stdout is captured on its own. Merged with stderr, the payload this script
+# asks for became unreadable the moment the source said anything at all on the
+# other channel, and the report then named a source that had answered correctly.
+# Diagnostics belong on our stderr, where they pass straight through.
 spec_json="null"
 spec_error=""
 if command -v skill-validator &>/dev/null; then
-  spec_raw="$(skill-validator check -o json "$skill_dir" 2>&1)" || true
+  spec_status=0
+  spec_raw="$(skill-validator check -o json "$skill_dir")" || spec_status=$?
   if json_document_conforms "$spec_raw" 'type == "object"'; then
     spec_json="$spec_raw"
   else
-    spec_error="$spec_raw"
+    spec_error="$(source_failure skill-validator "$spec_status" "$spec_raw")"
   fi
 else
   spec_error="skill-validator not found. Install with: brew install agent-ecosystem/tap/skill-validator"
@@ -114,7 +147,8 @@ fi
 quality_json="null"
 quality_error=""
 if command -v skillscore &>/dev/null; then
-  quality_raw="$(skillscore "$skill_dir" --json 2>&1)" || true
+  quality_status=0
+  quality_raw="$(skillscore "$skill_dir" --json)" || quality_status=$?
   if json_document_conforms "$quality_raw" '
        if type != "object" then false
        elif (.overallScore | type) == "null" then true
@@ -122,7 +156,7 @@ if command -v skillscore &>/dev/null; then
        end'; then
     quality_json="$quality_raw"
   else
-    quality_error="$quality_raw"
+    quality_error="$(source_failure skillscore "$quality_status" "$quality_raw")"
   fi
 else
   quality_error="skillscore not found. Install with: npm install -g skillscore"
@@ -153,12 +187,30 @@ policy_findings="[]"
 policy_passed=false
 policy_error=""
 if [[ -x "$script_dir/check-structure.sh" ]]; then
-  struct_raw="$("$script_dir/check-structure.sh" --json "$skill_dir")" || true
-  if payload_is_conforming "$struct_raw"; then
+  struct_status=0
+  struct_raw="$("$script_dir/check-structure.sh" --json "$skill_dir")" || struct_status=$?
+  if ! payload_is_conforming "$struct_raw"; then
+    policy_error="$(source_failure check-structure.sh "$struct_status" "$struct_raw")"
+  else
+    # check-structure.sh exits 0 pass, 1 path failure, 2 policy failure, 3 no
+    # verdict. A status outside that set means it did not reach a verdict
+    # whatever its payload looked like, and a status inside it that disagrees
+    # with the payload's own verdict means the two halves of one answer
+    # contradict each other. Either way there is nothing here to report as a
+    # policy verdict, and the report says so rather than picking a half.
     policy_findings=$(echo "$struct_raw" | jq -c '.findings')
     policy_passed=$(echo "$struct_raw" | jq -r '.passed')
-  else
-    policy_error="check-structure.sh --json did not produce a readable payload"
+    case $struct_status in
+      0) [[ "$policy_passed" == "true" ]] \
+           || policy_error="check-structure.sh exited 0 beside a payload that reports it did not pass" ;;
+      1|2|3) [[ "$policy_passed" == "false" ]] \
+           || policy_error="check-structure.sh exited $struct_status beside a payload that reports it passed" ;;
+      *) policy_error="check-structure.sh exited with unexpected status $struct_status; it reached no verdict this report can read" ;;
+    esac
+    if [[ -n "$policy_error" ]]; then
+      policy_findings="[]"
+      policy_passed=false
+    fi
   fi
 else
   policy_error="check-structure.sh is not present or not executable at $script_dir"
