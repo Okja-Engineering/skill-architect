@@ -219,16 +219,19 @@ func dataPointCount(metrics []otlpMetric) int {
 }
 
 // metricsNotRead and logsNotRead are the clause a signal's unknown reason
-// carries when the projection removed records the signal reads from. Without it
-// a reason saying a signal was "not found in OTel export" would be read as
-// saying the export carries nothing of the kind, which is the same shape of
-// false statement this repair exists to remove — only inverted.
+// carries when the projection removed records of the kind that signal reads.
+// Without it a reason saying a signal was "not found in OTel export" would be
+// read as saying the export carries nothing of the kind, which is the same
+// shape of false statement this repair exists to remove — only inverted.
 //
-// Each names only the records its own signal could have read, so the tool-call
-// reason does not report metric data points. Both are empty when the projection
-// removed nothing, which is every capture of one session with nothing else on
-// the port; that is why an export of a single session reads exactly as it did
-// before this filter existed.
+// The clause says "the export also carries", not "this metric had": the counts
+// are per record kind, not per metric name, so they must not be read as a count
+// of the signal's own records. Each side names only the kind its own signal
+// reads, so the tool-call reason never reports metric data points.
+//
+// Both are empty when the projection removed nothing, which is every capture of
+// one session with nothing else on the port — and that is why an export of a
+// single session reads exactly as it did before this filter existed.
 func (s scopedExport) metricsNotRead() string {
 	return s.notReadClause(s.excluded.otherSessionMetricPoints, s.excluded.foreignScopeMetricPoints, "data point")
 }
@@ -252,5 +255,5 @@ func (s scopedExport) notReadClause(otherSession, foreignScope int, noun string)
 	if len(clauses) == 0 {
 		return ""
 	}
-	return " — not read: " + strings.Join(clauses, "; ")
+	return "; the export also carries " + strings.Join(clauses, " and ")
 }
