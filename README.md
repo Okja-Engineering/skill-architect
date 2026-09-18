@@ -412,12 +412,21 @@ source format, `./` is accepted.
 
 ### Manual standalone copy
 
-Copy only the skills you want into your agent's skill directory. You own the files and pull updates when you choose.
+Copy only the skills you want into your agent's skill directory. You own the files and
+pull updates when you choose: these are also the update commands, so they replace the
+installed skill rather than copying into it.
 
 ```bash
-cp -R skills/skill-audit ~/.claude/skills/skill-audit
-cp -R skills/skill-rewrite ~/.claude/skills/skill-rewrite
+rm -rf ~/.claude/skills/skill-audit && cp -R skills/skill-audit ~/.claude/skills/skill-audit
+rm -rf ~/.claude/skills/skill-rewrite && cp -R skills/skill-rewrite ~/.claude/skills/skill-rewrite
 ```
+
+The `rm -rf` is what makes these safe to re-run. `cp -R src dst` copies *into* `dst` once
+`dst` exists, so a bare `cp -R` on the second run leaves a second copy of the skill nested
+inside the first and any agent that walks the skills directory recursively registers the
+skill twice. Replacing the directory also drops files that were removed upstream, which a
+copy over the top would leave behind. Each command owns exactly the one skill directory it
+names; nothing else under `~/.claude/skills/` is touched.
 
 Copy both, even if you only want `skill-rewrite`. Its `draft-rewrite.sh` resolves the
 audit scripts at `../skill-audit` relative to the `skill-rewrite` directory it lives in,
