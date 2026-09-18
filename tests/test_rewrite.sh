@@ -647,6 +647,60 @@ assert "without the sibling's verdict-guard.sh the drafter cannot produce the au
 assert "the SKILL.md names the sibling skill-audit directory as a dependency" \
   grep -qF 'verdict-guard.sh' "$SKILL"
 
+# A claim about the rest of the repository is decidable against the rest of the
+# repository, and this one was not decided. The document called
+# verdict-guard.sh a file "which no other file references by name"; a recursive
+# grep finds the name in twelve files, including four of skill-audit's own
+# scripts, the readme, two suites and the drafter. The assertion covering the
+# sentence only checked that the filename appeared *in the document*, so it
+# passed over the falsehood — a string where there should have been a claim.
+#
+# Read as a claim and not as a phrase: a backticked filename with, in the same
+# sentence, a denial that anything else names it.
+unreferenced_claims_in() {
+  tr '\n' ' ' < "$1" \
+    | { grep -oE '`[A-Za-z0-9_.-]+\.(sh|md)`[^.]*(no other file|no other script|nothing else|referenced nowhere|unreferenced)[^.]*' || true; } \
+    | { grep -oE '^`[^`]+`' || true; } | tr -d '`' | sort -u
+}
+
+# Every file in the repository that names <1>, other than <2>. `.git` is not
+# part of the repository's text, and the leading `./` is dropped because not
+# every grep prints it.
+files_naming_other_than() {
+  { grep -rlF "$1" --exclude-dir=.git . || true; } \
+    | sed -e 's|^\./||' | { grep -vxF "$2" || true; } | sort -u
+}
+
+unreferenced_claims_hold_in() {
+  local doc="$1" f others bad=0
+  for f in $(unreferenced_claims_in "$doc"); do
+    others="$(files_naming_other_than "$f" "$doc")"
+    if [ -n "$others" ]; then
+      echo "  $doc says nothing else names $f; these files do: $(printf '%s' "$others" | tr '\n' ' ')" >&2
+      bad=$((bad + 1))
+    fi
+  done
+  [ "$bad" -eq 0 ]
+}
+
+assert "no claim in the SKILL.md that a file is named nowhere else survives a grep of the repository" \
+  unreferenced_claims_hold_in "$SKILL"
+
+# The control, which is the sentence as it was written, in a document of its
+# own. Once the claim is gone the assertion above has nothing to decide, and a
+# reader that found no claim would look exactly the same — so the reader is
+# held to finding this one, and to refusing it.
+control_claim_doc="$work/control-unreferenced.md"
+printf 'It borrows every check from `$audit_root/scripts/`, including `verdict-guard.sh`, which no other file references by name and which every one of those scripts refuses to compute a verdict without.\n' \
+  > "$control_claim_doc"
+assert "the claim reader finds the claim in the sentence this document carried" \
+  test "$(unreferenced_claims_in "$control_claim_doc")" = "verdict-guard.sh"
+control_claim_is_refused() {
+  ! unreferenced_claims_hold_in "$control_claim_doc" 2>/dev/null
+}
+assert "a document claiming verdict-guard.sh is named nowhere else is refused" \
+  control_claim_is_refused
+
 # --- the draft the SKILL.md describes -----------------------------------------
 #
 # The inventory the document gives, against the headings a run actually writes.
