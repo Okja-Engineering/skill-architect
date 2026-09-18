@@ -593,6 +593,8 @@ var captureCases = []captureCase{
 		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "two series told apart by a non-string attribute", fixture: "array_attribute_series.ndjson",
 		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "one series whose map attribute arrives in two member orders", fixture: "kvlist_attribute_series.ndjson",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "two resources' cumulative series", fixture: "multi_resource_cumulative.json",
 		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "the same two resources under delta", fixture: "multi_resource_delta.json",

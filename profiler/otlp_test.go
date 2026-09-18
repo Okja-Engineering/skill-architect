@@ -779,6 +779,104 @@ func seriesIDs(t *testing.T, name string, batches ...string) []seriesID {
 	return ids
 }
 
+// --- Series identity: a map is not an ordered list ---
+
+// A kvlistValue attribute is a map, and the OTel common data model says two
+// maps are equal irrespective of the order their members arrive in. Giving such
+// an attribute an order-sensitive identity makes one time series read as two,
+// and under cumulative temporality two running totals *add* — so the profile
+// reports more tokens than any point in the export ever did. That is the one
+// direction the product's own claim forbids: a number it never read.
+//
+// An arrayValue is the opposite case and is here to hold the line: an array's
+// member order is part of its value, so it stays ordered — but a map nested
+// inside one is still a map, which is why the fixture carries both shapes.
+func TestSeriesIdentity_AMapAttributeIsEqualWhateverItsMemberOrder(t *testing.T) {
+	profile := capturedProfile(t, "kvlist_attribute_series.ndjson")
+
+	// Two series, not four: one holding a cumulative 100 under a two-member
+	// map, one holding 50 under an array carrying that map. Each pair arrives
+	// with its members in opposite order, so a reader that orders map members
+	// counts every one of them twice and reports 300.
+	assertTokenJSON(t, profile.Tokens.Value, `{"input":150}`)
+}
+
+// Order-insensitivity must not go so far as to erase the difference between two
+// maps. These pairs differ in their content, not their order, and each pair must
+// stay two series — otherwise the repair above would merge series that are
+// genuinely distinct and report a session's tokens as a fraction of themselves,
+// which is the same defect in the other direction.
+func TestSeriesIdentity_MapsThatDifferAreStillDifferentSeries(t *testing.T) {
+	const attrs = `[{"key":"k","value":{"kvlistValue":{"values":%s}}}]`
+	for _, tc := range []struct{ name, a, b string }{
+		{"a different value under the same key",
+			`[{"key":"x","value":{"stringValue":"1"}}]`,
+			`[{"key":"x","value":{"stringValue":"2"}}]`},
+		{"a different key carrying the same value",
+			`[{"key":"x","value":{"stringValue":"1"}}]`,
+			`[{"key":"y","value":{"stringValue":"1"}}]`},
+		{"one member against two",
+			`[{"key":"x","value":{"stringValue":"1"}}]`,
+			`[{"key":"x","value":{"stringValue":"1"}},{"key":"y","value":{"stringValue":"2"}}]`},
+		{"the keys and values swapped between two members",
+			`[{"key":"x","value":{"stringValue":"y"}}]`,
+			`[{"key":"y","value":{"stringValue":"x"}}]`},
+		{"an empty map against no map at all",
+			`[]`, `null`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ids := seriesIDs(t, "m",
+				batch("", "", fmt.Sprintf(attrs, tc.a)),
+				batch("", "", fmt.Sprintf(attrs, tc.b)))
+			if ids[0] == ids[1] {
+				t.Errorf("two maps that differ share one series identity %q", ids[0])
+			}
+		})
+	}
+}
+
+// And the pairs that are one series, stated as identity rather than through a
+// total, so the reason a total is right is pinned too. Nesting is included
+// because a map inside a map inside an array is where a shallow fix stops.
+func TestSeriesIdentity_MapsThatAreEqualShareOneSeries(t *testing.T) {
+	const attrs = `[{"key":"k","value":%s}]`
+	for _, tc := range []struct{ name, a, b string }{
+		{"two members in opposite order",
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}},{"key":"y","value":{"stringValue":"2"}}]}}`,
+			`{"kvlistValue":{"values":[{"key":"y","value":{"stringValue":"2"}},{"key":"x","value":{"stringValue":"1"}}]}}`},
+		{"a map nested inside a map",
+			`{"kvlistValue":{"values":[{"key":"o","value":{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}},{"key":"y","value":{"stringValue":"2"}}]}}}]}}`,
+			`{"kvlistValue":{"values":[{"key":"o","value":{"kvlistValue":{"values":[{"key":"y","value":{"stringValue":"2"}},{"key":"x","value":{"stringValue":"1"}}]}}}]}}`},
+		{"a map nested inside an array",
+			`{"arrayValue":{"values":[{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}},{"key":"y","value":{"stringValue":"2"}}]}}]}}`,
+			`{"arrayValue":{"values":[{"kvlistValue":{"values":[{"key":"y","value":{"stringValue":"2"}},{"key":"x","value":{"stringValue":"1"}}]}}]}}`},
+		{"pretty-printed against compact",
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}}]}}`,
+			`{"kvlistValue": { "values": [ { "key": "x", "value": { "stringValue": "1" } } ] }}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ids := seriesIDs(t, "m",
+				batch("", "", fmt.Sprintf(attrs, tc.a)),
+				batch("", "", fmt.Sprintf(attrs, tc.b)))
+			if ids[0] != ids[1] {
+				t.Errorf("two equal maps are two series:\n  %q\n  %q", ids[0], ids[1])
+			}
+		})
+	}
+}
+
+// An array's member order *is* part of its value, and the repair above must not
+// take that with it.
+func TestSeriesIdentity_AnArrayKeepsItsMemberOrder(t *testing.T) {
+	const attrs = `[{"key":"k","value":{"arrayValue":{"values":%s}}}]`
+	ids := seriesIDs(t, "m",
+		batch("", "", fmt.Sprintf(attrs, `[{"stringValue":"a"},{"stringValue":"b"}]`)),
+		batch("", "", fmt.Sprintf(attrs, `[{"stringValue":"b"},{"stringValue":"a"}]`)))
+	if ids[0] == ids[1] {
+		t.Errorf("two arrays differing only in member order share one series identity %q", ids[0])
+	}
+}
+
 // --- Byte offsets ---
 //
 // A failure reason points at a byte so the person holding the capture can open
