@@ -1009,7 +1009,14 @@ emitted_rules="$(rules_emitted_by "$SCRIPTS_DIR"/*.sh)"
 # `errexit`/`pipefail` would kill the suite at the assignment instead — the
 # check unable to report the very state it was written for, which is the defect
 # this whole cluster is about.
-registry_line="$(grep -m1 '^Exit codes:' skills/skill-audit/SKILL.md || true)"
+#
+# The anchor is `^Rule IDs:`. It used to be `^Exit codes:`, because the rule
+# registry and an exit-code claim shared one sentence — and that sentence
+# asserted a single exit contract over five scripts that do not share one. The
+# exit contracts are a table now, derived per script and checked below; the rule
+# registry keeps its own line and its own anchor, because they were never one
+# claim.
+registry_line="$(grep -m1 '^Rule IDs:' skills/skill-audit/SKILL.md || true)"
 # Any rule-shaped token in backticks, not a fixed list of the prefixes in use. A
 # whitelist here would make the registry side unable to grow either: a new rule
 # announced under a new prefix would be invisible to the very line that claims
@@ -1341,6 +1348,96 @@ assert_value "structure --json, SKILL.md over the line limit: exits 2 (policy fa
   "$([[ $code -eq 2 ]] && echo true || echo false)"
 assert_value "structure --json, SKILL.md over the line limit: the message names the count and the limit" \
   "$(echo "$output" | jq -e '.findings[] | select(.rule == "PL003") | select(.message | test("500"))' >/dev/null 2>&1 && echo true || echo false)"
+
+# --- The documented exit contract is the scripts' own ---------------------------
+#
+# SKILL.md asserted `0=pass, 1=spec/path failure, 2=policy failure, 3=execution
+# error` over five scripts that do not share one contract. audit-report.sh's own
+# header says `{0, 3}` and only that one is implemented; check-quality.sh said a
+# third thing and implemented none of it; check-paths.sh has no 2. The doc
+# restated rather than derived, which is why it drifted, and a caller following
+# it wrote `audit-report.sh "$skill" && echo PASS` and got PASS for a skill that
+# failed every check.
+#
+# So the doc carries a row per script, copied from that script's own header, and
+# the two are compared here — the same shape as the rule-ID census, for the same
+# reason. Both directions: every script has a row, and every row names a script.
+
+# exit_line_of <script> — the script's own statement of its exit contract.
+exit_line_of() {
+  sed -n 's/^# Exit codes:[[:space:]]*//p' "$1" | head -1
+}
+
+# doc_exit_row_of <basename> — what SKILL.md says that script exits with.
+doc_exit_row_of() {
+  sed -n "s/^|[[:space:]]*\`$1\`[[:space:]]*|[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*|[[:space:]]*\$/\1/p" \
+    skills/skill-audit/SKILL.md | head -1
+}
+
+exit_documented=0
+exit_undocumented=""
+for escript in "$SCRIPTS_DIR"/*.sh; do
+  ename="$(basename "$escript")"
+  eline="$(exit_line_of "$escript")"
+  # verdict-guard.sh is sourced, never run, so it states no exit contract and
+  # needs no row. A runnable script with no `# Exit codes:` header is the thing
+  # this loop is watching for, and it is caught by the executable check below.
+  if [[ -z "$eline" ]]; then
+    if [[ -x "$escript" ]]; then
+      exit_undocumented="$exit_undocumented $ename"
+    fi
+    continue
+  fi
+  exit_documented=$((exit_documented + 1))
+  erow="$(doc_exit_row_of "$ename")"
+  assert_value "SKILL.md's exit table says for $ename exactly what $ename says" \
+    "$([[ -n "$erow" && "$erow" == "$eline" ]] && echo true || echo false)"
+  if [[ "$erow" != "$eline" ]]; then
+    echo "  $ename header: $eline"
+    echo "  $ename in doc : ${erow:-<no row>}"
+  fi
+done
+
+echo "  scripts whose exit contract was compared: $exit_documented"
+assert_value "the exit contracts were enumerated, not read as an empty set" \
+  "$([[ "$exit_documented" -ge 5 ]] && echo true || echo false)"
+assert_value "every runnable script states its own exit contract in its header" \
+  "$([[ -z "$exit_undocumented" ]] && echo true || echo false)"
+if [[ -n "$exit_undocumented" ]]; then
+  echo "  runnable with no exit contract stated:$exit_undocumented"
+fi
+
+# The other direction. A row for a script that no longer exists is a claim about
+# nothing, and it would sit there passing every case above.
+exit_rows_stale=""
+exit_rows_seen=0
+while IFS= read -r erow_name; do
+  [[ -z "$erow_name" ]] && continue
+  exit_rows_seen=$((exit_rows_seen + 1))
+  [[ -f "$SCRIPTS_DIR/$erow_name" ]] || exit_rows_stale="$exit_rows_stale $erow_name"
+done < <(sed -n 's/^|[[:space:]]*`\([a-z-]*\.sh\)`[[:space:]]*|.*|[[:space:]]*$/\1/p' skills/skill-audit/SKILL.md)
+
+echo "  exit-table rows read from SKILL.md: $exit_rows_seen"
+assert_value "SKILL.md's exit table was read, not matched as an empty set" \
+  "$([[ "$exit_rows_seen" -eq "$exit_documented" ]] && echo true || echo false)"
+assert_value "every row in SKILL.md's exit table names a script that exists" \
+  "$([[ -z "$exit_rows_stale" ]] && echo true || echo false)"
+if [[ -n "$exit_rows_stale" ]]; then
+  echo "  rows naming no script:$exit_rows_stale"
+fi
+
+# And the behaviour the table now tells the truth about. audit-report.sh exits 0
+# over a failing skill — deliberately, because 0 means a report was generated —
+# so the verdict has to be read out of the report, and the doc has to say so.
+run_present skills/skill-audit/scripts/audit-report.sh tests/fixtures/f01/frontmatter-bleed
+assert_value "audit-report over a failing skill: still exits 0, the contract its header states" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "audit-report over a failing skill: the verdict is in summary.passed, and it is false" \
+  "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "false" ]] && echo true || echo false)"
+assert_value "SKILL.md tells a caller to read summary.passed rather than the exit status" \
+  "$(grep -q 'summary.passed' skills/skill-audit/SKILL.md && echo true || echo false)"
+assert_value "SKILL.md warns that the '&& echo PASS' shape prints PASS for a failing skill" \
+  "$(grep -q 'echo PASS' skills/skill-audit/SKILL.md && echo true || echo false)"
 
 # --- Where the frontmatter ends: one question, one answer ----------------------
 #

@@ -84,7 +84,25 @@ The report nests the full output of each source under `spec`, `quality`, and `po
 "$skill_root/scripts/audit-report.sh" "$target_skill" | jq '.policy.findings[] | select(.level == "fail")'
 ```
 
-Exit codes: 0=pass, 1=spec/path failure, 2=policy failure, 3=execution error. Every finding carries a level and a rule ID. At level `fail`: `PL001` for license, `PL002` for headings, `PL003` for line count, `PL004` for code blocks, `PL005` for lists, `PT001` for missing scripts, `PT002` for missing markdown links, and — on an exit 3, in the same findings array a `--json` consumer reads — `DEP001` when a required tool is absent and `DEP002` when a child check returns a status or a payload the script cannot interpret. At level `unverified`: `PATH`, for a reference built from a glob or a variable, which the scripts cannot resolve and so report without judging; an unverified finding is not a failure and does not change the exit status. Those ten are the whole set these scripts emit, and `tests/test_f01.sh` compares this line against what they can emit so that neither side can grow without the other.
+**Exit codes are per script, and this table is the scripts' own statements of them.** One sentence used to assert a single contract — `0=pass, 1=spec/path failure, 2=policy failure, 3=execution error` — over five scripts that do not share one, and it drifted because it restated rather than derived. Each row below is copied from that script's own `# Exit codes:` header line, and `tests/test_f01.sh` compares every row against that header, so neither side can move without the other.
+
+| Script | Exit codes |
+|---|---|
+| `check-frontmatter.sh` | 0=pass, 1=spec failure, 2=policy failure, 3=execution error. |
+| `check-paths.sh` | 0=pass, 1=path failure, 3=execution error. |
+| `check-structure.sh` | 0=pass, 1=path failure, 2=policy failure, 3=execution error. |
+| `check-quality.sh` | 0=report produced, 3=execution error. |
+| `audit-report.sh` | 0=report generated, 3=execution error. |
+
+**`audit-report.sh` and `check-quality.sh` report a verdict in their output, not in their exit status.** Both are generators: 0 means a document was produced, and it means that over a failing skill exactly as much as over a clean one. So `audit-report.sh "$skill" && echo PASS` prints PASS for a skill that failed every check — do not write it. Read the verdict out of the report:
+
+```bash
+"$skill_root/scripts/audit-report.sh" "$target_skill" | jq -e '.summary.passed'
+```
+
+The four house-policy checks do carry their verdict in the exit status, and each one's own set is in the table. Treat any status outside a script's set as a script that reached no verdict, not as a verdict you have not seen before.
+
+Rule IDs: every finding carries a level and a rule ID. At level `fail`: `PL001` for license, `PL002` for headings, `PL003` for line count, `PL004` for code blocks, `PL005` for lists, `PT001` for missing scripts, `PT002` for missing markdown links, and — on an exit 3, in the same findings array a `--json` consumer reads — `DEP001` when a required tool is absent and `DEP002` when a source returns a status or a payload the script cannot interpret. At level `unverified`: `PATH`, for a reference built from a glob or a variable, which the scripts cannot resolve and so report without judging; an unverified finding is not a failure and does not change the exit status. Those ten are the whole set these scripts emit, and `tests/test_f01.sh` compares this line against what they can emit so that neither side can grow without the other.
 
 List bundled resources:
 
