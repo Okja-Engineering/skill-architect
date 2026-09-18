@@ -1,7 +1,10 @@
 package profiler
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -86,12 +89,19 @@ func TestProbeDiagnosticsAreCapturesOwnReasons(t *testing.T) {
 	}
 }
 
-// TestProbeDiagnosticsDoNotChangeWhatProbeAdvertises is the guard on the shape
-// of the fix. The capability report is embedded in every profile, so widening
-// it would change what a profile contains and would belong to a schema and
-// adapter-version bump. The diagnostics ride a separate channel, and this holds
-// them there: the capabilities a caller parses are the same either way.
-func TestProbeDiagnosticsDoNotChangeWhatProbeAdvertises(t *testing.T) {
+// TestProbeAndProbeWithDiagnosticsAgreeOnTheReport is one half of the guard on
+// the shape of the fix: the two entry points return the same report, so a
+// caller that switched to the diagnosing one sees no change in what it parses.
+//
+// It is only that half, and it used to claim to be both. Comparing Probe()
+// against ProbeWithDiagnostics() cannot notice a *new field* on
+// CapabilityReport, because both entry points return the same struct and would
+// both grow it — the suite stayed fully green when the report was widened,
+// while the comment here said this held the diagnostics off the report. The
+// claim was sound; the assertion was mislabelled. The claim is asserted by
+// TestCapabilityReportCarriesOnlyTheKeysConsumersRead, and this test now says
+// only what it checks.
+func TestProbeAndProbeWithDiagnosticsAgreeOnTheReport(t *testing.T) {
 	for _, tc := range captureCases {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := adapterForCase(t, tc)
@@ -112,6 +122,69 @@ func TestProbeDiagnosticsDoNotChangeWhatProbeAdvertises(t *testing.T) {
 				t.Errorf("identity differs: %+v vs %+v", plain, withDiags)
 			}
 		})
+	}
+}
+
+// TestCapabilityReportCarriesOnlyTheKeysConsumersRead is the other half, and
+// the one with teeth: the report is embedded in every Profile, so a new key
+// changes what a profile contains for the same input, which is an
+// adapter-version and schema question and not a probe fix. The reason a
+// capability came back "none" therefore rides a separate channel.
+//
+// The key set is read off the *type*, not only off a marshalled report, and
+// that was measured rather than assumed: a `Diagnostics []string` field tagged
+// `json:"diagnostics,omitempty"` leaves an empty probe's JSON byte-identical,
+// so a check that only marshalled one report passed the exact widening it
+// exists to refuse. The declared fields catch that. The marshalled keys are
+// checked against the same set as well, because a `json` tag renamed without
+// touching the Go field is a different key to a caller.
+//
+// Listed rather than counted, so one key swapped for another is caught too.
+func TestCapabilityReportCarriesOnlyTheKeysConsumersRead(t *testing.T) {
+	want := []string{"adapter_version", "capabilities", "harness", "probed_at"}
+
+	declared := []string{}
+	reportType := reflect.TypeOf(CapabilityReport{})
+	for i := 0; i < reportType.NumField(); i++ {
+		field := reportType.Field(i)
+		if field.PkgPath != "" {
+			continue // unexported, so never on the wire
+		}
+		key := strings.Split(field.Tag.Get("json"), ",")[0]
+		switch key {
+		case "-":
+			continue
+		case "":
+			key = field.Name // no tag: the field name is the key
+		}
+		declared = append(declared, key)
+	}
+	sort.Strings(declared)
+
+	if strings.Join(declared, ",") != strings.Join(want, ",") {
+		t.Errorf("CapabilityReport declares keys %v, want %v\n"+
+			"a key added or renamed here changes every profile that embeds this "+
+			"report, so it belongs to a schema and adapter-version bump and not "+
+			"to a probe change", declared, want)
+	}
+
+	raw, err := json.Marshal(ClaudeCodeAdapter{}.Probe())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keyed map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keyed); err != nil {
+		t.Fatal(err)
+	}
+	marshalled := make([]string, 0, len(keyed))
+	for key := range keyed {
+		marshalled = append(marshalled, key)
+	}
+	sort.Strings(marshalled)
+
+	if strings.Join(marshalled, ",") != strings.Join(want, ",") {
+		t.Errorf("a marshalled capability report carries keys %v, want %v",
+			marshalled, want)
 	}
 }
 
