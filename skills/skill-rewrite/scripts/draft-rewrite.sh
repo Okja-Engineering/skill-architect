@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+# Draft a rewritten SKILL.md for a skill, from a skill-audit report.
+# Writes REWRITE-DRAFT.md into the target skill directory and names it on
+# stdout. The draft is a skeleton plus the audit output for a reader to work
+# from; it does not rewrite the skill and does not touch its SKILL.md.
+# Exit codes: 0=draft written, 1=usage or input error.
+# A usage error is a missing or unknown option, an option given without its
+# value, a target directory or SKILL.md that is not there, or a report named
+# with -a that is not there. Every one of them is reported on stderr, naming
+# the option or the path, and leaves no draft behind.
+# The audit's own verdict is not this script's exit status: a skill with
+# failing house policy is the case the drafter exists for, so findings in the
+# report are a successful run.
 set -euo pipefail
 
 target_skill=""
@@ -15,12 +27,26 @@ Options:
 EOF
 }
 
+# value_of <option> <count> — the option's value, or a usage error naming it.
+#
+# Reading "$2" directly is what made a mistyped option report `$2: unbound
+# variable`: a line of bash internals naming a position in the parser, for a
+# caller who needs to be told which option they left empty. The count is passed
+# in because `$#` inside a function is the function's own.
+value_of() {
+  if [[ "$2" -lt 2 ]]; then
+    echo "Missing value for $1" >&2
+    usage >&2
+    exit 1
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -t|--target)
-      target_skill="$2"; shift 2 ;;
+      value_of "$1" "$#"; target_skill="$2"; shift 2 ;;
     -a|--audit)
-      audit_report="$2"; shift 2 ;;
+      value_of "$1" "$#"; audit_report="$2"; shift 2 ;;
     -h|--help)
       usage; exit 0 ;;
     *)
@@ -58,7 +84,11 @@ fi
 skill_name="$(basename "$target_skill")"
 output="$target_skill/REWRITE-DRAFT.md"
 
-# Resolve skill-audit scripts relative to this script.
+# skill-audit is skill-rewrite's sibling, so it is resolved by going up from
+# this script to the skill directory that holds it and then across. Resolved
+# from this script's own location and not from the caller's working directory,
+# which is not part of the answer: `CDPATH=` and `--` are what keep it that way,
+# for the reason verdict-guard.sh sets out at length.
 script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 skill_audit_root="$(dirname "$script_dir")/../skill-audit"
 
