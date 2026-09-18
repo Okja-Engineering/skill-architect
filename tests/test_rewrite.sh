@@ -28,6 +28,13 @@ DRAFTER=skills/skill-rewrite/scripts/draft-rewrite.sh
 work="$harness_scratch/rewrite"
 mkdir -p "$work"
 
+# masked_path / run_on_path / run_masked / run_present live in the shared
+# harness. A masked PATH is a symlink farm of the real PATH minus one binary:
+# nothing is deleted, moved or uninstalled, and nothing is written into it.
+mask_root="$harness_scratch/mask"
+mkdir -p "$mask_root"
+source tests/lib/masked-path.sh
+
 # --- targets ------------------------------------------------------------------
 #
 # A target is copied out of tests/fixtures before it is drafted for, because
@@ -365,5 +372,108 @@ draft_run_watching_mktemp -t "$named_report_target" -a "$named_report"
 assert "a run with -a names the report the caller gave as the draft's provenance" \
   test -n "$(provenance_of "$named_report_target" | grep -F "$named_report" || true)"
 assert "a run with -a leaves no temp file behind either" test -z "$(left_behind)"
+
+# --- the tools this skill needs -----------------------------------------------
+#
+# Discovered by masking each candidate in turn and watching what the drafter
+# can still produce, not read off the source. Reading the source over-credits:
+# `require_tool jq true` in check-structure.sh only fires in `--json` mode, and
+# these stages use none, so a source census would have this skill declare a
+# prerequisite it does not have — and a declaration that is only ever too
+# generous still forces the documentation to say something untrue.
+#
+# The denominator is skill-audit's own `require_tool` calls: the set of tools
+# its scripts state a precondition on, and so the whole set that can stop this
+# skill for want of a tool. It is read rather than listed, so a tool added
+# there cannot fall out of this census.
+#
+# verdict-guard.sh is skipped, for the reason tests/lib/audit-suites.sh is
+# never run over tests/lib/harness.sh: it is where `require_tool` is defined
+# and documented, not where a tool is asked for, and reading it yields its own
+# parameter name and the names of its sibling guards as if they were tools.
+candidate_tools() {
+  local f
+  for f in skills/skill-audit/scripts/*.sh; do
+    case "${f##*/}" in verdict-guard.sh) continue ;; esac
+    { grep -hoE 'require_tool[[:space:]]+[a-z][a-z0-9-]*' "$f" || true; }
+  done | awk '{print $NF}' | sort -u
+}
+
+# A tool is required on this skill's path when masking it stops the drafter
+# from producing the audit. Both channels are read: the guard's message reaches
+# the draft today, through the `2>&1` that folds the child's stderr into the
+# report, and reaches stderr once cluster C3 brings this script inside the
+# guard. The question is the same either way.
+tool_is_required() {
+  local tool="$1"
+  local target
+  target="$(target_from tests/fixtures/f01/valid-full "need-$tool")"
+  run_masked "$tool" "$DRAFTER" -t "$target"
+  if [ "$code" -ne 0 ]; then
+    return 0
+  fi
+  if [ -f "$target/REWRITE-DRAFT.md" ] \
+     && grep -qF "not found: $tool" "$target/REWRITE-DRAFT.md"; then
+    return 0
+  fi
+  printf '%s\n' "$errout" | grep -qF "not found: $tool"
+}
+
+required_tools() {
+  local t
+  for t in $(candidate_tools); do
+    if tool_is_required "$t"; then
+      echo "$t"
+    fi
+  done
+}
+
+# The registry line. One physical line, read for the tools set in code on it,
+# in the shape tests/test_f01.sh reads skill-audit's `Exit codes:` line: the
+# backticks are what make a name a declaration rather than a word in a
+# sentence, so the paragraph under it can discuss a tool without declaring it.
+declared_tools() {
+  { grep -m1 -E '^Required tools:' "$SKILL" || true; } \
+    | { grep -oE '`[a-z][a-z0-9-]+`' || true; } | tr -d '`' | sort -u
+}
+
+assert "the SKILL.md declares a required tool at all" test -n "$(declared_tools)"
+assert "the candidate set is read from skill-audit rather than being empty" \
+  test -n "$(candidate_tools)"
+assert "the SKILL.md declares every tool this skill needs, and none it does not" \
+  test "$(required_tools)" = "$(declared_tools)"
+if [ "$(required_tools)" != "$(declared_tools)" ]; then
+  echo "  candidates: $(candidate_tools | tr '\n' ' ')"
+  echo "  required  : $(required_tools | tr '\n' ' ')"
+  echo "  declared  : $(declared_tools | tr '\n' ' ')"
+fi
+
+# --- the sibling skill this one is not without --------------------------------
+#
+# skill-rewrite bundles one script and borrows every check it runs from the
+# sibling skill-audit, verdict-guard.sh included: every one of those scripts
+# refuses to compute a verdict without it. A reader who installs this skill
+# alone, or who prunes what looks like an unreferenced file out of the sibling,
+# gets a draft built from nothing — so the dependency is a thing the SKILL.md
+# has to name.
+#
+# Proved on a copy of both skills with the guard removed, because the drafter
+# resolves the sibling from its own location: the copy is the only way to ask
+# the question without touching the repository's own tree.
+pruned="$work/pruned"
+rm -rf "$pruned"
+mkdir -p "$pruned"
+cp -R skills "$pruned/skills"
+rm -f "$pruned/skills/skill-audit/scripts/verdict-guard.sh"
+pruned_target="$(target_from tests/fixtures/f01/valid-full pruned-target)"
+run_present "$pruned/skills/skill-rewrite/scripts/draft-rewrite.sh" -t "$pruned_target"
+guard_is_load_bearing() {
+  [ ! -f "$pruned_target/REWRITE-DRAFT.md" ] \
+    || ! grep -qF 'frontmatter OK' "$pruned_target/REWRITE-DRAFT.md"
+}
+assert "without the sibling's verdict-guard.sh the drafter cannot produce the audit" \
+  guard_is_load_bearing
+assert "the SKILL.md names the sibling skill-audit directory as a dependency" \
+  grep -qF 'verdict-guard.sh' "$SKILL"
 
 harness_summary
