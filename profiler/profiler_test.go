@@ -94,6 +94,12 @@ func TestMetricResultSerialization_Error(t *testing.T) {
 // testdata/otlp/README.md.
 func fixture(name string) string { return filepath.Join("testdata", "otlp", name) }
 
+// fixtureSession is the session.id every export under testdata/otlp carries.
+// A capture reads only the records that carry the session it was asked for, so
+// a test reading a fixture's numbers has to ask for the session that produced
+// them.
+const fixtureSession = "00000000-0000-4000-8000-000000000001"
+
 func TestCapabilityReport_ClaudeCode_WithOtel(t *testing.T) {
 	adapter := ClaudeCodeAdapter{OtelExportFile: fixture("full_export.ndjson")}
 	cap := adapter.Probe()
