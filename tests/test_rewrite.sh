@@ -554,6 +554,71 @@ if [ "$(required_tools)" != "$(declared_tools)" ]; then
   echo "  declared  : $(declared_tools | tr '\n' ' ')"
 fi
 
+# --- and what happens when the tool is not there ------------------------------
+#
+# Naming the tool is half of a prerequisite. The other half is what the reader
+# gets when it is missing, and this skill's two paths do not answer that the
+# same way: `check-frontmatter.sh` run directly refuses to report a verdict it
+# could not compute, and the same check run through `draft-rewrite.sh` — the
+# command the paragraph's readers actually run — does not. Nothing here held
+# that paragraph, so it was free to describe the guarded path and leave the
+# reader to meet the other one.
+#
+# So the claim is written on one physical line in code form, the shape
+# tests/test_f01.sh reads skill-audit's `Exit codes:` line in, and each half is
+# compared with a run. The document decides which commands are on the line and
+# what status each exits with; the invocation shape is the suite's to know,
+# since the drafter takes `-t <dir>` and the check takes the directory.
+masked_status_claims() {
+  { grep -m1 -E '^Without `skill-validator`:' "$SKILL" || true; } \
+    | { grep -oE '`[a-z][a-z0-9-]*\.sh` exits `[0-9]+`' || true; } \
+    | tr -d '`' | sed -e 's/ exits / /'
+}
+claimed_status_of() {
+  masked_status_claims | awk -v c="$1" '$1 == c { print $2 }'
+}
+
+# Sets `code`, `output`, `errout` and `no_validator_target`.
+run_without_validator() {
+  local script="$1"
+  no_validator_target="$(target_from tests/fixtures/f01/valid-full "no-validator-${script%.sh}")"
+  case "$script" in
+    draft-rewrite.sh)
+      run_masked skill-validator "$DRAFTER" -t "$no_validator_target" ;;
+    *)
+      run_masked skill-validator "skills/skill-audit/scripts/$script" "$no_validator_target" ;;
+  esac
+}
+
+# Read by two sections: here, for the diagnostic the drafter folds into the
+# draft, and below, for what the audit said about two different targets.
+current_state_of() {
+  sed -n '/^## Current state$/,/^## Proposed structure$/p' "$1/REWRITE-DRAFT.md"
+}
+
+assert "the SKILL.md states what each of its commands does without skill-validator" \
+  test -n "$(masked_status_claims)"
+for script in $(masked_status_claims | awk '{print $1}'); do
+  run_without_validator "$script"
+  assert "without skill-validator $script exits $(claimed_status_of "$script"), the status the SKILL.md gives it" \
+    test "$code" -eq "$(claimed_status_of "$script")"
+done
+
+# The rest of that paragraph, about the path that does not refuse: the drafter
+# drafts anyway, and the check's diagnostic becomes the draft's own `Current
+# state` rather than reaching stderr — which is also why the inventory below
+# describes `Current state` as a merged stream and not as the checks' output
+# verbatim.
+#
+# Asserted in the present tense, so that when cluster C3 brings the drafter
+# inside the guard these go red and the paragraph has to be rewritten, rather
+# than being left describing a behaviour the skill no longer has.
+run_without_validator draft-rewrite.sh
+assert "without skill-validator the drafter writes a draft anyway, as the SKILL.md warns it does" \
+  test -f "$no_validator_target/REWRITE-DRAFT.md"
+assert "without skill-validator the check's diagnostic is the draft's Current state, as the SKILL.md warns" \
+  test -n "$(current_state_of "$no_validator_target" | grep -F 'required tool not found: skill-validator' || true)"
+
 # --- the sibling skill this one is not without --------------------------------
 #
 # skill-rewrite bundles one script and borrows every check it runs from the
@@ -659,9 +724,6 @@ assert "the drafter writes no Constraints template" \
 # a fix.
 checklist_of() {
   sed -n '/^## Action items$/,/^## Notes$/p' "$1/REWRITE-DRAFT.md"
-}
-current_state_of() {
-  sed -n '/^## Current state$/,/^## Proposed structure$/p' "$1/REWRITE-DRAFT.md"
 }
 assert "the audit reported different things about the two targets" \
   test "$(current_state_of "$no_templates_target")" != "$(current_state_of "$all_templates_target")"
