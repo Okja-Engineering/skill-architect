@@ -116,6 +116,18 @@ func cmdCapture(args []string) {
 	exportFile := fs.String("export-file", "", "path to a non-OTel session export (e.g. Devin ATIF); reserved — no shipped adapter reads it, and passing it is an error")
 	parseFlags(fs, args)
 
+	// The three flags a capture cannot be asked for without. This is the flag
+	// layer's check, and it stays here rather than deferring to the adapter:
+	// it runs before a harness is resolved (there may not be an adapter to ask)
+	// and it names all three in one message, so a caller missing two of them
+	// learns both at once instead of one per run.
+	//
+	// --session is also refused by the adapter itself, as
+	// profiler.SessionIDRequiredError — it decides which records are read, so
+	// an empty one is no assertion rather than a session that matched nothing,
+	// and a library caller who never goes through this file is told too. The
+	// two agree deliberately and this one is earlier; the adapter's is the
+	// contract, and this is the usage message for it.
 	if *sessionID == "" || *snapshotHash == "" || *skillDir == "" {
 		fmt.Fprintln(os.Stderr, "required: --session, --snapshot, --skill-dir")
 		os.Exit(1)

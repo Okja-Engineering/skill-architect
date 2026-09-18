@@ -226,6 +226,12 @@ func TestUsageErrorsExitOneSoThatTwoMeansOneThing(t *testing.T) {
 		{"an unknown harness", []string{"capture", "--harness", "nope",
 			"--session", "s", "--snapshot", "h", "--skill-dir", "/d"}},
 		{"a missing required flag", []string{"capture", "--harness", "claude_code"}},
+		// --session decides which records are read, so an empty one is no
+		// assertion rather than a session that matched nothing. Both this
+		// layer and the adapter refuse it; whichever gets there first, it is a
+		// usage error and never a profile.
+		{"an empty --session", []string{"capture", "--harness", "claude_code",
+			"--session", "", "--snapshot", "h", "--skill-dir", "/d"}},
 		{"a flag no adapter reads", []string{"capture", "--harness", "claude_code",
 			"--session", "s", "--snapshot", "h", "--skill-dir", "/d", "--export-file", "s.json"}},
 	} {
