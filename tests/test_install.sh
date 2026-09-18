@@ -115,13 +115,21 @@ BLOCK_SKILLS
 #
 # So the verdict is the resolved write, and it is taken where the write is:
 # `run_documented_block` does not write the block out or execute it until the
-# destination it will use has been expanded *by a shell, in that run's own
-# environment* and resolved — `.` and `..` folded away, symlinks followed
-# through the part of the path that exists — and shown to land strictly inside
-# the harness scratch root. Every spelling of every escape above resolves to
-# somewhere outside and is refused by where it lands rather than by how it
-# looks — each of them handed to the resolved verdict on its own, below, with
-# the shape pass out of the way, so that what refuses them is not in doubt.
+# destination it will use has been expanded *in that run's own environment* and
+# resolved — `.` and `..` folded away, symlinks followed through the part of the
+# path that exists — and shown to land strictly inside the harness scratch root.
+# The climbs, the absolute path and the symlink all resolve to somewhere outside
+# and are refused by where they land rather than by how they look — each handed
+# to the resolved verdict on its own, below, with the shape pass out of the way,
+# so that what refuses them is not in doubt. `~name` is the one exception and it
+# is named there: nothing here reads the password database, so a `~name`
+# destination is refused for being unexpandable rather than for where it lands.
+#
+# "Expanded" does not mean "evaluated", and that distinction is the whole of the
+# fourth round of this defect. The expansion is a substitution over text with no
+# shell behind it, because for three rounds it was a shell behind a screen of
+# the expansion shapes someone had thought of, and the fourth round found the
+# category the screen had never contained. See the sweep section below.
 #
 # The shape pass below is the other fence, and it is not the lesser one. The
 # resolved verdict can only decide the *destination*, because that is the one
@@ -138,21 +146,31 @@ BLOCK_SKILLS
 # list: the run provides it, its value is absolute, and nothing an install block
 # does is resolved from it.
 #
-# It also runs *first*, and that ordering is load-bearing rather than tidy.
-# Resolving a destination means expanding it with a shell, so a destination
-# carrying a substitution has to be refused before the resolution is reached. It
-# was not, once: a precondition went straight to the resolved verdict and a
-# substitution written into the README ran on the machine doing the verifying.
+# Where that fence carries load is the words the resolution cannot reach, and
+# only there — which is a narrower claim than the one that stood here. It used
+# to be the thing that made the resolution safe to reach, because the
+# resolution expanded the destination with a shell and a destination carrying a
+# substitution had to be refused before it got there. It is not that any more:
+# the expansion cannot run anything, so the destination is fenced by the
+# expansion and the resolution, and every rule in the shape pass would still
+# refuse a bad *destination* with the rule removed. That is why each rule is
+# measured on a word that is not the destination
+# (`containment_refuses_every_unaccountable_word_away_from_the_destination`);
+# a control that handed a rule a destination would now pass without it.
+# The shape pass still runs first, but as ordering rather than as a fence in
+# front of a shell.
 #
 # Nothing above is left standing on its own word. Every mechanism either
 # paragraph names has a control below that hands it something it must refuse,
-# and reverting the mechanism reddens its own control — which is the difference
-# between this and what stood here before, where the argument *was* the claim.
-# The residue is named rather than implied: resolution decides the destination
-# only, the shape pass decides the rest by name, and a destination that survives
-# both and still cannot be resolved is refused by the resolution yielding
-# nothing. That last one is a backstop, not a measured mechanism, because
-# nothing the shape pass admits is known to reach it.
+# on the seam where it is the only thing that can refuse it, and reverting the
+# mechanism reddens that control — which is the difference between this and
+# what stood here before, where the argument *was* the claim. The residue is
+# named rather than implied: resolution decides where the destination lands, the
+# expansion decides whether the destination can be read at all, and the shape
+# pass decides every other word by name. A destination the shape pass admits
+# and the expansion cannot read is refused with the character it could not
+# account for named, so "nothing to expand" is a reported refusal and not a
+# silent one.
 #
 # All of these are `require`s, not `assert`s: a failed precondition has to stop
 # the suite, because a reported failure is not a refusal.
@@ -342,22 +360,72 @@ path_resolves_inside() {
 }
 
 # <run dir> <destination text> — what the destination expands to in the
-# environment the block runs in: that run's HOME, that run's working directory,
-# an environment carrying nothing else, and `set -u`, so an expansion the run
-# does not provide is an error here instead of a surprise later.
+# environment the block runs in, or nothing with the reason on stderr, which is
+# itself a refusal.
 #
-# The expansion is the shell's own rather than a re-implementation of it, so
-# `~`, `~name`, `$HOME` and a `..` anywhere in the word mean exactly what they
-# will mean when the block runs. That is the whole point: the question is where
-# the write lands, not how the destination is spelled.
+# Text in, text out. There is no process here that could run what the text
+# says, and that is the design rather than a hardening of it — see the section
+# on the sweep below for why a screen in front of an `eval` cannot be the
+# safety argument. Three expansions are implemented: a leading `~` with no user
+# name, `$HOME`, and `${HOME}`. Everything else has to be a character that is
+# inert in a path. A destination that needs more than this is refused, and the
+# refusal names what it could not account for.
+#
+# Kept to one command on purpose: `the_destination_expansion_uses_no_shell`
+# reads this body and requires that it reaches no interpreter, so anything here
+# that forks a shell — including a command substitution to tidy the output — is
+# a control failure rather than a style question.
 expanded_destination() {
-  local dir text
-  dir="$1"
-  text="$2"
-  env -i HOME="$dir/home" PATH="$PATH" "$suite_bash" -u -c '
-    cd "$1" || exit 1
-    eval "printf %s\\\\n $2"
-  ' _ "$dir/cwd" "$text" 2>/dev/null
+  DESTINATION_TEXT="$2" DESTINATION_HOME="$1/home" awk '
+    function refuse(why) {
+      printf "the destination is not one this suite can expand without a shell: %s\n", why \
+        > "/dev/stderr"
+      exit 1
+    }
+    BEGIN {
+      text = ENVIRON["DESTINATION_TEXT"]
+      home = ENVIRON["DESTINATION_HOME"]
+      n = length(text)
+      if (n == 0) refuse("there is nothing to expand")
+      out = ""
+      i = 1
+      # A tilde, and only at the front of the word. Further in, a shell expands
+      # one in some positions and not in others, and "in some positions" is not
+      # something implemented here.
+      if (substr(text, 1, 1) == "~") {
+        if (n == 1 || substr(text, 2, 1) == "/") {
+          out = home
+          i = 2
+        } else {
+          refuse("a tilde with a user name is read from the password database")
+        }
+      }
+      while (i <= n) {
+        c = substr(text, i, 1)
+        if (c == "$") {
+          if (substr(text, i + 1, 6) == "{HOME}") {
+            out = out home
+            i += 7
+            continue
+          }
+          # $HOME and not $HOMEX: the name has to end where the expansion does.
+          if (substr(text, i + 1, 4) == "HOME" && substr(text, i + 5, 1) !~ /^[A-Za-z0-9_]$/) {
+            out = out home
+            i += 5
+            continue
+          }
+          refuse("the $ at character " i " begins something other than $HOME or ${HOME}")
+        }
+        if (c !~ /^[A-Za-z0-9._\/-]$/) {
+          refuse("the character at " i " is [" c "], which is not one of the inert characters a path may be built from here")
+        }
+        out = out c
+        i += 1
+      }
+      print out
+      exit 0
+    }
+  ' </dev/null
 }
 
 # <run dir> <destination text> — the absolute, resolved path the block would
@@ -399,10 +467,19 @@ destination_resolves_inside_the_scratch_root() {
 #
 # <run dir> <block text> — may this block be run in this run's environment?
 #
-# Two fences, in this order. The shape pass first, because it is what refuses a
-# destination carrying a substitution and so what makes the second fence safe
-# to reach. Then the resolved verdict on the destination, in this run's own
-# environment, which is the proof: it is decided by where the write lands.
+# Three fences. The shape pass over every word, which is the only thing that can
+# reach the words with no value yet. Then the destination, read out of the block
+# the way a shell reads a word, and expanded without one — a destination this
+# suite cannot expand is refused there. Then the resolved verdict on what it
+# expanded to, which is the proof: it is decided by where the write lands.
+#
+# The order is no longer a safety property. It was, while the expansion was a
+# shell: the shape pass had to refuse a substitution before the resolution
+# reached it, and for one revision it did not, and a substitution written into
+# the README ran on the machine doing the verifying. The expansion cannot run
+# anything now, so the second and third fences are safe to reach in any order,
+# and the shape pass is first because reporting the broadest failure first is
+# the more useful diagnostic.
 #
 # A block with no destination assignment is refused rather than waved through.
 # There is then nothing to resolve, and "nothing to resolve" is not a licence
@@ -504,11 +581,17 @@ cp -R skills/skill-audit /etc/codex/skills/skill-audit'
 
 # --- What the shape pass alone decides ----------------------------------------
 #
-# The resolved verdict cannot reach any of these: three are words that are not
-# the destination, and two are destinations whose value cannot be asked for
-# without running something. Each was a mechanism the section above asserted and
-# nothing measured, which is the same defect as the claim of completeness it
-# replaced — a sentence doing the work a control should do.
+# The resolved verdict cannot reach any of these: they are words that are not
+# the destination, so there is nothing for it to resolve. Each was a mechanism
+# the section above asserted and nothing measured, which is the same defect as
+# the claim of completeness it replaced — a sentence doing the work a control
+# should do.
+#
+# The two destination-shaped controls in here are honest about what they now
+# hold. A substitution in the destination is refused twice over — by this pass
+# and by the expansion, which cannot read a `$(` at all — so the control below
+# states the *whole decision's* behaviour, and the control that isolates this
+# pass's substitution rules is the away-from-the-destination one further down.
 
 # The scan used to stop at a line's first `#` token, so anything after one went
 # uninspected. A `#` is only a comment at the start of a word, and a `#` that is
@@ -561,10 +644,39 @@ containment_refuses_a_substitution_before_it_can_run() {
 # A name the block never binds, on a line that is *not* the destination. The
 # resolution never looks there, so the shape pass is the only thing that can
 # refuse it — which is what makes this a control on the shape pass rather than
-# on `set -u` in the expansion, which covers the destination form anyway.
+# on the expansion, which refuses the destination form anyway.
 containment_refuses_an_unbound_name_away_from_the_destination() {
   containment_refuses 'skills_dir=~/.claude/skills
 cp -R skills/skill-audit "$SKILLS_BACKUP/skill-audit"'
+}
+
+# Every remaining rule in the shape pass, each handed something on a line that
+# is *not* the destination — and that placement is the whole point of this
+# control.
+#
+# Since the expansion stopped being a shell, the destination is no longer where
+# the shape pass carries load: take its `~name` rule out and a `~name`
+# destination is still refused, by the expansion; take its `..` rule out and a
+# `..` destination is still refused, by where it resolves. Controls that hand
+# those rules a *destination* therefore pass with the rule gone, which is the
+# non-discriminating shape this cluster keeps producing. Where the shape pass
+# is the only fence is every other word in the block, because
+# `"$skills_dir/$skill"` has no value until the loop is running and there is
+# nothing to resolve. So the rules are measured there.
+#
+# The absolute-path rule already has such a control of its own, in
+# `containment_refuses_a_block_whose_second_line_escapes`, and so does the
+# unbound-name rule directly above; these are the four that did not.
+containment_refuses_every_unaccountable_word_away_from_the_destination() {
+  containment_refuses 'skills_dir=~/.claude/skills
+cp -R skills/skill-audit ~root/.claude/skills/skill-audit' || return 1
+  containment_refuses 'skills_dir=~/.claude/skills
+cp -R skills/skill-audit ../../../../ESCAPED-THE-SCRATCH-ROOT/skill-audit' || return 1
+  containment_refuses 'skills_dir=~/.claude/skills
+cp -R skills/skill-audit "$(id)/skill-audit"' || return 1
+  containment_refuses 'skills_dir=~/.claude/skills
+cp -R skills/skill-audit "`id`/skill-audit"' || return 1
+  return 0
 }
 
 # A block with nothing to resolve is not a block that may run. Waving one
@@ -584,6 +696,13 @@ cp -R skills/skill-audit skill-audit'
 # here, and each is refused with the shape pass out of the way — which is what
 # says the fence holding the escapes out is the resolution and not a denylist
 # wearing new words.
+#
+# One of them is refused for a different reason and it is called out rather than
+# counted in: `~root` does not resolve outside the scratch root, it does not
+# resolve at all, because nothing here reads the password database. It is in
+# this list because the old guard let it through, not because the resolution is
+# what decides it. The four climbs and the symlink are the ones that carry the
+# invariant, and they carry it on where they land.
 resolution_refuses() {
   if destination_resolves_inside_the_scratch_root \
        "$(containment_probe_dir)" "$1" >/dev/null 2>&1; then
@@ -1126,8 +1245,17 @@ documented_update_leaves_the_other_skills_alone() {
 # a block it was handed rather than of the README's, and one reading of "the
 # destination" is what keeps the decision and the assertions talking about the
 # same string.
+#
+# The value ends at whitespace and nowhere else, because that is where a shell
+# ends a word. It used to end at a `#` as well, and that made the destination
+# this suite judged a different string from the one the block would use:
+# `skills_dir=x#;id>FILE` is a single word to a shell, so the assignment is
+# `x#` and the `;id>FILE` after it is a command — while a reader that stopped
+# at the `#` saw a harmless `x`, found it contained, and let the block run. A
+# `#` that really does open a comment has whitespace in front of it, so
+# stopping at whitespace already stops there.
 first_assignment_value() {
-  sed -n 's/^[A-Za-z_][A-Za-z0-9_]*=\([^ 	#]*\).*$/\1/p' | head -1
+  sed -n 's/^[A-Za-z_][A-Za-z0-9_]*=\([^ 	]*\).*$/\1/p' | head -1
 }
 
 documented_destination() {
@@ -1326,6 +1454,8 @@ require "a substitution in the destination is refused before it can run" \
   quietly containment_refuses_a_substitution_before_it_can_run
 require "the containment decision refuses a name the block never binds, away from the destination" \
   containment_refuses_an_unbound_name_away_from_the_destination
+require "the containment decision refuses every unaccountable word away from the destination" \
+  quietly containment_refuses_every_unaccountable_word_away_from_the_destination
 require "the containment decision refuses a block that assigns no destination" \
   containment_refuses_a_block_that_assigns_no_destination
 
