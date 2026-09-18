@@ -1322,7 +1322,7 @@ assert_value "the readme does not claim text mode is unaffected by a missing jq"
   "$(grep -q 'Text mode needs no jq and is unaffected' README.md && echo false || echo true)"
 jq_requirers="$(grep -lE '^[[:space:]]*[^#]*require_tool[[:space:]]+jq' "$SCRIPTS_DIR"/*.sh | wc -l | tr -d ' ')"
 assert_value "the readme names every script that requires jq, and there are $jq_requirers of them" \
-  "$([[ "$jq_requirers" -eq 5 ]] && grep -q 'all five' README.md && echo true || echo false)"
+  "$([[ "$jq_requirers" -eq 5 ]] && grep -qi 'all five .*scripts require jq' README.md && echo true || echo false)"
 
 # adverse_args_of <basename> — the invocation that reaches a verdict, with
 # `@target` standing for the skill directory. A runnable script with no entry

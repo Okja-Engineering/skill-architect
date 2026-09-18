@@ -262,13 +262,41 @@ The profile JSON is the integration point for future paired comparisons (F04). S
 
 ### Prerequisites
 
-The skills shell out to three external tools. Install them before running an audit:
+The skills shell out to ten external tools, and every one of them is a hard
+precondition rather than a nice-to-have: a script that cannot get an answer from
+one of them exits 3 and says which, instead of reporting a verdict it did not
+compute.
+
+Required tools: `awk`, `cat`, `grep`, `jq`, `mktemp`, `sed`, `skill-validator`, `skillscore`, `tr`, `wc`.
+
+That list is compared against the scripts themselves by `tests/test_f01.sh`, in
+both directions, so it cannot fall behind what they actually require.
+
+Three of them you install. Seven are POSIX utilities you already have, and they
+are named here anyway, because "you already have it" is not what these scripts
+require of them — see below.
 
 | Tool | Install | Without it |
 |---|---|---|
 | [`skill-validator`](https://github.com/agent-ecosystem/skill-validator) | `brew install agent-ecosystem/tap/skill-validator` | `skill-audit` stops at its structural-checks stage with `skill-validator not found` and exit 1 — that guard is what protects you. `audit-report.sh` also detects it: `spec` is `null`, `spec_error` names the tool, and `summary.passed` is `false`. `check-frontmatter.sh` run on its own detects it too: it exits 3 with `required tool not found: skill-validator` and never reaches the license gate, so a missing validator can neither pass a skill nor be mistaken for a policy failure. |
 | [`skillscore`](https://www.npmjs.com/package/skillscore) | `npm install -g skillscore` | `skill-audit` stops at the same stage with `skillscore not found` and exit 1. `check-quality.sh` exits 3. `audit-report.sh` emits `quality: null` with `quality_error`, and `quality_score` / `quality_grade` are `null`. |
-| `jq` | `brew install jq` (macOS) · `apt-get install jq` (Debian/Ubuntu) | `audit-report.sh` composes its whole report with jq, so without it there is no report to generate: it exits 3 with `required tool not found: jq` and writes nothing to stdout, rather than dying part-way through. `check-paths.sh --json` and `check-structure.sh --json` require jq unconditionally too: they exit 3 with the same message and a `passed: false` payload carrying a `DEP001` finding, whatever the skill contains. Text mode needs no jq and is unaffected. |
+| `jq` | `brew install jq` (macOS) · `apt-get install jq` (Debian/Ubuntu) | **All five `skill-audit` scripts require jq**, not only the two `--json` modes. `audit-report.sh` composes its whole report with it, so without it there is no report to generate: it exits 3 with `required tool not found: jq` and writes nothing to stdout, rather than dying part-way through. `check-paths.sh --json` and `check-structure.sh --json` exit 3 with the same message and a `passed: false` payload carrying a `DEP001` finding, whatever the skill contains. `check-frontmatter.sh` and `check-quality.sh` need it too, and both are text-mode-only — `check-frontmatter.sh` has no `--json` mode at all. They read what `skill-validator` and `skillscore` answer, and proving a payload readable is done with jq, so a missing jq stops them at exit 3 on stderr with no rule ID. |
+
+`awk`, `cat`, `grep`, `mktemp`, `sed`, `tr` and `wc` are required in the same
+sense and by the same mechanism. Being on `PATH` is not enough: each is asked a
+question with a known answer before it is computed with, so a tool that is
+present and broken — a `jq` that runs and prints nothing, a `grep` that answers
+with an error status, a `wc` that exits 127 — is reported as an execution error
+rather than read as a verdict about your skill. A script that cannot get a
+straight answer from one of them exits 3 and names it.
+
+`check-frontmatter.sh` and `check-quality.sh` now have hard tool requirements
+they did not have before, `jq` among them. That is a deliberate
+widening, stated in each script's header: reading what a source answered needs
+the predicate that proves a payload readable, and that predicate answers with
+jq. The alternative was inferring a verdict from an exit status alone, which is
+what let a `skill-validator` exiting 0 while printing non-JSON report
+`frontmatter OK`.
 
 These checks are deliberately loud — a missing tool fails the audit instead of
 quietly scoring an unchecked skill as a pass. That holds for `jq` as well: a script
