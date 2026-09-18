@@ -127,6 +127,33 @@ assert() {
   fi
 }
 
+# require <label> <command> [args...]
+#
+# The same assertion, plus the refusal. `assert` reports and returns, so the
+# line after it runs; that is right for a check on repository state and wrong
+# for a check that guards a destructive step. A suite that computes "the
+# destination is not redirected away from the developer's live config", prints
+# FAIL, and then runs the install anyway has *reported* a failure, not refused
+# one — and a reported failure is not a refusal. That was live in
+# tests/test_install.sh, which ran `rm -rf` against a real skills directory
+# after its own guard had said no.
+#
+# It lives here rather than in the suite that needed it because "a precondition
+# that halts" is the same machinery for every suite, and a per-suite copy of it
+# is the drift this file exists to end. It is `assert` plus three lines: the
+# report, the count and the exit status all stay in one place, and the stop goes
+# through harness_summary so a refusing suite still prints the verdict it
+# reached. A precondition that aborted silently would trade this defect for the
+# one the abort guard exists to catch.
+require() {
+  local failures_before="$fail"
+  assert "$@"
+  if [ "$fail" -ne "$failures_before" ]; then
+    echo "REFUSED: the precondition above failed, so nothing that depended on it ran"
+    harness_summary
+  fi
+}
+
 # assert_value <label> <verdict>
 #
 # Report the label on a verdict already computed as the string "true".
@@ -194,8 +221,8 @@ harness_summary() {
 # "stopped short" fails by the same route as "never loaded".
 harness_ready() {
   local n
-  for n in harness_init harness_exit assert assert_value quietly witness_exit \
-           harness_summary; do
+  for n in harness_init harness_exit assert assert_value require quietly \
+           witness_exit harness_summary; do
     declare -F "$n" >/dev/null 2>&1 || return 1
   done
   return 0

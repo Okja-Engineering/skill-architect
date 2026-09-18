@@ -14,25 +14,49 @@ harness_init
 #
 # So the assertions below do not check that the README says a particular
 # thing. They **extract the command the README documents and run it**, twice,
-# against a redirected destination, and require the destination to end up
-# identical to the source. That is the invariant: the documented install
-# command is an install *and* an update, so running it again must converge on
-# the source rather than accumulate. Any command that satisfies it passes —
-# the test is pinned to the behaviour, not to the particular command that
-# happens to be documented today.
+# and require the destination to end up identical to the source. That is the
+# invariant: the documented install command is an install *and* an update, so
+# running it again must converge on the source rather than accumulate, and no
+# failure of any step may leave the destination worse than it started. Any
+# command that satisfies that passes — the test is pinned to the behaviour, not
+# to the particular command that happens to be documented today.
 #
-# Nothing here touches a live config. The documented destination is rewritten
-# to a scratch directory under the harness's own scratch root, and the rewrite
-# is asserted (see destination_is_fully_redirected) rather than assumed: a
-# README edit that changed the destination spelling must fail this suite, not
-# quietly install into the developer's real ~/.claude/skills.
+# Nothing here can touch a live config, and that is a property of how the block
+# is run rather than an assertion about its text. See the containment section
+# below: an earlier version of this suite rewrote the destination with `sed` and
+# checked the rewrite with `grep`, which is a guard that holds only for the
+# spellings someone thought of — and it reported its verdict through `assert`,
+# which reports and returns, so the suite ran `rm -rf` against a live skills
+# directory after its own guard had already said no.
 
 install_scratch="$harness_scratch/install"
 mkdir -p "$install_scratch"
 
-# The destination the README documents, as a literal. This is the one string
-# the suite has to know, because it is the string it redirects.
-documented_dest='~/.claude/skills'
+# The bash the suite itself is running under. The block is a documented shell
+# command and this project supports two shells, so a block that behaves
+# differently on 3.2 has to be seen on 3.2 — `bash` off PATH would quietly run
+# every extraction under whichever one is first there.
+suite_bash="${BASH:-bash}"
+
+# --- What the repository ships, as the denominator for everything below -------
+#
+# The skills are enumerated from the repository rather than named, so a third
+# skill is covered the day it lands. Nothing below knows how many there are.
+
+repository_skill_names() {
+  local dir
+  for dir in "$harness_repo_root"/skills/*/; do
+    [ -f "$dir/SKILL.md" ] || continue
+    dir="${dir%/}"
+    printf '%s\n' "${dir##*/}"
+  done
+}
+
+repository_ships_skills() {
+  [ -n "$(repository_skill_names)" ]
+}
+
+# --- The block the README documents ------------------------------------------
 
 # The commands the README documents under "Manual standalone copy", read out of
 # the README itself so the suite cannot drift from the document it is proving.
@@ -48,97 +72,199 @@ documented_manual_copy_block() {
   ' README.md
 }
 
-# The block is a block. An extractor that silently returned nothing would make
-# every assertion below pass over an empty script, which is the failure mode
-# this suite is least able to notice from its own output.
+# The block is a block, and it names every skill the repository ships. An
+# extractor that silently returned nothing, or a block that named only one of
+# the skills, would make "installs and converges" true of a script that
+# installed nothing.
 documented_block_is_extractable() {
-  local block
+  local block name
   block="$(documented_manual_copy_block)" || return 1
   [ -n "$block" ] || return 1
-  # Both shipped skills have to be named, or "runs twice cleanly" could be true
-  # of a script that installs neither of them.
-  printf '%s\n' "$block" | grep -q 'skills/skill-audit' || return 1
-  printf '%s\n' "$block" | grep -q 'skills/skill-rewrite' || return 1
+  while read -r name; do
+    [ -n "$name" ] || continue
+    printf '%s\n' "$block" | grep -q "skills/$name" || return 1
+  done <<BLOCK_SKILLS
+$(repository_skill_names)
+BLOCK_SKILLS
   return 0
 }
 
-# Rewrite the documented destination to a scratch root and emit the result.
-redirected_script() {
-  local dest="$1"
-  documented_manual_copy_block | sed "s|$documented_dest|$dest|g"
-}
-
-# Refuse to run anything still pointing at a real home directory.
+# --- Containment, proven rather than asserted about a substitution -----------
 #
-# This is a safety assertion, not a style one. The suite executes the README's
-# commands verbatim apart from one substitution; if that substitution stops
-# matching, the commands run against the developer's actual skills directory
-# and this suite becomes the thing that corrupts an install.
-destination_is_fully_redirected() {
-  local dest="$1"
-  local script
-  script="$(redirected_script "$dest")" || return 1
-  printf '%s\n' "$script" | grep -q '~/' && return 1
-  printf '%s\n' "$script" | grep -q '\$HOME' && return 1
-  printf '%s\n' "$script" | grep -qF "$dest" || return 1
+# The block runs with HOME and the working directory both inside the harness
+# scratch root, with an environment that carries nothing else, and under
+# `set -u`, which turns any other expansion into an abort *before* the command
+# on that line runs. That leaves exactly two spellings that could still name
+# something outside:
+#
+#   an absolute path — `/Users/you/.claude/skills` ignores HOME entirely;
+#   `~name` — a tilde with a user attached expands from the password database
+#             and not from HOME, so `~root/.claude` escapes a redirected home.
+#
+# Those two are refused here, over every word of the block. This is the whole
+# set of escapes from the containment above, which is what makes it a proof
+# rather than a list of the spellings that happened to be wrong once. The
+# refusal is a `require`, not an `assert`: a failed precondition has to stop the
+# suite, because a reported failure is not a refusal.
+
+text_names_nothing_outside_a_redirected_home() {
+  awk '
+    {
+      n = split($0, w, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) {
+        t = w[i]
+        if (t == "") continue
+        if (substr(t, 1, 1) == "#") break
+        gsub(/["'"'"']/, "", t)
+        sub(/^[A-Za-z_][A-Za-z0-9_]*=/, "", t)
+        if (t ~ /^\//) {
+          printf "%d: absolute path, which ignores a redirected HOME: %s\n", FNR, w[i]
+          bad++
+        } else if (t ~ /^~[^\/]/) {
+          printf "%d: tilde with a user name, which expands from the password database and not from HOME: %s\n", FNR, w[i]
+          bad++
+        }
+      }
+    }
+    END { exit (bad > 0) }
+  '
+}
+
+block_names_nothing_outside_a_redirected_home() {
+  documented_manual_copy_block | text_names_nothing_outside_a_redirected_home
+}
+
+# The control for the guard. A guard that cannot refuse is not a proof of
+# anything, so each escape it exists to catch is handed to it and the refusal is
+# required — before anything is run, because these two checks are what the
+# containment argument rests on.
+guard_refuses() {
+  local why
+  if why="$(printf '%s\n' "$1" | text_names_nothing_outside_a_redirected_home 2>&1)"; then
+    printf 'the containment guard accepted a block it must refuse:\n%s\n' "$1" >&2
+    return 1
+  fi
   return 0
 }
 
-# Run the documented commands once, from the repository root, with errexit on
-# so a documented command that fails is a failure here.
-run_documented_install() {
-  local dest="$1"
-  mkdir -p "$dest"
-  redirected_script "$dest" | bash -euo pipefail
+guard_refuses_an_absolute_destination() {
+  guard_refuses 'rm -rf /Users/you/.claude/skills/skill-audit && cp -R skills/skill-audit /Users/you/.claude/skills/skill-audit'
 }
 
-# --- The invariant ----------------------------------------------------------
-
-# One SKILL.md per installed skill, however many times the command has run.
-# This is the shape a recursive harness walk registers, so it is the shape
-# asserted: the count of SKILL.md files under the destination root is the
-# number of skills installed, not the number of runs.
-skill_manifest_count() {
-  find "$1" -name SKILL.md | wc -l | tr -d '[:space:]'
+guard_refuses_a_tilde_with_a_user_name() {
+  guard_refuses 'cp -R skills/skill-audit ~root/.claude/skills/skill-audit'
 }
 
-documented_install_is_idempotent() {
-  local dest="$install_scratch/idempotent"
-  rm -rf "$dest"
-  run_documented_install "$dest" || return 1
-  [ "$(skill_manifest_count "$dest")" = 2 ] || return 1
-  # The second run is the documented update path.
-  run_documented_install "$dest" || return 1
-  [ "$(skill_manifest_count "$dest")" = 2 ] || return 1
+guard_refuses_a_block_whose_second_line_escapes() {
+  guard_refuses 'mkdir -p ~/.claude/skills
+cp -R skills/skill-audit /etc/codex/skills/skill-audit'
+}
+
+# <path> <root> — path resolves to somewhere strictly inside root. Both sides are
+# resolved, because on this platform the scratch root arrives through /var and
+# lives at /private/var, and a string compare on the unresolved pair says "no"
+# for a path that is in fact inside.
+path_is_inside() {
+  local resolved root
+  resolved="$(CDPATH= cd -P -- "$1" 2>/dev/null && pwd -P)" || return 1
+  root="$(CDPATH= cd -P -- "$2" 2>/dev/null && pwd -P)" || return 1
+  case "$resolved" in
+    "$root"/*) return 0 ;;
+  esac
+  return 1
+}
+
+everything_the_block_can_reach_is_inside_the_scratch_root() {
+  path_is_inside "$install_scratch" "$harness_scratch"
+}
+
+# --- Running the block, contained --------------------------------------------
+
+# A home the block installs into, and a working directory it runs from. The
+# working directory holds a copy of the repository's skills tree rather than the
+# repository itself, so a block that wrote to its source would write to the copy
+# — and so that a run from a directory *without* the tree can be staged just by
+# not making it.
+staged_run_dir() {
+  local name="$1"
+  local dir="$install_scratch/$name"
+  rm -rf "$dir"
+  mkdir -p "$dir/home" "$dir/cwd"
+  printf '%s\n' "$dir"
+}
+
+stage_the_repository_skills() {
+  cp -R "$harness_repo_root/skills" "$1/cwd/skills"
+}
+
+run_documented_block() {
+  local dir="$1"
+  local script="$dir/documented-block.sh"
+  documented_manual_copy_block > "$script" || return 1
+  (
+    cd "$dir/cwd" || exit 1
+    env -i HOME="$dir/home" PATH="$PATH" "$suite_bash" -euo pipefail "$script"
+  )
+}
+
+# --- The invariant ------------------------------------------------------------
+
+# Where the block put things, discovered rather than assumed. The suite does not
+# need to know the path the README documents: it needs the installed tree to be
+# the repository's tree, wherever the README says to put it.
+installed_skill_dirs() {
+  find "$1" -name SKILL.md | sed 's|/SKILL\.md$||' | sort
+}
+
+installed_skill_names() {
+  installed_skill_dirs "$1" | sed 's|^.*/||' | sort
+}
+
+# What is installed is what is in the repository: the same set of skills, one
+# manifest each however many times the command has run, and byte-identical
+# contents. `diff -r` catches the nested copy, a file the update failed to
+# refresh, and a file deleted upstream that the update left behind — three
+# symptoms of the one root, which is a command that merges into the destination
+# instead of replacing it. The manifest count is the part that catches nesting:
+# a nested copy adds a SKILL.md without adding a name.
+installed_tree_is_the_repository_tree() {
+  local home="$1" dir count expected
+  count="$(installed_skill_dirs "$home" | wc -l | tr -d '[:space:]')"
+  expected="$(repository_skill_names | wc -l | tr -d '[:space:]')"
+  [ "$count" = "$expected" ] || return 1
+  [ "$(installed_skill_names "$home")" = "$(repository_skill_names | sort)" ] || return 1
+  while read -r dir; do
+    [ -n "$dir" ] || continue
+    diff -r "$harness_repo_root/skills/${dir##*/}" "$dir" >/dev/null || return 1
+  done <<INSTALLED
+$(installed_skill_dirs "$home")
+INSTALLED
+  return 0
+}
+
+documented_install_is_an_update_that_converges() {
+  local dir
+  dir="$(staged_run_dir idempotent)" || return 1
+  stage_the_repository_skills "$dir" || return 1
+
+  run_documented_block "$dir" || return 1
+  installed_tree_is_the_repository_tree "$dir/home" || return 1
+
+  # The second run is the documented update path. Before it, the two states a
+  # merge-into-the-destination command leaves behind for good: a file the
+  # repository no longer has, and a file whose contents are stale.
+  local installed
+  installed="$(installed_skill_dirs "$dir/home" | head -1)"
+  [ -n "$installed" ] || return 1
+  : > "$installed/withdrawn-upstream.md"
+  echo "stale" > "$installed/SKILL.md"
+
+  run_documented_block "$dir" || return 1
+  installed_tree_is_the_repository_tree "$dir/home" || return 1
+
   # And a third, because "converges" is the claim, not "survives one repeat".
-  run_documented_install "$dest" || return 1
-  [ "$(skill_manifest_count "$dest")" = 2 ] || return 1
-  # The specific corruption, named so a failure reads as itself.
-  [ ! -e "$dest/skill-audit/skill-audit" ] || return 1
-  [ ! -e "$dest/skill-rewrite/skill-rewrite" ] || return 1
-  return 0
-}
-
-# Convergence, stated in full: after the update path has run, what is installed
-# is what is in the repository. `diff -r` catches the nested copy, a file the
-# update failed to refresh, and a file deleted upstream that the update left
-# behind — three symptoms of the one root, which is a command that merges into
-# the destination instead of replacing it.
-documented_install_converges_on_the_source() {
-  local dest="$install_scratch/converges"
-  rm -rf "$dest"
-  run_documented_install "$dest" || return 1
-
-  # A file the repository does not have, as an upstream deletion would leave.
-  : > "$dest/skill-audit/scripts/withdrawn-upstream.sh"
-  # A file the repository does have, with the wrong contents, as a stale copy
-  # would leave.
-  echo "stale" > "$dest/skill-rewrite/SKILL.md"
-
-  run_documented_install "$dest" || return 1
-
-  diff -r skills/skill-audit "$dest/skill-audit" >/dev/null || return 1
-  diff -r skills/skill-rewrite "$dest/skill-rewrite" >/dev/null || return 1
+  run_documented_block "$dir" || return 1
+  installed_tree_is_the_repository_tree "$dir/home" || return 1
   return 0
 }
 
@@ -153,9 +279,21 @@ documented_install_converges_on_the_source() {
 # plugin with nothing in it and gets no error telling them so.
 #
 # Asserted here rather than stated in prose, because prose is what was wrong.
+#
+# The manifest directories are a glob for the same reason the skills are: a
+# fifth agent's manifest is covered the day it lands. Hardcoding the four made
+# every check below blind to exactly the manifest most likely to be wrong.
 
 plugin_manifest_dirs() {
-  echo ".claude-plugin .codex-plugin .cursor-plugin .devin-plugin"
+  local dir
+  for dir in .*-plugin; do
+    [ -d "$dir" ] || continue
+    printf '%s\n' "$dir"
+  done
+}
+
+repository_has_plugin_manifests() {
+  [ -n "$(plugin_manifest_dirs)" ]
 }
 
 manifest_skills_value() {
@@ -163,19 +301,26 @@ manifest_skills_value() {
 }
 
 skills_resolve_from_the_repository_root() {
-  local dir value
-  for dir in $(plugin_manifest_dirs); do
+  local dir value name
+  while read -r dir; do
+    [ -n "$dir" ] || continue
     [ -f "$dir/plugin.json" ] || return 1
     value="$(manifest_skills_value "$dir/plugin.json")" || return 1
     [ -n "$value" ] || return 1
     # Resolves from the repository root...
     [ -d "$value" ] || return 1
-    [ -f "$value/skill-audit/SKILL.md" ] || return 1
-    [ -f "$value/skill-rewrite/SKILL.md" ] || return 1
+    while read -r name; do
+      [ -n "$name" ] || continue
+      [ -f "$value/$name/SKILL.md" ] || return 1
+    done <<MANIFEST_SKILLS
+$(repository_skill_names)
+MANIFEST_SKILLS
     # ...and not from the manifest's own directory, which is the misreading the
     # install instructions have to rule out.
     [ ! -d "$dir/$value" ] || return 1
-  done
+  done <<MANIFEST_DIRS
+$(plugin_manifest_dirs)
+MANIFEST_DIRS
   return 0
 }
 
@@ -184,32 +329,39 @@ skills_resolve_from_the_repository_root() {
 # root" stops being unambiguous and this fails.
 manifest_dir_holds_only_manifests() {
   local dir entry
-  for dir in $(plugin_manifest_dirs); do
-    for entry in "$dir"/*; do
+  while read -r dir; do
+    [ -n "$dir" ] || continue
+    for entry in "$dir"/* "$dir"/.*; do
       case "${entry##*/}" in
+        '.'|'..'|'*'|'.*') ;;
         plugin.json|marketplace.json) ;;
         *) return 1 ;;
       esac
     done
-  done
+  done <<MANIFEST_DIRS
+$(plugin_manifest_dirs)
+MANIFEST_DIRS
   return 0
 }
 
-# The four manifests are maintained by hand and nothing compared them, so they
+# The manifests are maintained by hand and nothing compared them, so they
 # drifted: three spelled the skills path `./skills/` and one spelled it
 # `skills`. Both worked, which is why it survived — the cost of that kind of
 # drift is not a broken install, it is a later "fix them all" that misses one.
 # Comparing them is the only thing that stops it recurring.
 manifests_agree_on_the_skills_path() {
   local dir value first=""
-  for dir in $(plugin_manifest_dirs); do
+  while read -r dir; do
+    [ -n "$dir" ] || continue
     value="$(manifest_skills_value "$dir/plugin.json")" || return 1
     if [ -z "$first" ]; then
       first="$value"
     elif [ "$value" != "$first" ]; then
       return 1
     fi
-  done
+  done <<MANIFEST_DIRS
+$(plugin_manifest_dirs)
+MANIFEST_DIRS
   [ -n "$first" ]
 }
 
@@ -219,7 +371,8 @@ manifests_agree_on_the_skills_path() {
 # the CLI was absent would report nothing in the one place it has to report.
 manifests_carry_author_attribution() {
   local dir
-  for dir in $(plugin_manifest_dirs); do
+  while read -r dir; do
+    [ -n "$dir" ] || continue
     python3 - "$dir/plugin.json" <<'PY' || return 1
 import json, sys
 a = json.load(open(sys.argv[1])).get("author")
@@ -227,26 +380,49 @@ assert isinstance(a, dict), "author must be an object"
 assert a.get("name"), "author.name must be non-empty"
 assert a.get("url"), "author.url must be non-empty"
 PY
-  done
+  done <<MANIFEST_DIRS
+$(plugin_manifest_dirs)
+MANIFEST_DIRS
   return 0
 }
+
+# --- Preconditions ------------------------------------------------------------
+#
+# Everything below runs the README's commands, so these come first and each one
+# stops the suite rather than reporting on its way past.
+
+require "the containment guard refuses an absolute destination" \
+  guard_refuses_an_absolute_destination
+require "the containment guard refuses a tilde with a user name" \
+  guard_refuses_a_tilde_with_a_user_name
+require "the containment guard reads the whole block, not just its first line" \
+  guard_refuses_a_block_whose_second_line_escapes
+require "the destination the block can reach is inside the harness scratch root" \
+  everything_the_block_can_reach_is_inside_the_scratch_root
+require "the README's manual-copy block names nothing outside a redirected home" \
+  quietly block_names_nothing_outside_a_redirected_home
+require "the repository ships skills for the checks below to be about" \
+  repository_ships_skills
+require "the repository holds plugin manifests for the checks below to be about" \
+  repository_has_plugin_manifests
+require "the README documents a manual-copy block naming every shipped skill" \
+  documented_block_is_extractable
+
+echo "  skills examined: $(repository_skill_names | tr '\n' ' ')"
+echo "  plugin manifests examined: $(plugin_manifest_dirs | tr '\n' ' ')"
+
+# --- Assertions ---------------------------------------------------------------
 
 assert "every native route resolves its skills from the repository root" \
   skills_resolve_from_the_repository_root
 assert "no manifest directory is mistakable for the plugin root" \
   manifest_dir_holds_only_manifests
-assert "the four plugin manifests agree on how the skills path is spelled" \
+assert "every plugin manifest agrees on how the skills path is spelled" \
   manifests_agree_on_the_skills_path
 assert "every plugin manifest carries author attribution" \
   quietly manifests_carry_author_attribution
 
-assert "the README documents a runnable manual-copy block" \
-  documented_block_is_extractable
-assert "the documented destination is redirected away from any live config" \
-  destination_is_fully_redirected "$install_scratch/redirect-check"
-assert "the documented manual copy installs two skills and is safe to re-run" \
-  documented_install_is_idempotent
-assert "the documented manual copy converges on the repository contents" \
-  documented_install_converges_on_the_source
+assert "the documented manual copy installs every shipped skill and converges on re-run" \
+  documented_install_is_an_update_that_converges
 
 harness_summary

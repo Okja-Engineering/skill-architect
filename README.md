@@ -448,6 +448,7 @@ pull updates when you choose: these are also the update commands, so they replac
 installed skill rather than copying into it.
 
 ```bash
+mkdir -p ~/.claude/skills
 rm -rf ~/.claude/skills/skill-audit && cp -R skills/skill-audit ~/.claude/skills/skill-audit
 rm -rf ~/.claude/skills/skill-rewrite && cp -R skills/skill-rewrite ~/.claude/skills/skill-rewrite
 ```
