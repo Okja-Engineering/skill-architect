@@ -182,6 +182,15 @@ func (e otlpExport) scopedTo(p provenance) scopedExport {
 
 // scopedMetrics keeps the data points p owns, and drops a metric that had
 // points and kept none. See scopedTo for why those two cases differ.
+//
+// Only a sum's data points are session-filtered, because a sum is the only
+// shape any signal reads a value out of: a metric arriving as a gauge or a
+// histogram passes through whole, and the extractor refuses it for want of sum
+// data points whoever's it is. So a gauge point is never tested against the
+// session and never counted in the "not read" clause — the filter and the
+// counts cover exactly the points a signal could have read, and no reason
+// states a number over points nothing would have looked at. The scope test is
+// the level above and applies to every metric kind, sums or not.
 func scopedMetrics(metrics []otlpMetric, p provenance, ex *exclusions) []otlpMetric {
 	out := make([]otlpMetric, 0, len(metrics))
 	for _, m := range metrics {

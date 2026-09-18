@@ -40,16 +40,21 @@ record — and that list is what was observed on one version, so treat it as the
 floor rather than the whole of it. See the privacy note in the repository
 README ("A capture identifies you"). Read the file before you share it.
 
-**Every readable data point and log record here carries
+**Every `sum` data point and every log record here carries
 `session.id: 00000000-0000-4000-8000-000000000001`**, the one session these
 fixtures are a capture of, except where a fixture exists to hold more than one
 (`two_sessions.ndjson`, `two_sessions_one_metric.json`, `foreign_scope.json` —
 all three use their own ids, listed below). A capture reads only the records carrying the session it was asked for,
 so a fixture whose records name no session is an export no producer writes and
-pins nothing; tests read these through `fixtureSession`. The two files that
-cannot be read as an export at all — `malformed.json` and the tail of
-`truncated_final_line.ndjson` — are left as they are, because nothing in them
-is reached.
+pins nothing; tests read these through `fixtureSession`.
+
+Two kinds of record are deliberately left without one, because the session
+filter never reaches them. `malformed.json` and the tail of
+`truncated_final_line.ndjson` cannot be read as an export at all. And
+`gauge_not_sum.json` carries a **gauge** point: only a sum's data points are
+session-filtered, because a sum is the only shape a signal reads a value out
+of, so that export is refused for its shape whoever's it is and a `session.id`
+on it would pin nothing.
 
 | Fixture | What it pins |
 |---|---|
