@@ -43,6 +43,15 @@ if [[ ! -f "$skill_md" ]]; then
 fi
 
 # Run skill-validator for spec validation (frontmatter, name, description).
+#
+# Every tool this script computes with, stated as a precondition here: awk reads
+# the frontmatter, grep answers the license rule, sed formats a spec failure,
+# and skill-validator is the spec source itself. Each is required to be present
+# *and* to answer a question with a known answer, because a tool that is on PATH
+# and does not work is the fault that reached a consumer.
+require_tool awk false
+require_tool grep false
+require_tool sed false
 require_tool skill-validator false
 
 code=0
@@ -76,7 +85,7 @@ esac
 frontmatter="$(skill_frontmatter "$skill_md")" \
   || cannot_compute DEP002 "could not read the frontmatter of $skill_md" false
 
-if ! echo "$frontmatter" | grep -qE "^license:[[:space:]]"; then
+if ! text_matches false false "^license:[[:space:]]" "$frontmatter"; then
   echo "POLICY FAIL [PL001]: missing license (house policy)"
   exit 2
 fi

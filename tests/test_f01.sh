@@ -964,6 +964,125 @@ run_present "$CHECK_STRUCT" --json tests/fixtures/f01/glob-paths
 assert_value "structure --json: relays the child's PATH finding at its own level" \
   "$(echo "$output" | jq -e '.findings[] | select(.rule == "PATH" and .level == "unverified")' >/dev/null 2>&1 && echo true || echo false)"
 
+# --- A tool is a precondition only when it answered -----------------------------
+#
+# `command -v` proves a name resolves. Every fault this cluster closes was of
+# the other kind: a jq on PATH that ran and printed nothing left check-paths.sh
+# and audit-report.sh exiting 0 with an empty payload channel; a grep that
+# answered with an error status turned a clean skill into nine fabricated PL
+# failures beside `policy_error: null`; a wc that exited 127 became
+# check-structure.sh's own exit status. None of those is absence, and a masked
+# PATH cannot reach any of them.
+#
+# So the cases below drive a tool that is *present and broken*, over the whole
+# cross product of the scripts and the tools each one declares. The tool list is
+# read out of the script and the probe list out of the guard, so a dependency
+# added tomorrow is covered the day it lands rather than the day someone
+# remembers to add a case.
+#
+# A stub here is one directory holding one file, prepended to the real PATH.
+# Nothing is mirrored, replaced or uninstalled.
+
+# broken_tool_path <tool> <mode> — a PATH whose <tool> is present and useless.
+#   silent   exit 0, no output           (the jq fault, verbatim)
+#   erroring exit 2                      (the grep fault, verbatim)
+#   wrong    exit 0, a confident lie
+broken_tool_path() {
+  local tool="$1"
+  local mode="$2"
+  local dir="$mask_root/broken-$tool-$mode"
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir"
+    case "$mode" in
+      silent)   printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/$tool" ;;
+      erroring) printf '#!/usr/bin/env bash\nexit 2\n' > "$dir/$tool" ;;
+      wrong)    printf '#!/usr/bin/env bash\nprintf %s\nexit 0\n' "'not-an-answer\\n'" > "$dir/$tool" ;;
+    esac
+    chmod +x "$dir/$tool"
+  fi
+  echo "$dir:$PATH"
+}
+
+# working_tool_path <tool> — the control. A stub that forwards to the real tool
+# must be accepted, or every case above would pass because the stub mechanism
+# itself breaks the script rather than because the guard caught anything.
+working_tool_path() {
+  local tool="$1"
+  local dir="$mask_root/working-$tool"
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir"
+    printf '#!/usr/bin/env bash\nexec %s "$@"\n' "$(command -v "$tool")" > "$dir/$tool"
+    chmod +x "$dir/$tool"
+  fi
+  echo "$dir:$PATH"
+}
+
+# The probes the guard actually holds, read from its own case arms. A tool the
+# guard has no probe for is not asserted here: skill-validator and skillscore
+# are sources whose answers are proven where they are read, not by a probe.
+guard_probed_tools="$(sed -n '/^tool_answers() {/,/^}$/p' skills/skill-audit/scripts/verdict-guard.sh \
+  | sed -n 's/^[[:space:]]*\([a-z][a-z]*\))[[:space:]].*/\1/p' | sort -u)"
+echo "  tools the guard probes: $(printf '%s' "$guard_probed_tools" | tr '\n' ' ')"
+assert_value "the guard probes the tools these scripts compute with" \
+  "$([[ "$(printf '%s\n' "$guard_probed_tools" | tr '\n' ' ')" == "awk grep jq sed tr wc " ]] && echo true || echo false)"
+
+# tools_required_by <script> — the tools the script states as preconditions.
+tools_required_by() {
+  { grep -ohE 'require_tool[[:space:]]+[a-z][a-z-]*' "$1" || true; } | awk '{print $2}' | sort -u
+}
+
+broken_cases=0
+for bscript in "$SCRIPTS_DIR"/check-structure.sh "$SCRIPTS_DIR"/check-paths.sh \
+               "$SCRIPTS_DIR"/check-frontmatter.sh "$SCRIPTS_DIR"/audit-report.sh; do
+  bname="$(basename "$bscript")"
+  bjson=""
+  case "$bname" in
+    check-structure.sh|check-paths.sh) bjson="--json" ;;
+  esac
+  for btool in $(tools_required_by "$bscript"); do
+    # Only the tools the guard has a probe for; the rest are proven at their read.
+    case "
+$guard_probed_tools
+" in
+      *"
+$btool
+"*) ;;
+      *) continue ;;
+    esac
+    for bmode in silent erroring wrong; do
+      broken_cases=$((broken_cases + 1))
+      run_on_path "$(broken_tool_path "$btool" "$bmode")" "$bscript" ${bjson:+$bjson} tests/fixtures/f01/valid-full
+      assert_value "$bname, $btool present but $bmode: exits 3, not a status meaning a verdict" \
+        "$([[ $code -eq 3 ]] && echo true || echo false)"
+      assert_value "$bname, $btool present but $bmode: never reports passed true" \
+        "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+      assert_value "$bname, $btool present but $bmode: the diagnostic names $btool, not another component" \
+        "$(echo "$errout" | grep -q -- "$btool" && echo true || echo false)"
+      if [[ -n "$bjson" ]]; then
+        assert_value "$bname, $btool present but $bmode: the payload carries DEP002" \
+          "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP002")' >/dev/null 2>&1 && echo true || echo false)"
+        # stdout is the payload channel, so it carries the payload and nothing
+        # else. A broken tool does not honour `-q`: a grep stub that printed a
+        # word and exited 0 put that word on this channel ahead of the payload,
+        # so the guard that caught the fault corrupted the report of it.
+        assert_value "$bname, $btool present but $bmode: stdout carries exactly the payload and nothing else" \
+          "$(printf '%s' "$output" | jq -se 'length == 1' >/dev/null 2>&1 && echo true || echo false)"
+      else
+        assert_value "$bname, $btool present but $bmode: stdout carries no verdict at all" \
+          "$([[ -z "$output" ]] && echo true || echo false)"
+      fi
+    done
+    # The control, per tool: forwarded to the real thing, the verdict is reached.
+    run_on_path "$(working_tool_path "$btool")" "$bscript" ${bjson:+$bjson} tests/fixtures/f01/valid-full
+    assert_value "$bname, $btool forwarded to the real tool: reaches its verdict (exit 0)" \
+      "$([[ $code -eq 0 ]] && echo true || echo false)"
+  done
+done
+
+echo "  present-but-broken cases driven: $broken_cases"
+assert_value "the present-but-broken cross product was enumerated, not read as empty" \
+  "$([[ "$broken_cases" -ge 30 ]] && echo true || echo false)"
+
 # PL003 — the line-count rule. No fixture was ever long enough to raise it.
 big_skill="$mask_root/over-the-line-limit"
 mkdir -p "$big_skill"

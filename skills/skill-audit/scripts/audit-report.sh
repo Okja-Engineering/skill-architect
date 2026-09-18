@@ -73,7 +73,19 @@ if [[ ! -f "$skill_md" ]]; then
   exit 3
 fi
 
+# Every tool this script computes with, stated as a precondition here: jq
+# composes the report, awk reads the frontmatter, grep answers the license rule.
+# Each is required to be present *and* to answer a question with a known answer
+# — a jq on PATH that runs and prints nothing satisfies a presence check and
+# then emits an empty report at exit 0, which is the fault this closes.
+#
+# date is not on the list. Its output is a report field rather than a verdict,
+# and it is resolved before the guard's own diagnostics could name it; a clock
+# that failed leaves a visibly empty timestamp beside a report whose findings
+# are all still true.
 require_tool jq false
+require_tool awk false
+require_tool grep false
 
 timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
@@ -158,13 +170,22 @@ fi
 frontmatter="$(skill_frontmatter "$skill_md")" \
   || cannot_compute DEP002 "could not read the frontmatter of $skill_md" false
 
-if ! echo "$frontmatter" | grep -qE "^license:[[:space:]]"; then
+if ! text_matches false false "^license:[[:space:]]" "$frontmatter"; then
   policy_findings=$(echo "$policy_findings" | jq -c \
     '. + [{"level": "fail", "rule": "PL001", "message": "missing license (house policy)"}]')
 fi
 
 # --- Merge into unified report ---
-jq -n \
+#
+# "0 = report generated" is this script's whole exit contract, so it must not
+# reach 0 without one. It did: stdout here is the report channel, and it carried
+# nothing at exit 0 whenever the tool that composes the report answered with
+# nothing — a caller reading `.summary.passed` out of that gets null, which is
+# neither a pass nor a failure and is indistinguishable from a skill it never
+# asked about. So the document is proven to be the report before it is printed,
+# as far down as a consumer reads the summary, and a report that would not
+# compose is the same DEP002 exit 3 as a source that would not read.
+report="$(jq -n \
   --arg skill "$skill_dir" \
   --arg timestamp "$timestamp" \
   --argjson spec "$spec_json" \
@@ -201,4 +222,15 @@ jq -n \
       findings: $policy_findings
     },
     policy_error: (if $policy_error == "" then null else $policy_error end)
-  }'
+  }')"
+
+json_document_conforms "$report" '
+  if type != "object" then false
+  elif (.summary | type) != "object" then false
+  elif (.summary.passed | type) != "boolean" then false
+  elif (.policy | type) != "object" then false
+  else (.policy.findings | type) == "array"
+  end' \
+  || cannot_compute DEP002 "the report could not be composed; no report was generated" false
+
+printf '%s\n' "$report"

@@ -23,10 +23,18 @@
 # looking at two. So it is asked once, here, beside the guards all four of those
 # scripts already load.
 #
-# The rule ID this file emits directly is DEP001, a required tool is absent.
-# Its callers pass it DEP002 for a source they could not read — a child check
-# whose status or payload they cannot interpret, or a source they could not get
-# a usable answer out of at all.
+# The rule IDs this file emits directly are DEP001, a required tool is absent,
+# and DEP002, a source it could not read: a tool that is present and did not
+# answer a question with a known answer, or one that answered a question about
+# the audited skill with a status nobody can interpret. Its callers pass it
+# DEP002 for the same class one level up — a child check whose status or payload
+# they cannot interpret.
+#
+# A precondition here is "the tool is present **and** answered something this
+# file proved it could read", not "a name resolved". `command -v` was the whole
+# of it once, and every fault that followed was of the other kind: a jq that ran
+# and printed nothing, a grep that answered with an error status, a wc that
+# exited 127. See tool_answers.
 #
 # Source this from a check script, checking the load on both sides:
 #
@@ -154,18 +162,149 @@ cannot_compute() {
   exit 3
 }
 
+# tool_answers <tool>
+#
+# Ask <tool> one question this file already knows the answer to, and succeed
+# only when the answer is right.
+#
+# `command -v` proves a name resolves. It does not prove the thing it resolves
+# to works, and every fault this project has actually had here was of the
+# second kind, not the first: a jq on PATH that ran and printed nothing emptied
+# every payload built with it while the script exited 0; a grep that answered
+# with a status instead of a match turned a clean skill into nine fabricated
+# policy failures; a wc that exited 127 became the script's own exit status.
+# None of those is absence. All of them satisfy a presence check.
+#
+# So the question is asked of the instrument rather than assumed of it, with an
+# input the answer does not depend on. The probes are tiny and constant on
+# purpose: a probe whose answer depended on the audited skill would be a second
+# verdict rather than a check on the tool.
+#
+# A tool with no probe here answers 0, and that is not an oversight. The tools
+# this file has probes for are the ones it computes *with*, where a wrong answer
+# becomes a verdict. skill-validator and skillscore are tools it *asks*, and
+# there is no cheap question with a known answer to put to either; their answers
+# are proven where they are read, by json_document_conforms, which is a stronger
+# check than any probe could be. Stating that here is the point: the contract is
+# "present, and answering wherever an answer can be checked", and where it is
+# checked differs by tool.
+#
+# Three rules hold every probe below, and the first two were each a live defect
+# in this function before they were written down.
+#
+# A probe writes to neither channel. In --json mode the caller's stdout is the
+# payload channel, and a broken tool does not honour `-q`: a grep stub that
+# printed a word and exited 0 put that word on the payload channel twice, ahead
+# of the DEP002 payload, so the thing that caught the fault corrupted the report
+# of it. Every probe either captures the output it reads or discards both
+# channels.
+#
+# No probe depends on another probed tool. Reading wc's answer through `tr`
+# meant a broken tr made the wc probe fail, and the diagnostic named wc — the
+# wrong component, which is the one thing a diagnostic must not do. Each probe
+# asks exactly one tool, and the answer is read with the shell.
+#
+# No pipelines: `grep -q` exits on its first match, and under `pipefail` a
+# writer that then takes SIGPIPE makes a successful match read as a failed
+# pipeline. A here-string has no writer to kill.
+tool_answers() {
+  case "$1" in
+    jq)   [[ "$(jq -n '1 + 1' 2>/dev/null)" == 2 ]] ;;
+    awk)  [[ "$(awk 'BEGIN { print 1 + 1 }' 2>/dev/null)" == 2 ]] ;;
+    sed)  [[ "$(sed 's/a/b/' <<< a 2>/dev/null)" == b ]] ;;
+    tr)   [[ "$(tr a b <<< a 2>/dev/null)" == b ]] ;;
+    wc)   [[ "$(wc -l <<< $'a\nb' 2>/dev/null)" =~ ^[[:space:]]*2[[:space:]]*$ ]] ;;
+    grep) grep -q a <<< a >/dev/null 2>&1 && ! grep -q b <<< a >/dev/null 2>&1 ;;
+    *)    return 0 ;;
+  esac
+}
+
 # require_tool <tool> <emit_json:true|false>
 #
 # A stated precondition, checked once where the dependency is established rather
 # than at each call site — so the requirement never depends on what the audited
 # skill happens to contain.
+#
+# The precondition is that the tool is present **and** answered something this
+# file proved it could read. Those are two different failures and they are
+# reported as two: DEP001 for a tool that is not there, DEP002 for one that is
+# there and did not answer — the same ID this file's callers use for every other
+# source they could not read, because that is what a broken instrument is.
 require_tool() {
   local tool="$1"
   local emit_json="${2:-false}"
 
-  command -v "$tool" >/dev/null 2>&1 && return 0
+  command -v "$tool" >/dev/null 2>&1 \
+    || cannot_compute DEP001 "required tool not found: $tool" "$emit_json"
 
-  cannot_compute DEP001 "required tool not found: $tool" "$emit_json"
+  tool_answers "$tool" \
+    || cannot_compute DEP002 "required tool $tool is present but did not answer a question with a known answer; no verdict was computed" "$emit_json"
+
+  return 0
+}
+
+# text_matches <emit_json> <ignore_case:true|false> <ere> <text>
+#
+# Succeed when <text> matches <ere>, fail when it does not, and reach no verdict
+# at all when grep could not answer the question.
+#
+# `! grep -q …` cannot tell those last two apart, and `set -e` structurally
+# cannot help: a command under `!` is exempt from errexit by definition, so an
+# errored grep reads as "no match" and an absence check turns a tool fault into
+# a house-policy finding. That is how a clean skill came to report nine PL
+# failures beside `policy_error: null`. Asking the status by name is the only
+# way to distinguish them, so it is asked here once rather than at seven call
+# sites, where it would be forgotten at one of them.
+#
+# The three statuses are grep's documented set: 0 matched, 1 did not match, and
+# anything else is an error. The text arrives as a here-string rather than on a
+# pipe for the SIGPIPE reason in tool_answers.
+text_matches() {
+  local emit_json="$1"
+  local ignore_case="$2"
+  local pattern="$3"
+  local text="$4"
+  local status=0
+
+  # Both channels are discarded, for the reason stated in tool_answers: the
+  # caller's stdout may be a payload channel, and `-q` is grep's promise rather
+  # than a property of whatever is on PATH under that name.
+  if [[ "$ignore_case" == "true" ]]; then
+    grep -qiE -e "$pattern" <<< "$text" >/dev/null 2>&1 || status=$?
+  else
+    grep -qE -e "$pattern" <<< "$text" >/dev/null 2>&1 || status=$?
+  fi
+
+  case $status in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) cannot_compute DEP002 "grep could not answer whether the source matches $pattern (status $status); no verdict was computed" "$emit_json" ;;
+  esac
+}
+
+# text_extract <emit_json> <ere> <text>
+#
+# Set `extracted` to every match of <ere> in <text>, one per line, and succeed —
+# including when there are none, which is an answer and not a failure.
+#
+# It assigns rather than echoes, and that is load-bearing. A caller writing
+# `$(text_extract …)` or `< <(text_extract …)` would run it in a subshell, where
+# cannot_compute's exit 3 kills only the subshell: the caller reads an empty
+# result, treats it as "nothing matched", and reports a clean pass over a source
+# it never read. Both extraction sites this replaces were process substitutions,
+# and one of them ended in `|| true`.
+text_extract() {
+  local emit_json="$1"
+  local pattern="$2"
+  local text="$3"
+  local status=0
+
+  extracted="$(grep -oE -e "$pattern" <<< "$text")" || status=$?
+
+  case $status in
+    0|1) return 0 ;;
+    *) cannot_compute DEP002 "grep could not read the source for $pattern (status $status); no verdict was computed" "$emit_json" ;;
+  esac
 }
 
 # json_document_conforms <text> <claim>
@@ -306,8 +445,9 @@ skill_body() {
 # this either, so "stopped short" fails by the same route as "never had it".
 verdict_guard_ready() {
   local g
-  for g in json_string cannot_compute require_tool json_document_conforms \
-           payload_is_conforming skill_section skill_frontmatter skill_body; do
+  for g in json_string cannot_compute tool_answers require_tool text_matches \
+           text_extract json_document_conforms payload_is_conforming \
+           skill_section skill_frontmatter skill_body; do
     declare -F "$g" >/dev/null 2>&1 || return 1
   done
   return 0

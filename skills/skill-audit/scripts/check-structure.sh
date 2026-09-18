@@ -59,6 +59,18 @@ if [[ ! -f "$skill_md" ]]; then
   exit 3
 fi
 
+# Every tool this script computes with, stated as a precondition here rather
+# than discovered at the call site that needed it. awk reads the body, grep
+# answers every policy rule, and wc and tr count the lines; jq is asked for only
+# in --json mode, where it is what builds the payload.
+#
+# They are preconditions and not just presence checks: a tool that is on PATH
+# and does not work is the fault that reached a consumer, not a tool that is
+# missing. require_tool asks each of them a question it knows the answer to.
+require_tool awk "$json_output"
+require_tool grep "$json_output"
+require_tool wc "$json_output"
+require_tool tr "$json_output"
 if $json_output; then
   require_tool jq true
 fi
@@ -82,22 +94,28 @@ findings=()
 body="$(skill_body "$skill_md")" \
   || cannot_compute DEP002 "could not read the body of $skill_md" "$json_output"
 
+# Every rule below is an absence check, and an absence check is exactly where a
+# tool fault becomes a finding: `! grep -q` reads an errored grep as "not
+# there", and a command under `!` is exempt from errexit by definition, so
+# nothing else catches it either. text_matches asks grep's status by name and
+# reaches no verdict at all on anything outside {matched, did not match}.
+
 # Required headings (case-insensitive) — match the original check-structure.sh patterns
 for heading_spec in "When to use" ".*Process" "Examples?" "Deterministic" "Orchestration" "Constraints"; do
-  if ! grep -qiE "^#{2,6}[[:space:]]+${heading_spec}" <<< "$body"; then
+  if ! text_matches "$json_output" true "^#{2,6}[[:space:]]+${heading_spec}" "$body"; then
     findings+=("fail|PL002|missing heading matching '${heading_spec}'")
     fail=2
   fi
 done
 
 # Code blocks
-if ! grep -qE '^[[:space:]]*```' <<< "$body"; then
+if ! text_matches "$json_output" false '^[[:space:]]*```' "$body"; then
   findings+=("fail|PL004|no code blocks found")
   fail=2
 fi
 
 # List items
-if ! grep -qE '^[[:space:]]*[-*]' <<< "$body"; then
+if ! text_matches "$json_output" false '^[[:space:]]*[-*]' "$body"; then
   findings+=("fail|PL005|no list items found")
   fail=2
 fi
@@ -107,9 +125,17 @@ fi
 # metadata a reader does not pay for, and counting it made the limit depend on
 # how much of it a skill declared. An empty body is zero lines rather than the
 # one a newline-terminated read of nothing would report.
+#
+# A count that is not a number is not a count. An empty or non-numeric result
+# reads as 0 inside `[[ -gt ]]`, so a wc or tr that failed would silently retire
+# PL003 rather than raise it, which is a verdict drawn from a source that said
+# nothing.
 line_count=0
 if [[ -n "$body" ]]; then
-  line_count="$(wc -l <<< "$body" | tr -d '[:space:]')"
+  line_count="$(wc -l <<< "$body" | tr -d '[:space:]')" \
+    || cannot_compute DEP002 "could not count the lines of $skill_md; no verdict was computed" "$json_output"
+  [[ "$line_count" =~ ^[0-9]+$ ]] \
+    || cannot_compute DEP002 "the line count of $skill_md came back as '$line_count', which is not a count" "$json_output"
 fi
 if [[ "$line_count" -gt 500 ]]; then
   findings+=("fail|PL003|SKILL.md body is $line_count lines (max 500)")
@@ -191,6 +217,15 @@ if [[ "$path_passed" == "false" && $fail -eq 0 ]]; then
 fi
 
 # --- Output ---
+#
+# The mirror of the rule this whole file is built on. A script must not report a
+# verdict from a source it could not read; it must equally not *emit* a verdict
+# it could not build. Both halves were open: this stdout is the payload channel
+# and it carried nothing at exit 0 whenever the encoder that fills it answered
+# with nothing, which reads to a consumer as a skill with no findings. So the
+# payload is proven to be a payload by the same predicate its own consumers use,
+# before it is printed, and a payload that will not build is the same DEP002 as
+# a source that will not read.
 if $json_output; then
   json_findings="[]"
   for f in ${findings[@]+"${findings[@]}"}; do
@@ -201,8 +236,11 @@ if $json_output; then
     json_findings=$(echo "$json_findings" | jq --arg level "$level" --arg rule "$rule" --arg msg "$message" \
       '. + [{"level": $level, "rule": $rule, "message": $msg}]')
   done
-  echo "$json_findings" | jq --argjson passed "$([[ $fail -eq 0 ]] && echo true || echo false)" \
-    '{findings: ., passed: $passed}'
+  payload="$(echo "$json_findings" | jq --argjson passed "$([[ $fail -eq 0 ]] && echo true || echo false)" \
+    '{findings: ., passed: $passed}')"
+  payload_is_conforming "$payload" \
+    || cannot_compute DEP002 "the findings payload could not be built; no verdict was computed" true
+  printf '%s\n' "$payload"
 else
   for f in ${findings[@]+"${findings[@]}"}; do
     level="${f%%|*}"
