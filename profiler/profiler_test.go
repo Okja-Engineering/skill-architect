@@ -346,6 +346,38 @@ func TestCapture_ClaudeCode_RefusesAnExportFileItCannotRead(t *testing.T) {
 	}
 }
 
+// A present tool_calls result carries no reason, so an export captured mid-run
+// lists the calls whose results were written and has nowhere to say how many
+// accepts it passed over. That is a stated schema v1 gap, not a reason the
+// profile withholds — and it is pinned here because the comment above
+// extractToolCalls once claimed the reason said so in every case, which sent a
+// reader looking for a channel that does not exist.
+func TestToolCalls_APendingAcceptBesideAResultIsNotReported(t *testing.T) {
+	profile := capturedProfile(t, "accept_then_result.json")
+
+	if profile.ToolCalls.State != MetricPresent {
+		t.Fatalf("tool_calls state = %q (%s), want present — one result was written",
+			profile.ToolCalls.State, profile.ToolCalls.Reason)
+	}
+	if got, want := toolCallNames(profile.ToolCalls.Value), []string{"Read"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("tool_calls = %v, want %v — an accept is not an entry; its outcome comes from its result", got, want)
+	}
+	if profile.ToolCalls.Reason != "" {
+		t.Errorf("tool_calls reason = %q on a present result: schema v1 has no reason on present, "+
+			"so this would be a field consumers cannot rely on", profile.ToolCalls.Reason)
+	}
+
+	// The same counter does reach a reader on the path where nothing was read,
+	// which is the case the reason exists for.
+	pending := capturedProfile(t, "accepts_no_results.json")
+	if pending.ToolCalls.State != MetricUnknown {
+		t.Fatalf("tool_calls state = %q, want unknown — no result was written", pending.ToolCalls.State)
+	}
+	if want := "2 accepted " + otelToolDecisionLog + " events"; !strings.Contains(pending.ToolCalls.Reason, want) {
+		t.Errorf("tool_calls reason = %q, want it to name %q", pending.ToolCalls.Reason, want)
+	}
+}
+
 // --- Acceptance criterion 6: Profile JSON round-trips ---
 
 func TestProfileRoundTrip(t *testing.T) {

@@ -560,8 +560,16 @@ func isTokenType(s string) bool {
 // result. Because an accepted call's outcome is read from its result and a
 // rejected call has none, the two sources cannot describe the same call and no
 // de-duplication by tool_use_id is needed. An export captured mid-run has
-// accepts whose results have not been written yet; those calls are not listed,
-// and the reason below says so.
+// accepts whose results have not been written yet, and those calls are not
+// listed.
+//
+// The reason below says so only when no call was read at all, because that is
+// the only path it is built on: a profile/v1 present result carries no reason,
+// so an export mixing completed results with pending accepts lists the results
+// and has no field in which to say how many accepts it passed over. That is the
+// same schema v1 gap as a skipped data point, tracked with it for 0.5.0, and
+// docs/profiler-spec.md states it. A comment claiming the reason always says so
+// would describe a channel the schema does not have.
 func extractToolCalls(export scopedExport) ToolCallResult {
 	var calls []timedCall
 	var c toolCallCounters
