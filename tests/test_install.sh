@@ -481,12 +481,15 @@ cp -R skills/skill-audit /etc/codex/skills/skill-audit'
 # construction of the line that made it, never once looking at the block, while
 # carrying the name of the thing that mattered.
 #
-# This asks the real question of the real destination, in a probe run of the
-# same shape and depth as the staged runs below, and it halts the suite before
-# anything is run. The run sites ask it again for themselves.
-the_documented_destination_resolves_inside_the_scratch_root() {
-  destination_resolves_inside_the_scratch_root \
-    "$(containment_probe_dir)" "$(documented_destination)"
+# It is the same decision the run sites take, on the README's own block, in a
+# probe run of the same shape and depth as the staged runs below, taken early so
+# that it halts the suite before anything is run. Deliberately the same
+# `containment_verdict` and not a second path to the resolved verdict: the
+# shape pass is what refuses a destination carrying a substitution, and going
+# straight to the resolution would hand the README's text to a shell that the
+# shape pass had not seen yet.
+the_documented_block_is_contained() {
+  containment_verdict "$(containment_probe_dir)" "$(documented_manual_copy_block)"
 }
 
 # --- Running the block, contained --------------------------------------------
@@ -509,7 +512,7 @@ stage_the_repository_skills() {
 }
 
 run_documented_block() {
-  local dir script
+  local dir script block
   dir="$1"
   script="$dir/documented-block.sh"
   # Containment, at the site of the run and for this run's environment. The
@@ -517,8 +520,13 @@ run_documented_block() {
   # shown to resolve inside the harness scratch root, so a run that escapes is
   # not a run that is reported — it is a run that does not happen. A run site
   # added later inherits this instead of having to remember it.
-  quietly containment_verdict "$dir" "$(documented_manual_copy_block)" || return 1
-  documented_manual_copy_block > "$script" || return 1
+  #
+  # Read once, then judged and run: what is executed is the text that was
+  # judged, and not a second reading of the document it came from.
+  block="$(documented_manual_copy_block)" || return 1
+  [ -n "$block" ] || return 1
+  quietly containment_verdict "$dir" "$block" || return 1
+  printf '%s\n' "$block" > "$script" || return 1
   (
     cd "$dir/cwd" || exit 1
     env -i HOME="$dir/home" PATH="$PATH" "$suite_bash" -euo pipefail "$script"
@@ -880,10 +888,10 @@ require "the containment decision refuses a destination that resolves through a 
   containment_refuses_a_destination_that_resolves_through_a_symlink
 require "the containment decision reads the whole block, not just its first line" \
   containment_refuses_a_block_whose_second_line_escapes
-require "the destination the README's block resolves to is inside the harness scratch root" \
-  quietly the_documented_destination_resolves_inside_the_scratch_root
 require "the README's manual-copy block names nothing outside a redirected home" \
   quietly block_names_nothing_outside_a_redirected_home
+require "the destination the README's block resolves to is inside the harness scratch root" \
+  quietly the_documented_block_is_contained
 require "the repository ships skills for the checks below to be about" \
   repository_ships_skills
 require "the repository holds plugin manifests for the checks below to be about" \
