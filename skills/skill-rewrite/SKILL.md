@@ -2,7 +2,7 @@
 name: skill-rewrite
 description: Draft a rewritten SKILL.md for an Agent Skill based on a skill-audit report. Use when a skill has failed or weak audit dimensions and you need a concrete rewrite plan before editing. The skill does not apply changes without explicit approval.
 license: MIT
-compatibility: POSIX shell (bash 3.2+ or zsh), git.
+compatibility: bash 3.2+.
 metadata:
   version: "0.1.0"
 ---
