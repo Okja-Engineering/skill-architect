@@ -879,6 +879,53 @@ func TestSeriesIdentity_MapsThatAreEqualShareOneSeries(t *testing.T) {
 	}
 }
 
+// A kind written as JSON null is the kind unset, not the kind holding its zero
+// value — so such an attribute is an AnyValue of no kind, which is the answer
+// the table above pins an empty map against.
+//
+// This is the same rule the envelope is read by ({"resourceMetrics":null} says
+// nothing about metrics) and the same one that makes a null members list the
+// empty list: ProtoJSON reads a null as the field being unset, so nothing is
+// there to identify. Checked against the reference implementation over the real
+// AnyValue: protojson.Unmarshal leaves the oneof unset for every kind written
+// null, scalars included, and re-marshals each of them as {}.
+//
+// Two encodings, two answers, and the direction matters: reading a null-written
+// kind as that kind's empty value merges an attribute nobody set with one
+// somebody set empty, which merges two series into one and reports a session's
+// tokens as a fraction of themselves. The pointer kinds got this right for
+// free, because encoding/json reads a null into a nil pointer; the five kinds
+// held as raw JSON had to be told.
+func TestSeriesIdentity_AKindWrittenNullIsNoKindAtAll(t *testing.T) {
+	const attrs = `[{"key":"k","value":%s}]`
+	for _, tc := range []struct{ kind, null, zero string }{
+		{"kvlistValue", `{"kvlistValue":null}`, `{"kvlistValue":{"values":[]}}`},
+		{"arrayValue", `{"arrayValue":null}`, `{"arrayValue":{"values":[]}}`},
+		{"intValue", `{"intValue":null}`, `{"intValue":"0"}`},
+		{"doubleValue", `{"doubleValue":null}`, `{"doubleValue":0}`},
+		{"bytesValue", `{"bytesValue":null}`, `{"bytesValue":""}`},
+		{"stringValue", `{"stringValue":null}`, `{"stringValue":""}`},
+		{"boolValue", `{"boolValue":null}`, `{"boolValue":false}`},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			same := seriesIDs(t, "m",
+				batch("", "", fmt.Sprintf(attrs, tc.null)),
+				batch("", "", fmt.Sprintf(attrs, `{}`)))
+			if same[0] != same[1] {
+				t.Errorf("%s written null is not the AnyValue of no kind:\n  %q\n  %q", tc.kind, same[0], same[1])
+			}
+
+			differ := seriesIDs(t, "m",
+				batch("", "", fmt.Sprintf(attrs, tc.null)),
+				batch("", "", fmt.Sprintf(attrs, tc.zero)))
+			if differ[0] == differ[1] {
+				t.Errorf("%s written null shares one series identity %q with the same kind written empty",
+					tc.kind, differ[0])
+			}
+		})
+	}
+}
+
 // An array's member order *is* part of its value, and the repair above must not
 // take that with it.
 func TestSeriesIdentity_AnArrayKeepsItsMemberOrder(t *testing.T) {

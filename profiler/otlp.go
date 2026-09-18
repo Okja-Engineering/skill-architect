@@ -710,25 +710,44 @@ func (v otlpAttrValue) identity() string {
 		return "s" + *v.StringValue
 	case v.BoolValue != nil:
 		return "b" + strconv.FormatBool(*v.BoolValue)
-	case len(v.IntValue) > 0:
+	case wasSet(v.IntValue):
 		if n, ok := jsonInt64(v.IntValue); ok {
 			return "i" + strconv.FormatInt(n, 10)
 		}
 		return "i?" + compactJSON(v.IntValue)
-	case len(v.DoubleValue) > 0:
+	case wasSet(v.DoubleValue):
 		if f, ok := jsonFloat64(v.DoubleValue); ok {
 			return "d" + strconv.FormatFloat(f, 'g', -1, 64)
 		}
 		return "d?" + compactJSON(v.DoubleValue)
-	case len(v.ArrayValue) > 0:
+	case wasSet(v.ArrayValue):
 		return "a" + arrayIdentity(v.ArrayValue)
-	case len(v.KvlistValue) > 0:
+	case wasSet(v.KvlistValue):
 		return "k" + kvlistIdentity(v.KvlistValue)
-	case len(v.BytesValue) > 0:
+	case wasSet(v.BytesValue):
 		return "y" + compactJSON(v.BytesValue)
 	}
 	// No kind was set at all, which is not the same answer as any of them.
 	return "-"
+}
+
+// wasSet reports whether a raw JSON field carried a value at all.
+//
+// A JSON null is not one. ProtoJSON reads a null as the field being unset, so
+// {"kvlistValue":null} names a kind and still says nothing about it: that
+// attribute is an AnyValue of no kind, exactly as {} is, and not the empty map
+// {"kvlistValue":{}} — which is a value somebody set. The reference
+// implementation was checked over the real AnyValue: every kind written null
+// leaves the oneof unset, scalars included, and re-marshals as {}.
+//
+// The envelope is read by this same rule, where the pointer fields tell the two
+// apart for free (see hasEnvelope). A json.RawMessage keeps the null literal
+// instead, so the five kinds held as raw bytes have to test for it — and the
+// two held as pointers get it from encoding/json, which reads a null into a nil
+// pointer. It is not applied to the members list of an array or a map, because
+// a repeated field's null *is* its default: the empty list.
+func wasSet(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(bytes.TrimSpace(raw)) != "null"
 }
 
 // arrayIdentity is an ArrayValue as a canonical string: its members in the
