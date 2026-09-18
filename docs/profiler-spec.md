@@ -125,6 +125,17 @@ type ProfilerAdapter interface {
     Capture(sessionID string, opts CaptureOpts) (Profile, error)
 }
 
+// ProbeDiagnoser is optional, and asserted at the call site rather than folded
+// into ProfilerAdapter: an adapter that cannot say why a capability came back
+// "none" is still a complete adapter.
+type ProbeDiagnoser interface {
+    // ProbeWithDiagnostics probes once and returns the report together with one
+    // message per distinct reason a signal could not be read. Empty when
+    // nothing failed, including when no export was supplied at all — that is an
+    // answer about the session, not a fault of the run.
+    ProbeWithDiagnostics() (CapabilityReport, []string)
+}
+
 type CaptureOpts struct {
     ExportFile    string `json:"export_file,omitempty"`      // ATIF export or session transcript path
     APIKey        string `json:"api_key,omitempty"`          // server API auth (Devin)
@@ -240,6 +251,8 @@ Within that envelope:
    - `claude_code.tool_result` log events carrying a `tool_name` and a readable `success`, or `claude_code.tool_decision` events recording a reject with a `tool_name` → `tool_calls: otel`
    - `claude_code.api_request` log events carrying a parseable `timeUnixNano` → `timing: otel`
    If the file is absent, unreadable, malformed, missing the signal, or carrying the signal with nothing readable inside it, that capability stays `none`. Availability is a fact about a value in hand, not about a name matched in a file — a probe that reports structure is how it comes to advertise data the capture cannot deliver.
+
+   A capability's vocabulary is a source or `none`, so the report structurally cannot distinguish "no telemetry was configured" from "the export you named could not be read": both are `none`, while capture keeps them apart as `unknown` and as `error` with a reason. That distinction is information `resolve` already computed, so probe reports it — on **stderr**, through `ProbeDiagnoser`, one message per distinct reason, using capture's own wording. Adding it to `CapabilityReport` instead would change what every `Profile` that embeds the report contains for the same input, which is a schema and adapter-version question; a second channel changes nothing anyone parses. `Probe()` delegates to `ProbeWithDiagnostics()` so there is one read of one file and the report and its explanation cannot describe different files.
 2. Skill activation and attribution are always `none` for Claude Code, for two different reasons. Activation is `none` because this adapter does not read the telemetry, not because the telemetry is absent: Claude Code logs a `claude_code.skill_activated` event whenever a skill is invoked — through the Skill tool or a `/` command — carrying `skill.name`, `invocation_trigger`, `skill.source` and `skill.kind`, and attaches `skill.name` to `token.usage`, `cost.usage`, `api_request`, `api_error` and `api_refusal` besides. Attribution is `none` because there is nothing to read: its telemetry carries no output-to-skill mapping at all. A reason may say what this adapter does not read; it may not say what the harness does not emit unless that is true.
 
 **Capture logic:**
@@ -253,7 +266,14 @@ Within that envelope:
 8. The profile's `capability` block is derived from the same resolution, so probe and capture cannot disagree about what the export yielded.
 9. Serialize to `Profile` JSON.
 
-**CLI exit status.** `profiler capture` writes the profile to stdout in every case, and exits **2** when no signal was read and at least one is `error` — a supplied export that could not be used — and **0** otherwise, including an all-`unknown` profile from a session with no telemetry configured. The status is what a wrapping script branches on; exiting 0 after reading nothing would have it store the all-unknown profile as a successful capture. Every usage error exits **1** before any capture happens: an unknown command or harness, a missing required flag, `--export-file`, and an unrecognised flag. The last one is why the flag sets use `ContinueOnError` — `flag.ExitOnError` exits 2 on its own, and 2 has to mean exactly one thing for a script to branch on it.
+**CLI exit status.** `profiler probe` writes the capability report to stdout, writes any
+diagnostics to stderr, and exits **0** in every case, including one where the export it was
+given could not be read. stdout is byte-identical with and without diagnostics, so a caller
+already parsing it is unaffected. Probe has no documented exit contract to extend, so giving
+it one is new surface rather than a repair, and it is **deferred to 0.5.0**; a caller that
+must branch on a bad export uses `capture`, which does have one.
+
+`profiler capture` writes the profile to stdout in every case, and exits **2** when no signal was read and at least one is `error` — a supplied export that could not be used — and **0** otherwise, including an all-`unknown` profile from a session with no telemetry configured. The status is what a wrapping script branches on; exiting 0 after reading nothing would have it store the all-unknown profile as a successful capture. Every usage error exits **1** before any capture happens: an unknown command or harness, a missing required flag, `--export-file`, and an unrecognised flag. The last one is why the flag sets use `ContinueOnError` — `flag.ExitOnError` exits 2 on its own, and 2 has to mean exactly one thing for a script to branch on it.
 
 **Fallback:** With no export file configured, `tokens`, `tool_calls`, and `timing` are `unknown` with reason "OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile." A file that is configured but cannot be read as an OTLP/JSON export must not borrow that reason: missing, unreadable, empty, non-object at the top level, malformed, or not fitting the OTLP schema are all `error`, naming the failure, because the caller did supply a file and "not configured" would send them to fix the one thing that is not wrong. A file that parses but carries nothing readable for a signal leaves that signal `unknown`, naming what was missing; a file carrying no OTLP envelope at all leaves all three `unknown`, naming the format expected. `skill_activation` and `attribution` are `unknown` with their own reasons (steps 6 and 7 above) in every one of these cases — they are a property of the harness and of this adapter, not of the export. The adapter reads only the file it is given: it does not inspect `CLAUDE_CODE_ENABLE_TELEMETRY` or the `OTEL_*` env vars itself.
 
