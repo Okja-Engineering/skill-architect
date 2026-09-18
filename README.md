@@ -389,7 +389,7 @@ verified were run against a clean install on this release's tree.
 |---|---|---|
 | Devin | `devin plugins install Okja-Engineering/skill-architect` | not verified — the `owner/repo` form syncs to Devin Cloud and needs a logged-in account, which this release had no way to exercise. The local-path form under "Local checkout" *was* run and is verified |
 | Codex | Install from the local plugin directory or marketplace entry (see [Codex plugin docs](https://developers.openai.com/codex/plugins)) | not verified — no Codex CLI was reachable to run it. The citation moved: the page this row used to link was a third-party mirror that defers to OpenAI's own docs for the authoritative version |
-| Cursor | Copy or symlink the plugin directory to your Cursor plugins folder (see [Cursor plugin docs](https://cursor.com/docs/plugins)) | not verified |
+| Cursor | Copy or symlink **the repository root** — the directory holding `.cursor-plugin/plugin.json`, not `.cursor-plugin/` itself — into your Cursor plugins folder (see [Cursor plugin docs](https://cursor.com/docs/plugins)) | not verified — no Cursor install was reachable here, so the destination folder is unconfirmed and comes from Cursor's docs, not from us. Which directory to copy *is* confirmed, from this repository's own layout |
 
 All native plugins use the same namespace:
 

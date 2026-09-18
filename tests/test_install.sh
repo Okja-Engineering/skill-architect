@@ -142,6 +142,64 @@ documented_install_converges_on_the_source() {
   return 0
 }
 
+# --- What "the plugin directory" means, for every native route --------------
+#
+# Each agent reads its manifest from its own subdirectory of the repository
+# root, and the manifest's `skills` value resolves from the *root*, not from the
+# directory the manifest sits in. That makes the repository root the plugin root
+# and the manifest directory merely where the manifest lives — a distinction the
+# install instructions have to get right, because `.cursor-plugin/` on its own
+# holds one JSON file and no skills, so a reader who copies that installs a
+# plugin with nothing in it and gets no error telling them so.
+#
+# Asserted here rather than stated in prose, because prose is what was wrong.
+
+plugin_manifest_dirs() {
+  echo ".claude-plugin .codex-plugin .cursor-plugin .devin-plugin"
+}
+
+manifest_skills_value() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["skills"])' "$1"
+}
+
+skills_resolve_from_the_repository_root() {
+  local dir value
+  for dir in $(plugin_manifest_dirs); do
+    [ -f "$dir/plugin.json" ] || return 1
+    value="$(manifest_skills_value "$dir/plugin.json")" || return 1
+    [ -n "$value" ] || return 1
+    # Resolves from the repository root...
+    [ -d "$value" ] || return 1
+    [ -f "$value/skill-audit/SKILL.md" ] || return 1
+    [ -f "$value/skill-rewrite/SKILL.md" ] || return 1
+    # ...and not from the manifest's own directory, which is the misreading the
+    # install instructions have to rule out.
+    [ ! -d "$dir/$value" ] || return 1
+  done
+  return 0
+}
+
+# The manifest directory is not itself a distributable plugin: it holds the
+# manifest and nothing else. If a skill ever lands inside one, "copy the plugin
+# root" stops being unambiguous and this fails.
+manifest_dir_holds_only_manifests() {
+  local dir entry
+  for dir in $(plugin_manifest_dirs); do
+    for entry in "$dir"/*; do
+      case "${entry##*/}" in
+        plugin.json|marketplace.json) ;;
+        *) return 1 ;;
+      esac
+    done
+  done
+  return 0
+}
+
+assert "every native route resolves its skills from the repository root" \
+  skills_resolve_from_the_repository_root
+assert "no manifest directory is mistakable for the plugin root" \
+  manifest_dir_holds_only_manifests
+
 assert "the README documents a runnable manual-copy block" \
   documented_block_is_extractable
 assert "the documented destination is redirected away from any live config" \
