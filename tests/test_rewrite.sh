@@ -888,6 +888,32 @@ assert "the drafter never reads skill-audit's evaluation matrix" \
 assert "the draft's title names the target skill" \
   grep -qF '# Rewrite draft: all-sections' "$no_templates_target/REWRITE-DRAFT.md"
 
+# --- how much of a heading a probe has to see ---------------------------------
+#
+# The probes are not all the same shape, and the document used to describe them
+# as though they were. `Validation` is matched as a prefix, so a target's own
+# `### Validation` — which is what the all-sections fixture carries, and how it
+# suppresses the third template — is enough; `When to use` and
+# `Example`/`Examples` have to be the whole heading, so a heading that merely
+# begins with one of them suppresses nothing.
+#
+# Both directions are asked of a target rather than read off the probe, because
+# the difference is only visible in what a run draws. The second target is
+# built here rather than added to tests/fixtures: it is this fixture plus one
+# heading, and the heading is the whole of the question.
+assert "the all-sections fixture's Validation heading is not the template's own name" \
+  grep -qE '^### Validation$' tests/fixtures/rewrite/all-sections/SKILL.md
+assert "a heading that only begins with Validation suppresses the Validation checklist template" \
+  test -z "$(grep -E '^#{3,6} Validation checklist' "$no_templates_target/REWRITE-DRAFT.md" || true)"
+
+examples_prefix_target="$(target_from tests/fixtures/f01/valid-minimal examples-prefix)"
+printf '\n## Examples of what not to do\n\nNothing here.\n' >> "$examples_prefix_target/SKILL.md"
+draft_run -t "$examples_prefix_target"
+assert "the built target's heading only begins with Examples, so the probe has the case to decide" \
+  grep -qE '^## Examples of what not to do$' "$examples_prefix_target/SKILL.md"
+assert "a heading that only begins with Examples does not suppress the Examples template" \
+  grep -qE '^#{3,6} Examples$' "$examples_prefix_target/REWRITE-DRAFT.md"
+
 # --- the compatibility the skill actually has ---------------------------------
 #
 # A `compatibility:` line is a promise to whoever is deciding whether to install

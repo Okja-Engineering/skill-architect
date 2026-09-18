@@ -72,7 +72,7 @@ target_skill="<target-skill-dir>"
 "$skill_root/scripts/draft-rewrite.sh" -t "$target_skill" -a "<audit-report-path>"
 ```
 
-This writes a `REWRITE-DRAFT.md` next to the target skill's `SKILL.md`, and names it on stdout. The draft is a skeleton to work from, not a rewritten skill: the drafter reads the target's `SKILL.md` only to ask which of three headings it already has, and never writes to it.
+This writes a `REWRITE-DRAFT.md` next to the target skill's `SKILL.md`, and names it on stdout. The draft is a skeleton to work from, not a rewritten skill: the drafter reads the target's `SKILL.md` only to run three heading probes over it, and never writes to it.
 
 #### The sections the drafter writes
 
@@ -92,7 +92,7 @@ Above them, a `# Rewrite draft: <target>` title. What each holds:
 
 - `Current state` — the Stage 1 checks' output with their stdout and stderr merged into one stream, or the contents of the report given with `-a`. The merge is why a missing tool shows up here as the skill's own state; see Prerequisites.
 - `Proposed structure` — the spec and ICM section list. Fixed text, the same for every target.
-- `Missing section templates` — a blank template for each of `When to use`, `Examples` and `Validation checklist` that the target has no heading for. A target that already has all three gets the heading and nothing under it.
+- `Missing section templates` — a blank template for each of `When to use`, `Examples` and `Validation checklist` the target has no heading for. The three probes read heading levels `##` to `######` and ignore case, and they are not all the same shape: `When to use` and `Example`/`Examples` must be the whole heading, while `Validation` is matched as a prefix, so a target's own `### Validation` section suppresses the `Validation checklist` template. A target that already has all three gets the heading and nothing under it.
 - `Action items` and `Notes` — fixed text, the same for every target.
 
 **What the drafter does not do**, and what Stage 3 is therefore for. It does not copy or correct the target's frontmatter. It writes no template for `Deterministic actions`, `Orchestration` or `Constraints`. `Action items` is a five-item review checklist, not a mapping of the audit's findings: it is the same text for a skill that audits clean and one that fails, and the drafter never reads the evaluation matrix. Scoring the dimensions and turning them into fixes is Stage 1 and Stage 3 work, done by the reader.
