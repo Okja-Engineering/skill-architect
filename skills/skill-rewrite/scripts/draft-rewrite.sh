@@ -165,7 +165,13 @@ output="$target_skill/REWRITE-DRAFT.md"
 if [[ -z "$audit_report" ]]; then
   provenance="structural checks run by this script: skill-audit's check-frontmatter.sh and check-structure.sh"
   echo "No audit report provided; running structural checks..." >&2
-  own_audit_report="$(mktemp)"
+  # An explicit template, under the caller's temp directory and named after the
+  # tool that made it. `mktemp` with no template ignores TMPDIR on BSD and
+  # honours it on GNU, so a bare call puts this file somewhere the caller did
+  # not choose on one of the two platforms this skill supports — and leaves a
+  # leak nobody can look for, because its location differs by platform and its
+  # name says nothing about where it came from.
+  own_audit_report="$(mktemp "${TMPDIR:-/tmp}"/draft-rewrite-audit.XXXXXX)"
   audit_report="$own_audit_report"
   # Each check's status is read, and each check's stdout is captured alone.
   # check-frontmatter.sh and check-structure.sh both exit 0 pass, 1 a spec or

@@ -229,16 +229,26 @@ assert "draft-rewrite, verdict-guard.sh absent: exits 3 and writes no draft" \
 # It leaves no temporary audit behind, on the path that writes a draft or on the
 # path that refuses to. The refusing path is new, and a new exit path that
 # leaked a file each time would be this change's own doing.
+# The temporary directory is a private one, not the shared /tmp: mktemp honours
+# TMPDIR, and counting entries in a directory other processes also write to is
+# a test that fails when something unrelated happens to run beside it.
 draft_leaves_no_temp() {
-  local target before after
-  before="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' 2>/dev/null | wc -l | tr -d '[:space:]')"
+  local target left
+  local tmphome="$harness_scratch/draft-tmphome"
+  rm -rf "$tmphome"
+  mkdir -p "$tmphome"
+
   target="$(draft_target leak-ok)"
-  "$DRAFT" -t "$target" >/dev/null 2>&1 || return 1
+  TMPDIR="$tmphome" "$DRAFT" -t "$target" >/dev/null 2>&1 || return 1
+
   target="$(draft_target leak-refused)"
-  PATH="$(draft_stub_path leak-refused skill-validator 127)" "$DRAFT" -t "$target" >/dev/null 2>&1 || true
-  after="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' 2>/dev/null | wc -l | tr -d '[:space:]')"
-  if [ "$before" != "$after" ]; then
-    printf 'temporary files before=%s after=%s\n' "$before" "$after" >&2
+  TMPDIR="$tmphome" PATH="$(draft_stub_path leak-refused skill-validator 127)" \
+    "$DRAFT" -t "$target" >/dev/null 2>&1 || true
+
+  left="$(find "$tmphome" -type f | wc -l | tr -d '[:space:]')"
+  if [ "$left" != 0 ]; then
+    printf 'the draft left %s temporary file(s) behind:\n' "$left" >&2
+    find "$tmphome" -type f >&2
     return 1
   fi
   return 0
