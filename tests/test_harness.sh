@@ -156,6 +156,15 @@ EOF
 assert "the audit rejects a value-shaped verdict written as a literal" \
   audit_rejects "$fixtures/value-literal.sh"
 
+# A precondition is an assertion that also refuses, so it carries an assertion's
+# vacuity question unchanged. A precondition that cannot fail is worse than a
+# vacuous assertion: it is a guard that can never refuse.
+cat > "$fixtures/require-literal.sh" <<'EOF'
+require "the destination is inside the scratch root" true
+EOF
+assert "the audit rejects a precondition that cannot fail" \
+  audit_rejects "$fixtures/require-literal.sh"
+
 cat > "$fixtures/trailing-true.sh" <<'EOF'
 mkdir -p tests && assert "a vacuous assertion after a separator" true
 EOF
@@ -167,6 +176,7 @@ assert "the audit reads an assertion that is not the first word on its line" \
 cat > "$fixtures/real-command.sh" <<'EOF'
 assert "tests/ exists" test -d tests
 assert "the harness is readable" quietly cat tests/lib/harness.sh
+require "the repository is where the suite thinks it is" test -d skills
 EOF
 assert "the audit accepts a verdict that runs a command" \
   audit_accepts "$fixtures/real-command.sh"
@@ -197,6 +207,14 @@ assert() {
 EOF
 assert "the audit rejects a suite that defines its own assert" \
   audit_rejects "$fixtures/own-assert.sh"
+
+cat > "$fixtures/own-require.sh" <<'EOF'
+require() {
+  echo "a private copy of the precondition, free to stop refusing"
+}
+EOF
+assert "the audit rejects a suite that defines its own require" \
+  audit_rejects "$fixtures/own-require.sh"
 
 cat > "$fixtures/own-assert-spaced.sh" <<'EOF'
 harness_summary ()
@@ -276,6 +294,75 @@ assert "a suite that dies before its summary says it aborted" \
 assert "a suite that dies before its summary prints no summary" \
   lacks '^[0-9]+ passed' "$abort_out"
 assert "a suite that dies before its summary exits nonzero" test "$abort_code" -ne 0
+
+# --- Controls: a precondition reports *and refuses* --------------------------
+#
+# `assert` is a reporter. It prints FAIL, counts it, and returns, so the line
+# after it runs — which is right for a check on repository state and wrong for a
+# check that guards a destructive step. A suite that computes "the destination is
+# not redirected away from the developer's live config", prints FAIL, and then
+# runs the install anyway has *reported* a failure, not refused one; and a
+# reported failure is not a refusal. That shape was live in
+# tests/test_install.sh, where it ran `rm -rf` against a real skills directory
+# after its own guard had already said no.
+#
+# So the harness provides the second shape too, and the refusal is what is
+# asserted here: nothing after a failed precondition runs. The suite still
+# reports — a precondition that aborted silently would trade this defect for the
+# one the abort guard exists to catch.
+cat > "$fixtures/refuses.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+. "$HARNESS_LIB"
+harness_init
+assert "control: a check that passes before the precondition" test -d tests
+require "control: a precondition the repository fails" test -e tests/no-such-file
+: > "$SIDE_EFFECT"
+assert "control: an assertion after the failed precondition" test -d tests
+harness_summary
+EOF
+
+refuse_out="$harness_scratch/refuses.out"
+refuse_code=0
+side_effect="$harness_scratch/the-step-the-precondition-guards"
+HARNESS_LIB="$PWD/$HARNESS" SIDE_EFFECT="$side_effect" \
+  bash "$fixtures/refuses.sh" > "$refuse_out" 2>&1 || refuse_code=$?
+
+assert "a failed precondition prints FAIL against its own label" \
+  grep -q '^FAIL: control: a precondition the repository fails$' "$refuse_out"
+assert "a failed precondition stops the step it guards from running" \
+  test ! -e "$side_effect"
+assert "a failed precondition stops the assertions after it from running" \
+  lacks '^(PASS|FAIL): control: an assertion after the failed precondition$' \
+  "$refuse_out"
+assert "a refusing suite still reports the verdict it reached" \
+  grep -q '^1 passed, 1 failed$' "$refuse_out"
+assert "a refusing suite is a report, not a silent abort" \
+  lacks 'aborted before reaching its summary' "$refuse_out"
+assert "a refusing suite exits nonzero" test "$refuse_code" -ne 0
+
+# And the other half: a precondition the repository meets is not a stop. A
+# `require` that always halted would pass every check above.
+cat > "$fixtures/requires-met.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+. "$HARNESS_LIB"
+harness_init
+require "control: a precondition the repository meets" test -d tests
+assert "control: an assertion after the met precondition" test -d skills
+harness_summary
+EOF
+
+met_out="$harness_scratch/requires-met.out"
+met_code=0
+HARNESS_LIB="$PWD/$HARNESS" bash "$fixtures/requires-met.sh" > "$met_out" 2>&1 \
+  || met_code=$?
+
+assert "a met precondition lets the suite run on" \
+  grep -q '^PASS: control: an assertion after the met precondition$' "$met_out"
+assert "a met precondition reaches the summary and passes" \
+  grep -q '^2 passed, 0 failed$' "$met_out"
+assert "a met precondition exits zero" test "$met_code" -eq 0
 
 # The guard's own diagnostic does not depend on the guard's cleanup succeeding.
 # errexit is live in a suite, and an EXIT handler that lost it would take its
