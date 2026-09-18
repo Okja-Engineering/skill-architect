@@ -466,8 +466,8 @@ does not fail loudly: it still writes a `REWRITE-DRAFT.md`, but the "Current sta
 section contains `No such file or directory` for `check-frontmatter.sh` and
 `check-structure.sh` instead of an audit.
 
-The exact path depends on the agent, and only two of these were confirmed against the tool
-itself in this release:
+The exact path depends on the agent. Two of the four were confirmed against the tool itself
+in this release; the other two were not, and are marked as such:
 
 - **Claude Code** — `~/.claude/skills/`, the destination in the commands above. Verified.
 - **Devin** — `.devin/skills/` for a project, `~/.config/devin/skills/` globally. Verified by
@@ -481,7 +481,7 @@ itself in this release:
   either way, so treat that as the vendor's claim and not ours, and verify before you copy.
 
 A skill placed somewhere the agent does not read fails silently — it simply never appears —
-so confirm the path with the agent rather than with this table.
+so for the unverified two, confirm the path with the agent rather than with this list.
 
 ## Quick example
 
