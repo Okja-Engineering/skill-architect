@@ -443,22 +443,47 @@ an invalid source format, `./` is accepted.
 
 ### Manual standalone copy
 
-Copy only the skills you want into your agent's skill directory. You own the files and
-pull updates when you choose: these are also the update commands, so they replace the
-installed skill rather than copying into it.
+Copy the skills into your agent's skill directory. You own the files and pull updates when
+you choose: this is also the update command, so it replaces the installed skill rather than
+copying into it.
+
+Run it from the root of a checkout of this repository — `skills/` is resolved from the
+working directory. Set `skills_dir` to your agent's skills directory, taken from the list
+below, and change nothing else:
 
 ```bash
-mkdir -p ~/.claude/skills
-rm -rf ~/.claude/skills/skill-audit && cp -R skills/skill-audit ~/.claude/skills/skill-audit
-rm -rf ~/.claude/skills/skill-rewrite && cp -R skills/skill-rewrite ~/.claude/skills/skill-rewrite
+skills_dir=~/.claude/skills
+
+mkdir -p "$skills_dir"
+for skill in skill-audit skill-rewrite; do
+  rm -rf "$skills_dir/.$skill.new" &&
+    cp -R "skills/$skill" "$skills_dir/.$skill.new" &&
+    rm -rf "$skills_dir/$skill" &&
+    mv "$skills_dir/.$skill.new" "$skills_dir/$skill" ||
+    { echo "$skill was not updated; your installed copy is untouched" >&2; break; }
+done
 ```
 
-The `rm -rf` is what makes these safe to re-run. `cp -R src dst` copies *into* `dst` once
-`dst` exists, so a bare `cp -R` on the second run leaves a second copy of the skill nested
-inside the first and any agent that walks the skills directory recursively registers the
-skill twice. Replacing the directory also drops files that were removed upstream, which a
-copy over the top would leave behind. Each command owns exactly the one skill directory it
-names; nothing else under `~/.claude/skills/` is touched.
+Four things about its shape, because a shorter version of it was wrong twice:
+
+- **It replaces rather than copies into.** `cp -R src dst` copies *into* `dst` once `dst`
+  exists, so a bare `cp -R` on the second run leaves a second copy of the skill nested
+  inside the first, and any agent that walks the skills directory recursively registers
+  the skill twice. Replacing the directory also drops files that were removed upstream,
+  which a copy over the top leaves behind forever.
+- **It does not remove your installed skill until the replacement is ready.** The copy is
+  staged beside the destination and moved into place with `mv`, a rename within one
+  directory. The obvious spelling, `rm -rf dst && cp -R src dst`, guards the copy against
+  a failed remove but leaves nothing guarding the install against a failed copy: run it
+  from the wrong directory over a working install and you are left with no skill at all.
+- **It clears its own staging directory first**, so an interrupted run leaves nothing for
+  the next one to copy *into*. If a run fails, fix what it reported and run it again; it
+  converges.
+- **`skills_dir` is the only thing to change**, and it holds a skills *directory* — the
+  same thing the list below gives you. Every step appends the skill name itself, so no
+  substitution you make can turn this into `rm -rf` on the directory holding your other
+  skills. Those are left alone: each pass names exactly the one skill directory it
+  replaces.
 
 Copy both, even if you only want `skill-rewrite`. Its `draft-rewrite.sh` resolves the
 audit scripts at `../skill-audit` relative to the `skill-rewrite` directory it lives in,
@@ -470,7 +495,8 @@ section contains `No such file or directory` for `check-frontmatter.sh` and
 The exact path depends on the agent. Two of the four were confirmed against the tool itself
 in this release; the other two were not, and are marked as such:
 
-- **Claude Code** — `~/.claude/skills/`, the destination in the commands above. Verified.
+- **Claude Code** — `~/.claude/skills/`, the value `skills_dir` takes in the command above.
+  Verified.
 - **Devin** — `.devin/skills/` for a project, `~/.config/devin/skills/` globally. Verified by
   running `devin skills paths`, which prints both. Note it is *not* `~/.devin/skills/`.
 - **Cursor, Codex** — **not verified in this release**; no CLI for either was reachable here.

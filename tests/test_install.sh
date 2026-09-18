@@ -75,14 +75,16 @@ documented_manual_copy_block() {
 # The block is a block, and it names every skill the repository ships. An
 # extractor that silently returned nothing, or a block that named only one of
 # the skills, would make "installs and converges" true of a script that
-# installed nothing.
+# installed nothing. The name is looked for on its own rather than as
+# `skills/<name>`, because where the block says it — spelled into a path, or
+# listed once for a loop to walk — is the block's business and not this check's.
 documented_block_is_extractable() {
   local block name
   block="$(documented_manual_copy_block)" || return 1
   [ -n "$block" ] || return 1
   while read -r name; do
     [ -n "$name" ] || continue
-    printf '%s\n' "$block" | grep -q "skills/$name" || return 1
+    printf '%s\n' "$block" | grep -qF "$name" || return 1
   done <<BLOCK_SKILLS
 $(repository_skill_names)
 BLOCK_SKILLS
