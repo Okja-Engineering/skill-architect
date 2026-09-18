@@ -405,9 +405,13 @@ verified were run against a clean install on this release's tree.
 
 | Agent | Command | Status |
 |---|---|---|
-| Devin | `devin plugins install Okja-Engineering/skill-architect` | not verified — the `owner/repo` form syncs to Devin Cloud and needs a logged-in account, which this release had no way to exercise. The local-path form under "Local checkout" *was* run and is verified |
-| Codex | Install from the local plugin directory or marketplace entry (see [Codex plugin docs](https://developers.openai.com/codex/plugins)) | not verified — no Codex CLI was reachable to run it. The citation moved: the page this row used to link was a third-party mirror that defers to OpenAI's own docs for the authoritative version |
+| Devin | `devin plugins install Okja-Engineering/skill-architect` | not verified — **deliberately**. This form syncs to Devin Cloud, so running it would rewrite the plugin list of whichever account is logged in on the machine doing the verifying. That is not ours to change, so it was not run. The local-path form under "Local checkout" *was* run and is verified |
+| Codex | `codex plugin marketplace add Okja-Engineering/skill-architect` then `codex plugin add skill-architect@skill-architect` (see [Codex plugin docs](https://learn.chatgpt.com/docs/plugins)) | verified — both steps run against `codex-cli 0.153.4` with `CODEX_HOME` pointed at a scratch directory. `codex plugin list` then reports the plugin installed and enabled. Codex reads this repo's `.claude-plugin/marketplace.json` |
 | Cursor | Copy or symlink **the repository root** — the directory holding `.cursor-plugin/plugin.json`, not `.cursor-plugin/` itself — into your Cursor plugins folder (see [Cursor plugin docs](https://cursor.com/docs/plugins)) | not verified — no Cursor install was reachable here, so the destination folder is unconfirmed and comes from Cursor's docs, not from us. Which directory to copy *is* confirmed, from this repository's own layout |
+
+There is no `codex plugin install`. `codex plugin --help` lists `add`, `list`, `marketplace`
+and `remove`, and installing takes the same two steps as Claude Code: register a
+marketplace, then add the plugin from it.
 
 All native plugins use the same namespace:
 
@@ -425,6 +429,10 @@ devin plugins install --local .
 # Claude Code (from inside the repo) — verified live against a clean install
 claude plugin marketplace add ./
 claude plugin install skill-architect@skill-architect
+
+# Codex (from inside the repo) — verified live against codex-cli 0.153.4
+codex plugin marketplace add .
+codex plugin add skill-architect@skill-architect
 ```
 
 `--local` is not optional for a local path. Without it Devin refuses the install outright,
@@ -439,7 +447,9 @@ Devin rejects `.` and `./` identically, naming the same flag for each, so the
 trailing-slash trap below is specific to Claude Code and not a Devin concern.
 
 The trailing slash matters for Claude Code: `claude plugin marketplace add .` is rejected as
-an invalid source format, `./` is accepted.
+an invalid source format, `./` is accepted. Codex accepts both spellings and resolves them
+to the same root, so the trap is Claude Code's alone — checked, not assumed, for all three
+CLIs that take a local path.
 
 ### Manual standalone copy
 
@@ -492,23 +502,31 @@ does not fail loudly: it still writes a `REWRITE-DRAFT.md`, but the "Current sta
 section contains `No such file or directory` for `check-frontmatter.sh` and
 `check-structure.sh` instead of an audit.
 
-The exact path depends on the agent. Two of the four were confirmed against the tool itself
-in this release; the other two were not, and are marked as such:
+The exact path depends on the agent. Each row says where the path came from, because a
+path read off a vendor's website and a path a CLI printed here are not the same kind of
+claim:
 
 - **Claude Code** — `~/.claude/skills/`, the value `skills_dir` takes in the command above.
   Verified.
 - **Devin** — `.devin/skills/` for a project, `~/.config/devin/skills/` globally. Verified by
   running `devin skills paths`, which prints both. Note it is *not* `~/.devin/skills/`.
-- **Cursor, Codex** — **not verified in this release**; no CLI for either was reachable here.
-  Get the current path from the vendor, not from this list: Cursor's
-  [skills docs](https://cursor.com/docs/plugins) and Codex's
-  [skills docs](https://developers.openai.com/codex/skills). Earlier releases of this README
-  asserted `.codex/skills/`, which OpenAI's own documentation does not list as a discovery
-  location — it names `.agents/skills` paths instead. We could not run Codex to confirm
-  either way, so treat that as the vendor's claim and not ours, and verify before you copy.
+- **Codex** — `~/.codex/skills/<skill-name>`, or `$CODEX_HOME/skills/<skill-name>` if you
+  have moved your Codex home. That is where OpenAI's own `skill-installer` skill — shipped
+  *inside* the Codex CLI, at `~/.codex/skills/.system/skill-installer/` — says it installs
+  to, and where the skills bundled with Codex sit. Codex also discovers skills from
+  `.agents/skills/` in each directory from your working directory up to the repository
+  root, from `~/.agents/skills/`, and from `/etc/codex/skills/`, per its
+  [skills docs](https://learn.chatgpt.com/docs/build-skills). Both are real; they are
+  different locations, not competing accounts of one. Read off those two vendor artifacts,
+  not from a placement run here: for Codex the route this release actually executed is the
+  plugin one above.
+- **Cursor** — `.cursor/skills/` or `.agents/skills/` in a repository, `~/.cursor/skills/`
+  or `~/.agents/skills/` globally, per Cursor's [skills docs](https://cursor.com/docs/skills)
+  — which is a different page from the plugins docs cited above. **Not verified here**: no
+  Cursor install was reachable, so this is Cursor's claim rather than ours.
 
 A skill placed somewhere the agent does not read fails silently — it simply never appears —
-so for the unverified two, confirm the path with the agent rather than with this list.
+so where the path is the vendor's claim and not ours, confirm it with the agent.
 
 ## Quick example
 
