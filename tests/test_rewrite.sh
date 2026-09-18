@@ -117,33 +117,50 @@ assert "the documented-path check reads a bash fence rather than skipping it" \
 # The substitutions are the document's own `<...>` placeholder convention and
 # nothing else: anything the block needs that the document does not offer a
 # placeholder for is a thing the reader does not have either.
-doc_block() {
-  local heading="$1" target="$2" report="${3:-}"
+#
+# One reader answers every question of the form "what is in the fenced block
+# under this heading": the invocation blocks here, the section inventory
+# further down, and the controls for both. It takes the file it reads, so a
+# control can put the same question to a copy of this document that no longer
+# carries the block — which is the only way to ask whether an assertion that
+# the document's invocation runs is still able to fail. Three hand-written
+# copies of one awk is also how this project's harness drifted into four
+# versions of itself, and a repair to one copy is a repair the other two never
+# see.
+fenced_block_under() {
+  local file="$1" heading="$2"
   awk -v h="$heading" '
     !seen && $0 ~ h { seen = 1; next }
     seen && /^```/  { if (fence) exit; fence = 1; next }
     seen && fence   { print }
-  ' "$SKILL" \
+  ' "$file"
+}
+
+doc_block() {
+  local file="$1" heading="$2" target="$3" report="${4:-}" block
+  block="$(fenced_block_under "$file" "$heading")" || return 1
+  printf '%s\n' "$block" \
     | sed -e "s|<path-to-skill-architect>|$harness_repo_root|g" \
           -e "s|<target-skill-dir>|$target|g" \
           -e "s|<audit-report-path>|$report|g"
 }
 
 run_doc_block() {
-  local script="$work/doc-block.sh"
-  { echo 'set -eu'; doc_block "$@"; } > "$script"
+  local script="$work/doc-block.sh" block
+  block="$(doc_block "$@")" || return 1
+  { echo 'set -eu'; printf '%s\n' "$block"; } > "$script"
   quietly bash "$script"
 }
 
 stage1_target="$(target_from tests/fixtures/f01/valid-full stage1)"
 assert "the documented Stage 1 audit block runs as written, from the repository root" \
-  run_doc_block '^### Stage 1' "$stage1_target"
+  run_doc_block "$SKILL" '^### Stage 1' "$stage1_target"
 
 stage2_target="$(target_from tests/fixtures/f01/valid-full stage2)"
 stage2_report="$work/stage2-audit.md"
 printf 'frontmatter OK\n' > "$stage2_report"
 assert "the documented Stage 2 drafter block runs as written, from the repository root" \
-  run_doc_block '^### Stage 2' "$stage2_target" "$stage2_report"
+  run_doc_block "$SKILL" '^### Stage 2' "$stage2_target" "$stage2_report"
 assert "the documented Stage 2 block wrote the draft it says it writes" \
   test -f "$stage2_target/REWRITE-DRAFT.md"
 
@@ -151,32 +168,85 @@ example_target="$(target_from tests/fixtures/f01/valid-full example)"
 example_report="$work/example-audit.md"
 printf 'frontmatter OK\n' > "$example_report"
 assert "the worked example in Examples runs as written, from the repository root" \
-  run_doc_block '^### Generate a rewrite draft' "$example_target" "$example_report"
+  run_doc_block "$SKILL" '^### Generate a rewrite draft' "$example_target" "$example_report"
 
-# The control: the same machinery, on a block that names a script that is not
-# there. A renderer that silently produced an empty script would report every
-# block above as running.
+# A control's expected failure is not news, so the reader's diagnostic is
+# dropped here: the harness's rule is that a passing check adds no noise and a
+# failing one says why, and what a control here reports is a render that ran
+# when it should not have.
+doc_block_refused() {
+  ! run_doc_block "$@" 2>/dev/null
+}
+
+# The first control: a block that names a script that is not there. This one
+# only ever covered *a block whose command fails*.
 control_skill="$work/control-block-SKILL.md"
 printf '### Stage 2\n\n```bash\n"<path-to-skill-architect>/skills/skill-rewrite/scripts/absent.sh"\n```\n' \
   > "$control_skill"
-control_block_runs() {
-  local script="$work/control-block.sh"
-  {
-    echo 'set -eu'
-    awk '!seen && /^### Stage 2/ { seen = 1; next }
-         seen && /^```/ { if (fence) exit; fence = 1; next }
-         seen && fence { print }' "$control_skill" \
-      | sed -e "s|<path-to-skill-architect>|$harness_repo_root|g"
-  } > "$script"
-  quietly bash "$script"
-}
-block_runner_refuses_absent_script() {
-  ! control_block_runs
-}
-assert "the block runner reports a block naming a script that is not there" \
+assert "the control block names a script that is not there, so the runner has something to fail on" \
   test ! -e "$harness_repo_root/skills/skill-rewrite/scripts/absent.sh"
-assert "the block runner fails such a block rather than passing an empty render" \
-  block_runner_refuses_absent_script
+assert "the block runner fails a block whose command is not there" \
+  doc_block_refused "$control_skill" '^### Stage 2' "$work"
+
+# And the controls for the other way the three assertions above stop meaning
+# anything: the document no longer carrying the block at all.
+#
+# An assertion that a document's invocation runs must fail when the document no
+# longer carries that invocation. A rendered-empty block is a missing document,
+# not a passing one — so each way of arriving at an empty render is a control
+# here, and each control is a copy of this document with one section mutated:
+# the heading renamed, the heading kept and its fence removed, the section
+# deleted whole, and the fence emptied.
+#
+# <mode> is one of rename-heading, drop-fence, drop-section, empty-fence.
+mutated_skill() {
+  local slot="$1" mode="$2" heading="$3" dest="$work/mutated-$1.md"
+  if [ "$mode" = rename-heading ]; then
+    sed -e "s|${heading}.*|### A heading this document no longer carries|" "$SKILL" > "$dest"
+  else
+    awk -v h="$heading" -v mode="$mode" '
+      !seen && $0 ~ h { seen = 1; if (mode != "drop-section") print; next }
+      seen && !done && /^```/ {
+        if (mode == "empty-fence") print
+        if (infence) { done = 1; infence = 0 } else { infence = 1 }
+        next
+      }
+      seen && infence { next }
+      { print }
+    ' "$SKILL" > "$dest"
+  fi
+  echo "$dest"
+}
+
+stage1_renamed="$(mutated_skill stage1-renamed rename-heading '^### Stage 1')"
+example_renamed="$(mutated_skill example-renamed rename-heading '^### Generate a rewrite draft')"
+stage1_unfenced="$(mutated_skill stage1-unfenced drop-fence '^### Stage 1')"
+stage1_deleted="$(mutated_skill stage1-deleted drop-section '^### Stage 1')"
+stage1_emptied="$(mutated_skill stage1-emptied empty-fence '^### Stage 1')"
+
+assert "the block runner refuses a document whose Stage 1 heading was renamed" \
+  doc_block_refused "$stage1_renamed" '^### Stage 1' "$stage1_target"
+assert "the block runner refuses a document whose worked-example heading was renamed" \
+  doc_block_refused "$example_renamed" '^### Generate a rewrite draft' "$example_target" "$example_report"
+assert "the block runner refuses a document that kept the Stage 1 heading and lost its fence" \
+  doc_block_refused "$stage1_unfenced" '^### Stage 1' "$stage1_target"
+assert "the block runner refuses a document the whole Stage 1 section is gone from" \
+  doc_block_refused "$stage1_deleted" '^### Stage 1' "$stage1_target"
+assert "the block runner refuses a Stage 1 fence with nothing in it" \
+  doc_block_refused "$stage1_emptied" '^### Stage 1' "$stage1_target"
+
+# The premise those five rest on: each mutated copy is this document minus the
+# one section its mutation names, so a control that passes is reporting the
+# reader's refusal and not an empty or unreadable file.
+mutations_kept_the_rest_of_the_document() {
+  local m
+  for m in "$stage1_renamed" "$example_renamed" "$stage1_unfenced" \
+           "$stage1_deleted" "$stage1_emptied"; do
+    run_doc_block "$m" '^### Stage 2' "$stage2_target" "$stage2_report" || return 1
+  done
+}
+assert "each mutated copy still carries the Stage 2 block its mutation did not name" \
+  mutations_kept_the_rest_of_the_document
 
 # --- the report the caller named ----------------------------------------------
 #
@@ -518,11 +588,8 @@ emitted_sections() {
 # a block of headings rather than as prose, so the document cannot list a
 # section in a sentence the comparison does not see.
 documented_sections() {
-  awk '
-    !seen && /^#### The sections the drafter writes/ { seen = 1; next }
-    seen && /^```/ { if (fence) exit; fence = 1; next }
-    seen && fence  { print }
-  ' "$SKILL" | { grep -E '^#{2,4} ' || true; } | sort -u
+  fenced_block_under "$SKILL" '^#### The sections the drafter writes' \
+    | { grep -E '^#{2,4} ' || true; } | sort -u
 }
 
 assert "the SKILL.md carries an inventory of the draft's sections" \
