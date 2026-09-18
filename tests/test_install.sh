@@ -91,44 +91,150 @@ BLOCK_SKILLS
   return 0
 }
 
-# --- Containment, proven rather than asserted about a substitution -----------
+# --- Containment, decided after resolution ------------------------------------
 #
 # The block runs with HOME and the working directory both inside the harness
 # scratch root, with an environment that carries nothing else, and under
-# `set -u`, which turns any other expansion into an abort *before* the command
-# on that line runs. That leaves exactly two spellings that could still name
-# something outside:
+# `set -u`. None of that is containment on its own: a redirected home and a
+# working directory inside the root are two places to climb out of, and what
+# used to stand here was the claim that an absolute path and a `~name` were the
+# whole set of ways out. They were not. `$HOME/../../../..`, `../../../..`, a
+# climb to the filesystem root followed by an absolute tail, and a destination
+# whose every character is innocent but whose path runs through a symlink all
+# passed that guard; one of them installed a full skills tree outside the
+# scratch root and one of them deleted a decoy home's files first. A list of
+# spellings cannot be a containment proof, because the next spelling is not on
+# it, and the claim of completeness is what let that survive a gate.
 #
-#   an absolute path — `/Users/you/.claude/skills` ignores HOME entirely;
-#   `~name` — a tilde with a user attached expands from the password database
-#             and not from HOME, so `~root/.claude` escapes a redirected home.
+# So the verdict is the resolved write, and it is taken where the write is:
+# `run_documented_block` does not write the block out or execute it until the
+# destination it will use has been expanded *by a shell, in that run's own
+# environment* and resolved — `.` and `..` folded away, symlinks followed
+# through the part of the path that exists — and shown to land strictly inside
+# the harness scratch root. Every spelling of every escape above resolves to
+# somewhere outside and is refused by where it lands rather than by how it
+# looks, and a destination that cannot be resolved at all is refused too.
 #
-# Those two are refused here, over every word of the block. This is the whole
-# set of escapes from the containment above, which is what makes it a proof
-# rather than a list of the spellings that happened to be wrong once. The
-# refusal is a `require`, not an `assert`: a failed precondition has to stop the
+# The shape pass below is kept, and it is a diagnostic and a second fence: it
+# reads every word of every line and says which line and why. What it refuses
+# is stated the other way round from before — not a list of the escapes it
+# knows, but the demand that a word be accountable: no absolute path, no
+# `~name`, no `..` in any position, and no expansion whose value this suite
+# cannot name. Only HOME, PWD and the names the block itself binds are
+# accountable; anything else, including a command substitution, is refused.
+# PATH is deliberately not on that list: the run provides it, its value is
+# absolute, and nothing an install block does is resolved from it. Refusing an
+# unaccountable expansion is also what makes expanding the destination below
+# safe, since a destination carrying a substitution never reaches the shell.
+#
+# Both are `require`s, not `assert`s: a failed precondition has to stop the
 # suite, because a reported failure is not a refusal.
 
 text_names_nothing_outside_a_redirected_home() {
   awk '
-    {
-      n = split($0, w, /[[:space:]]+/)
-      for (i = 1; i <= n; i++) {
-        t = w[i]
-        if (t == "") continue
-        if (substr(t, 1, 1) == "#") break
-        gsub(/["'"'"']/, "", t)
-        sub(/^[A-Za-z_][A-Za-z0-9_]*=/, "", t)
-        if (t ~ /^\//) {
-          printf "%d: absolute path, which ignores a redirected HOME: %s\n", FNR, w[i]
-          bad++
-        } else if (t ~ /^~[^\/]/) {
-          printf "%d: tilde with a user name, which expands from the password database and not from HOME: %s\n", FNR, w[i]
-          bad++
+    BEGIN { sq = sprintf("%c", 39) }
+
+    # Where a comment starts on a line, which is a question about quoting and
+    # not about the first "#" on it. This used to stop scanning the line at its
+    # first "#" token, so a "#" inside a quoted string hid every word after it
+    # — including an absolute path — from the pass that exists to find them.
+    function uncommented(s,   out, i, c, q, prev) {
+      q = ""
+      out = ""
+      prev = " "
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q == "") {
+          if (c == "\"" || c == sq) {
+            q = c
+          } else if (c == "#" && (prev == " " || prev == "\t")) {
+            return out
+          }
+        } else if (c == q) {
+          q = ""
+        }
+        out = out c
+        prev = c
+      }
+      return out
+    }
+
+    # Why a word is not accountable, or "" when it is.
+    function unaccountable(t,   rest, k, name) {
+      if (t ~ /^\//) {
+        return "an absolute path, which ignores a redirected HOME"
+      }
+      if (t ~ /^~[^\/]/) {
+        return "a tilde with a user name, which expands from the password database and not from HOME"
+      }
+      if (t ~ /(^|\/)\.\.(\/|$)/) {
+        return "a parent-directory climb, which leaves the directory it is resolved from"
+      }
+      if (index(t, "`") > 0) {
+        return "a command substitution, whose value this pass cannot name"
+      }
+      rest = t
+      while ((k = index(rest, "$")) > 0) {
+        rest = substr(rest, k + 1)
+        if (substr(rest, 1, 1) == "{") {
+          if (match(rest, /^\{[A-Za-z_][A-Za-z0-9_]*\}/) == 0) {
+            return "an expansion whose value this pass cannot name"
+          }
+          name = substr(rest, 2, RLENGTH - 2)
+        } else {
+          if (match(rest, /^[A-Za-z_][A-Za-z0-9_]*/) == 0) {
+            return "an expansion whose value this pass cannot name"
+          }
+          name = substr(rest, 1, RLENGTH)
+        }
+        rest = substr(rest, RLENGTH + 1)
+        if (!(name in bound)) {
+          return "an expansion of $" name ", which nothing in the block binds"
         }
       }
+      return ""
     }
-    END { exit (bad > 0) }
+
+    { line[NR] = uncommented($0) }
+
+    END {
+      # The names the block binds itself, collected before anything is judged,
+      # because a word may use a name the line below it assigns. HOME and PWD
+      # are bound by the run and are the redirected ones.
+      bound["HOME"] = 1
+      bound["PWD"] = 1
+      for (i = 1; i <= NR; i++) {
+        n = split(line[i], w, /[[:space:]]+/)
+        for (j = 1; j <= n; j++) {
+          t = w[j]
+          gsub(/["]/, "", t)
+          gsub(sq, "", t)
+          if (t ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+            sub(/=.*$/, "", t)
+            bound[t] = 1
+          } else if (t == "for" && j < n) {
+            bound[w[j + 1]] = 1
+          }
+        }
+      }
+      for (i = 1; i <= NR; i++) {
+        n = split(line[i], w, /[[:space:]]+/)
+        for (j = 1; j <= n; j++) {
+          t = w[j]
+          if (t == "") continue
+          gsub(/["]/, "", t)
+          gsub(sq, "", t)
+          sub(/^[A-Za-z_][A-Za-z0-9_]*=/, "", t)
+          if (t == "") continue
+          why = unaccountable(t)
+          if (why != "") {
+            printf "%d: %s: %s\n", i, why, w[j]
+            bad++
+          }
+        }
+      }
+      exit (bad > 0)
+    }
   '
 }
 
@@ -136,16 +242,156 @@ block_names_nothing_outside_a_redirected_home() {
   documented_manual_copy_block | text_names_nothing_outside_a_redirected_home
 }
 
+# --- The resolved verdict -----------------------------------------------------
+
+# <path> — fold `.` and `..` away without touching the filesystem, so that a
+# destination which does not exist yet still has an answer. `..` at the root
+# stops there, the way the kernel stops it, which is what makes a climb with an
+# absolute tail resolve to that tail.
+path_normalized() {
+  printf '%s\n' "$1" | awk '
+    {
+      n = split($0, part, "/")
+      out = ""
+      depth = 0
+      for (i = 1; i <= n; i++) {
+        p = part[i]
+        if (p == "" || p == ".") continue
+        if (p == "..") {
+          if (depth > 0) {
+            sub(/\/[^\/]*$/, "", out)
+            depth--
+          }
+          continue
+        }
+        out = out "/" p
+        depth++
+      }
+      if (out == "") out = "/"
+      print out
+    }
+  '
+}
+
+# <absolute path> — the same path with symlinks followed through the part of it
+# that exists. Two reasons it is not a plain `cd -P`: the destination is a place
+# the block is about to create and need not exist yet, and on this platform the
+# scratch root arrives through /var and lives at /private/var, so a compare
+# against an unresolved path says "outside" for a path that is in fact inside.
+path_resolved() {
+  local abs head tail
+  abs="$(path_normalized "$1")"
+  head="$abs"
+  tail=""
+  while [ "$head" != / ] && [ ! -d "$head" ]; do
+    if [ -n "$tail" ]; then
+      tail="${head##*/}/$tail"
+    else
+      tail="${head##*/}"
+    fi
+    head="${head%/*}"
+    if [ -z "$head" ]; then
+      head=/
+    fi
+  done
+  head="$(CDPATH= cd -P -- "$head" 2>/dev/null && pwd -P)" || return 1
+  if [ -n "$tail" ]; then
+    printf '%s\n' "${head%/}/$tail"
+  else
+    printf '%s\n' "$head"
+  fi
+}
+
+# <path> <root> — path *resolves* to somewhere strictly inside root, whether or
+# not it exists yet. Equal to the root is not inside it.
+path_resolves_inside() {
+  local resolved root
+  resolved="$(path_resolved "$1")" || return 1
+  root="$(path_resolved "$2")" || return 1
+  case "$resolved" in
+    "$root"/?*) return 0 ;;
+  esac
+  return 1
+}
+
+# <run dir> <destination text> — what the destination expands to in the
+# environment the block runs in: that run's HOME, that run's working directory,
+# an environment carrying nothing else, and `set -u`, so an expansion the run
+# does not provide is an error here instead of a surprise later.
+#
+# The expansion is the shell's own rather than a re-implementation of it, so
+# `~`, `~name`, `$HOME` and a `..` anywhere in the word mean exactly what they
+# will mean when the block runs. That is the whole point: the question is where
+# the write lands, not how the destination is spelled.
+expanded_destination() {
+  local dir text
+  dir="$1"
+  text="$2"
+  env -i HOME="$dir/home" PATH="$PATH" "$suite_bash" -u -c '
+    cd "$1" || exit 1
+    eval "printf %s\\\\n $2"
+  ' _ "$dir/cwd" "$text" 2>/dev/null
+}
+
+# <run dir> <destination text> — the absolute, resolved path the block would
+# write to, or nothing if it cannot be established, which is itself a refusal.
+resolved_destination() {
+  local dir text expanded nl
+  dir="$1"
+  text="$2"
+  expanded="$(expanded_destination "$dir" "$text")" || return 1
+  [ -n "$expanded" ] || return 1
+  nl='
+'
+  # One path, or it is not a destination this suite will let anything run
+  # against.
+  case "$expanded" in
+    *"$nl"*) return 1 ;;
+  esac
+  case "$expanded" in
+    /*) ;;
+    *) expanded="$dir/cwd/$expanded" ;;
+  esac
+  path_resolved "$expanded"
+}
+
+# <run dir> <destination text> — the verdict that matters.
+destination_resolves_inside_the_scratch_root() {
+  local resolved
+  resolved="$(resolved_destination "$1" "$2")" || return 1
+  if ! path_resolves_inside "$resolved" "$harness_scratch"; then
+    printf 'the destination resolves outside the harness scratch root:\n  %s\n  resolves to %s\n  which is not inside %s\n' \
+      "$2" "$resolved" "$harness_scratch" >&2
+    return 1
+  fi
+  return 0
+}
+
 # The containment decision, in one place, so that what the controls below
 # measure and what the run sites ask are the same question with one definition.
 #
 # <run dir> <block text> — may this block be run in this run's environment?
 #
-# At this revision the answer is a function of the block's text alone: the run
-# directory is accepted and never consulted, and the decision is the shape pass
-# above. That is exactly what the controls measure.
+# Two fences, in this order. The shape pass first, because it is what refuses a
+# destination carrying a substitution and so what makes the second fence safe
+# to reach. Then the resolved verdict on the destination, in this run's own
+# environment, which is the proof: it is decided by where the write lands.
+#
+# A block with no destination assignment is refused rather than waved through.
+# There is then nothing to resolve, and "nothing to resolve" is not a licence
+# to run.
 containment_verdict() {
-  printf '%s\n' "$2" | text_names_nothing_outside_a_redirected_home
+  local dir block dest
+  dir="$1"
+  block="$2"
+  printf '%s\n' "$block" | text_names_nothing_outside_a_redirected_home || return 1
+  dest="$(printf '%s\n' "$block" | first_assignment_value)"
+  if [ -z "$dest" ]; then
+    echo "the block assigns no destination, so there is nothing to resolve" >&2
+    return 1
+  fi
+  destination_resolves_inside_the_scratch_root "$dir" "$dest" || return 1
+  return 0
 }
 
 # A run directory for the decisions that are taken before anything is run: the
@@ -229,22 +475,18 @@ containment_refuses_a_block_whose_second_line_escapes() {
 cp -R skills/skill-audit /etc/codex/skills/skill-audit'
 }
 
-# <path> <root> — path resolves to somewhere strictly inside root. Both sides are
-# resolved, because on this platform the scratch root arrives through /var and
-# lives at /private/var, and a string compare on the unresolved pair says "no"
-# for a path that is in fact inside.
-path_is_inside() {
-  local resolved root
-  resolved="$(CDPATH= cd -P -- "$1" 2>/dev/null && pwd -P)" || return 1
-  root="$(CDPATH= cd -P -- "$2" 2>/dev/null && pwd -P)" || return 1
-  case "$resolved" in
-    "$root"/*) return 0 ;;
-  esac
-  return 1
-}
-
-everything_the_block_can_reach_is_inside_the_scratch_root() {
-  path_is_inside "$install_scratch" "$harness_scratch"
+# The precondition the whole containment argument rests on, and it is now a
+# question about the block. What stood here compared the install scratch path
+# with the harness scratch path it had just been built from — true by
+# construction of the line that made it, never once looking at the block, while
+# carrying the name of the thing that mattered.
+#
+# This asks the real question of the real destination, in a probe run of the
+# same shape and depth as the staged runs below, and it halts the suite before
+# anything is run. The run sites ask it again for themselves.
+the_documented_destination_resolves_inside_the_scratch_root() {
+  destination_resolves_inside_the_scratch_root \
+    "$(containment_probe_dir)" "$(documented_destination)"
 }
 
 # --- Running the block, contained --------------------------------------------
@@ -267,8 +509,15 @@ stage_the_repository_skills() {
 }
 
 run_documented_block() {
-  local dir="$1"
-  local script="$dir/documented-block.sh"
+  local dir script
+  dir="$1"
+  script="$dir/documented-block.sh"
+  # Containment, at the site of the run and for this run's environment. The
+  # block is not written out and not executed until its destination has been
+  # shown to resolve inside the harness scratch root, so a run that escapes is
+  # not a run that is reported — it is a run that does not happen. A run site
+  # added later inherits this instead of having to remember it.
+  quietly containment_verdict "$dir" "$(documented_manual_copy_block)" || return 1
   documented_manual_copy_block > "$script" || return 1
   (
     cd "$dir/cwd" || exit 1
@@ -432,10 +681,17 @@ documented_update_leaves_the_other_skills_alone() {
 # The one thing the block asks the reader to change: its first assignment. Read
 # as "the first assignment" rather than by variable name, so the block stays
 # free to call it something else.
+#
+# Split in two because the containment decision above needs the same reading of
+# a block it was handed rather than of the README's, and one reading of "the
+# destination" is what keeps the decision and the assertions talking about the
+# same string.
+first_assignment_value() {
+  sed -n 's/^[A-Za-z_][A-Za-z0-9_]*=\([^ 	#]*\).*$/\1/p' | head -1
+}
+
 documented_destination() {
-  documented_manual_copy_block \
-    | sed -n 's/^[A-Za-z_][A-Za-z0-9_]*=\([^ 	#]*\).*$/\1/p' \
-    | head -1
+  documented_manual_copy_block | first_assignment_value
 }
 
 # The same path as the README's own list of where each agent reads skills from
@@ -624,8 +880,8 @@ require "the containment decision refuses a destination that resolves through a 
   containment_refuses_a_destination_that_resolves_through_a_symlink
 require "the containment decision reads the whole block, not just its first line" \
   containment_refuses_a_block_whose_second_line_escapes
-require "the destination the block can reach is inside the harness scratch root" \
-  everything_the_block_can_reach_is_inside_the_scratch_root
+require "the destination the README's block resolves to is inside the harness scratch root" \
+  quietly the_documented_destination_resolves_inside_the_scratch_root
 require "the README's manual-copy block names nothing outside a redirected home" \
   quietly block_names_nothing_outside_a_redirected_home
 require "the repository ships skills for the checks below to be about" \
