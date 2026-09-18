@@ -33,6 +33,14 @@ Inputs:
 - `target_skill`: the skill directory to rewrite.
 - `audit_report`: optional path to an existing audit report. If omitted, run `skill-audit` first.
 
+Prerequisites:
+
+Required tools: `skill-validator`.
+
+Stage 1 and `draft-rewrite.sh` both run `skill-audit`'s `check-frontmatter.sh`, which validates the spec with `skill-validator` and, without it, exits 3 with `required tool not found: skill-validator` on stderr rather than reporting a verdict it could not compute. Install it with `brew install agent-ecosystem/tap/skill-validator`. Nothing on this skill's path needs `skillscore`, which scores quality this skill does not run, or `jq`, which `skill-audit`'s scripts require only in their `--json` modes; add them if you extend the stages to use them.
+
+This skill is not self-contained. It bundles `draft-rewrite.sh` and borrows every check from `$audit_root/scripts/`, including `verdict-guard.sh`, which no other file references by name and which every one of those scripts refuses to compute a verdict without. Install or prune the two skills together.
+
 ### Stage 1: Run audit if needed
 
 If no audit report is provided, run the audit:
