@@ -27,13 +27,16 @@ Options:
 EOF
 }
 
-# value_of <option> <count> — the option's value, or a usage error naming it.
+# require_value <option> <count> — refuse an option written without its value.
 #
-# Reading "$2" directly is what made a mistyped option report `$2: unbound
+# It yields nothing, which is why it is not called `value_of`: each caller reads
+# its own "$2", and this decides only whether there is one to read. Reading
+# "$2" with nothing there is what made a mistyped option report `$2: unbound
 # variable`: a line of bash internals naming a position in the parser, for a
-# caller who needs to be told which option they left empty. The count is passed
-# in because `$#` inside a function is the function's own.
-value_of() {
+# caller who needs to be told which option they left empty. The refusal lives
+# here once so that a third option cannot be added without it. The count is
+# passed in because `$#` inside a function is the function's own.
+require_value() {
   if [[ "$2" -lt 2 ]]; then
     echo "Missing value for $1" >&2
     usage >&2
@@ -44,9 +47,9 @@ value_of() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -t|--target)
-      value_of "$1" "$#"; target_skill="$2"; shift 2 ;;
+      require_value "$1" "$#"; target_skill="$2"; shift 2 ;;
     -a|--audit)
-      value_of "$1" "$#"; audit_report="$2"; shift 2 ;;
+      require_value "$1" "$#"; audit_report="$2"; shift 2 ;;
     -h|--help)
       usage; exit 0 ;;
     *)
