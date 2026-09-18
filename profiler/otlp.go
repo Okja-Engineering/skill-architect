@@ -789,9 +789,14 @@ func arrayIdentity(raw json.RawMessage) string {
 // through otlpAttrValue.identity, which reaches this function again for a nested
 // map and arrayIdentity for a nested array.
 //
-// A duplicate key is left as the two members it arrived as rather than
-// collapsed: OTLP does not define which of them wins, and picking one would
-// merge two series over a guess.
+// A duplicate key is input the data model leaves open — nothing in OTLP says
+// which member wins — and the map rule is applied to it whole rather than
+// special-cased. Both members stay in the identity, so a map carrying one key
+// twice is neither of its single-member readings; and because the members sort,
+// its two arrival orders are one series, exactly as for a map whose keys are
+// distinct. Reading order as meaningful for a duplicate key while it is
+// meaningless everywhere else would be the guess: it is undefined which member
+// a producer meant, so the two orders are the same map arriving twice.
 func kvlistIdentity(raw json.RawMessage) string {
 	var kvlist struct {
 		Values otlpAttrs `json:"values"`
