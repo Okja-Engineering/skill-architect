@@ -127,13 +127,49 @@ assert "the documented-path check reads a bash fence rather than skipping it" \
 # copies of one awk is also how this project's harness drifted into four
 # versions of itself, and a repair to one copy is a repair the other two never
 # see.
+# Not finding the block is an answer, and it is not the empty string. A reader
+# that returns nothing for "no such heading", "a heading with no fence under
+# it" and "a fence with nothing in it" hands its caller a script of nothing,
+# which bash runs to exit 0 — so the caller reports that the document's
+# invocation ran, of a document that no longer carries it. So the three ways of
+# finding nothing are three statuses, and the caller gets a refusal rather than
+# an empty render.
+#
+# The search also stops at the next heading, and that half is not a nicety. An
+# unbounded search does something worse than return nothing: with a section's
+# own fence gone it runs on and returns the *next* section's block, so "the
+# documented Stage 1 audit block runs as written" was reported of a document
+# whose Stage 1 block was gone, on the strength of Stage 2's. A block the
+# assertion names must come from the section the assertion names.
+#
+# `^#+ ` rather than an interval expression, because not every awk this project
+# runs under has `{1,6}`. It is only consulted before a fence is open, so a
+# `#` comment inside a bash block is never read as a heading.
+#
+# The diagnostic is printed here rather than from awk: `/dev/stderr` is not
+# something every awk this project runs under provides, and a reader whose own
+# diagnostic vanished would be the same defect one level down.
 fenced_block_under() {
-  local file="$1" heading="$2"
-  awk -v h="$heading" '
-    !seen && $0 ~ h { seen = 1; next }
-    seen && /^```/  { if (fence) exit; fence = 1; next }
-    seen && fence   { print }
-  ' "$file"
+  local file="$1" heading="$2" block status=0
+  block="$(awk -v h="$heading" '
+    !seen && $0 ~ h          { seen = 1; next }
+    seen && !fence && /^#+ / { exit }
+    seen && /^```/           { if (fence) exit; fence = 1; next }
+    seen && fence            { print; lines++ }
+    END {
+      if (!seen)  exit 2
+      if (!fence) exit 3
+      if (!lines) exit 4
+    }
+  ' "$file")" || status=$?
+  case "$status" in
+    0) printf '%s\n' "$block" ;;
+    2) echo "  $file carries no heading matching $heading" >&2 ;;
+    3) echo "  $file has a heading matching $heading with no fenced block under it" >&2 ;;
+    4) echo "  $file has an empty fenced block under $heading" >&2 ;;
+    *) echo "  reading $heading out of $file failed with status $status" >&2 ;;
+  esac
+  [ "$status" -eq 0 ]
 }
 
 doc_block() {
