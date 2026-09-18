@@ -171,7 +171,24 @@ if [[ -z "$audit_report" ]]; then
   # not choose on one of the two platforms this skill supports — and leaves a
   # leak nobody can look for, because its location differs by platform and its
   # name says nothing about where it came from.
-  own_audit_report="$(mktemp "${TMPDIR:-/tmp}"/draft-rewrite-audit.XXXXXX)"
+  #
+  # Its status is read, like every other external this script computes with.
+  # `require_tool mktemp` above proves mktemp can make a file under TMPDIR, and
+  # that is a different statement from this call having made one: the check
+  # happens once, and the directory can stop being writable between the check
+  # and the call. Unread, mktemp's own exit 1 became this script's, and 1 is
+  # "usage or target error" here — so a temp directory that does not exist was
+  # reported as a mistake in the caller's command line, with nothing naming
+  # mktemp and no "no draft was written".
+  #
+  # The answer is checked as well as the status. A mktemp exiting 0 having
+  # printed nothing leaves this the empty string, and every use of it below is a
+  # redirection: the draft would be composed over a file named "".
+  own_audit_status=0
+  own_audit_report="$(mktemp "${TMPDIR:-/tmp}"/draft-rewrite-audit.XXXXXX)" \
+    || own_audit_status=$?
+  [[ $own_audit_status -eq 0 && -n "$own_audit_report" ]] \
+    || cannot_compute DEP002 "mktemp could not make a temporary audit under ${TMPDIR:-/tmp} (status $own_audit_status); no draft was written" false
   audit_report="$own_audit_report"
   # Each check's status is read, and each check's stdout is captured alone.
   # check-frontmatter.sh and check-structure.sh both exit 0 pass, 1 a spec or
