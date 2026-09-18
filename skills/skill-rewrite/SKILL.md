@@ -28,7 +28,7 @@ Do not use this skill to apply changes silently; the draft must be reviewed and 
 
 Inputs:
 
-- `skill_root`: the directory holding this `SKILL.md` — the `skill-rewrite` skill directory. Every command below is anchored on it, so the commands run from any working directory rather than only from the skill's own.
+- `skill_root`: the directory holding this `SKILL.md` — the `skill-rewrite` skill directory. Every command below is anchored on it, directly or through `audit_root`, so the commands run from any working directory rather than only from the skill's own.
 - `audit_root`: the sibling `skill-audit` skill directory, `"$skill_root/../skill-audit"`. `skill-rewrite` runs `skill-audit`'s check scripts and reads its evaluation matrix; it bundles neither.
 - `target_skill`: the skill directory to rewrite.
 - `audit_report`: optional path to an existing audit report. If omitted, run `skill-audit` first.
@@ -52,7 +52,8 @@ This skill is not self-contained. It bundles `draft-rewrite.sh` and runs no chec
 If no audit report is provided, run the audit:
 
 ```bash
-audit_root="<path-to-skill-architect>/skills/skill-audit"
+skill_root="<path-to-skill-architect>/skills/skill-rewrite"
+audit_root="$skill_root/../skill-audit"
 target_skill="<target-skill-dir>"
 "$audit_root/scripts/check-frontmatter.sh" "$target_skill"
 "$audit_root/scripts/check-structure.sh" "$target_skill"
