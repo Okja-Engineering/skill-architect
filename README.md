@@ -398,10 +398,11 @@ claude plugin install skill-architect@skill-architect
 `claude plugin list` then shows `skill-architect@skill-architect` at version 0.4.2.
 
 Every row below carries the status of the route as **executed in this release**, not as
-described by a vendor's documentation. Where a route says "not verified", nobody here could
-run it and the row is a pointer to the vendor's own docs rather than a claim of ours; if it
-turns out wrong, the manual copy under "Local checkout" works everywhere. Routes marked
-verified were run against a clean install on this release's tree.
+described by a vendor's documentation. Routes marked verified were run against a clean
+install on this release's tree. Where a route says "not verified" the row says why — nobody
+here could run it, or running it would have changed something that is not ours to change —
+and it is a pointer to the vendor's own docs rather than a claim of ours; if it turns out
+wrong, the manual copy under "Manual standalone copy" works everywhere.
 
 | Agent | Command | Status |
 |---|---|---|
@@ -495,8 +496,9 @@ Four things about its shape, because a shorter version of it was wrong twice:
   skills. Those are left alone: each pass names exactly the one skill directory it
   replaces.
 
-Copy both, even if you only want `skill-rewrite`. Its `draft-rewrite.sh` resolves the
-audit scripts at `../skill-audit` relative to the `skill-rewrite` directory it lives in,
+The loop copies both, and both is not optional even if you only want `skill-rewrite`. Its
+`draft-rewrite.sh` resolves the audit scripts at `../skill-audit` relative to the
+`skill-rewrite` directory it lives in,
 so `skill-audit` must sit beside it in the same skills directory. Without the sibling it
 does not fail loudly: it still writes a `REWRITE-DRAFT.md`, but the "Current state"
 section contains `No such file or directory` for `check-frontmatter.sh` and
