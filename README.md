@@ -91,9 +91,10 @@ reason, rather than discarding the run.
 capture routes documented below append to one file by design, and route (a) listens on the
 standard OTLP port, so one export legitimately holds several sessions and whatever else on
 the machine was exporting. A record contributes to a profile only when it carries that
-`session.id` **and** was recorded by a Claude Code instrumentation scope. A session id the
-export does not contain gives `unknown`, with a reason naming how many records were passed
-over and why — never a confident number belonging to somebody else's run. A record
+`session.id` **and** was not recorded by another product's instrumentation scope. A
+session id the export does not contain gives `unknown`, with a reason naming how many
+records were passed over and why — never a confident number belonging to somebody
+else's run. A record
 carrying no `session.id` at all contributes to nothing: a record that does not say which
 run it is from cannot be attributed to one. `capture` refuses an empty `--session` for the
 same reason — with no identity asserted there is nothing to scope by — and the library's
