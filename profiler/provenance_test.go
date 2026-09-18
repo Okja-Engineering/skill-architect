@@ -20,7 +20,8 @@ import (
 // later repair is free to move where the filter lives.
 
 const (
-	// The two sessions in two_sessions.ndjson. sessionA is the profiled one.
+	// The two sessions in two_sessions.ndjson and in
+	// two_sessions_one_metric.json. sessionA is the profiled one.
 	sessionA = "22222222-2222-4222-8222-222222222222"
 	sessionB = "33333333-3333-4333-8333-333333333333"
 
@@ -88,6 +89,68 @@ func TestProvenance_TheSameExportProfiledAsTheOtherSession(t *testing.T) {
 	}
 	if got := profile.Timing.Value.TotalMs; got != 0 {
 		t.Errorf("timing total_ms = %d, want 0 — session B made one request", got)
+	}
+}
+
+// Two sessions inside one metric's dataPoints array, which is what a collector
+// flushing both at once writes — and the layout two_sessions.ndjson cannot
+// reach, because it gives each session its own batch. The filter runs *within*
+// the array here: whichever session is asserted, the profile holds that
+// session's points and only those.
+//
+// The array's four points total 95000 input and 5000 output. Neither session
+// holds that, so a filter that reads the array whole is loud rather than
+// plausible — and a filter that refuses a metric because a foreign point sits
+// beside a good one turns the profiled session's tokens into unknown.
+func TestProvenance_OneMetricCarryingTwoSessionsContributesOnlyTheProfiledSession(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		session string
+		want    string
+	}{
+		{"session A", sessionA, `{"input":5000,"output":700}`},
+		{"session B", sessionB, `{"input":90000,"output":4300}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := profileOf(t, "two_sessions_one_metric.json", tc.session)
+
+			if profile.Tokens.State != MetricPresent {
+				t.Fatalf("tokens state = %q (%s), want present — this session's own points sit in the array",
+					profile.Tokens.State, profile.Tokens.Reason)
+			}
+			assertTokenJSON(t, profile.Tokens.Value, tc.want)
+		})
+	}
+}
+
+// The other half of the same array: a metric that arrived with data points and
+// kept none of them is not a metric this session has, so it is dropped rather
+// than kept as an empty sum.
+//
+// Keeping it produces a reason that states something false of the input — that
+// the metric "carried no sum data points", of an export carrying four — which
+// is the same shape of false statement as the number this repair removed, and
+// the reason the drop rule exists. The true answer is that the export holds no
+// token metric of *this* session's, beside a count of what it does hold.
+func TestProvenance_AMetricEmptiedByTheFilterIsNotReportedAsCarryingNoDataPoints(t *testing.T) {
+	profile := profileOf(t, "two_sessions_one_metric.json", sessionAbsent)
+
+	if profile.Tokens.State != MetricUnknown || profile.Tokens.Value != nil {
+		t.Fatalf("tokens state = %q with value %v, want unknown and no value — no point in the array is this session's",
+			profile.Tokens.State, profile.Tokens.Value)
+	}
+
+	reason := profile.Tokens.Reason
+	if !strings.Contains(reason, "no "+otelTokenUsageMetric+" metric found in OTel export") {
+		t.Errorf("tokens reason = %q, want it to say the export holds no token metric of this session's", reason)
+	}
+	if strings.Contains(reason, "carried no sum data points") {
+		t.Errorf("tokens reason = %q: the export carries four sum data points, so this reason is false of it", reason)
+	}
+	// And the reason accounts for what is in there, in the unit the reader can
+	// count in their own export.
+	if want := "4 data points not carrying session.id " + sessionAbsent; !strings.Contains(reason, want) {
+		t.Errorf("tokens reason = %q, want it to carry %q", reason, want)
 	}
 }
 

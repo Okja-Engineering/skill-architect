@@ -663,6 +663,8 @@ var captureCases = []captureCase{
 		present: []MetricName{MetricToolCalls}, absent: MetricUnknown},
 	{name: "two sessions in one export", fixture: "two_sessions.ndjson", session: sessionA,
 		present: []MetricName{MetricTokens, MetricToolCalls, MetricTiming}, absent: MetricUnknown},
+	{name: "two sessions inside one metric's data points", fixture: "two_sessions_one_metric.json", session: sessionA,
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "another product exporting to the same port", fixture: "foreign_scope.json", session: sessionA,
 		present: []MetricName{MetricTokens, MetricToolCalls, MetricTiming}, absent: MetricUnknown},
 
