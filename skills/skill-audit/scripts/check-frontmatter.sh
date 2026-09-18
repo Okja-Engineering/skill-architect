@@ -68,14 +68,13 @@ case $code in
 esac
 
 # Check license as a policy gate (house rule, not spec).
-frontmatter="$(awk '
-  BEGIN { in_fm = 0 }
-  /^---$/ {
-    if (in_fm) { exit }
-    in_fm = 1; next
-  }
-  in_fm { print }
-' "$skill_md")"
+#
+# The frontmatter comes from the shared primitive. This copy was one of the two
+# correct answers to "where does the frontmatter end", and both are gone: two
+# correct private copies still leave a reader of these scripts four answers to
+# one question, and the two that were wrong were wrong in ways nothing caught.
+frontmatter="$(skill_frontmatter "$skill_md")" \
+  || cannot_compute DEP002 "could not read the frontmatter of $skill_md" false
 
 if ! echo "$frontmatter" | grep -qE "^license:[[:space:]]"; then
   echo "POLICY FAIL [PL001]: missing license (house policy)"

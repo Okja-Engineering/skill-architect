@@ -23,9 +23,13 @@
 # merge below and there is no report at all, which is the one outcome this file
 # exists to prevent. The shape claimed differs per source, because what is read
 # out of each of them differs.
-# Rule IDs reach the report only by relay, from the policy source, except PL001
-# for a missing license, which this file checks inline and adds itself. What
-# relays is check-structure.sh's whole findings array, so DEP001, DEP002,
+# Rule IDs reach the report by relay, from the policy source, with two
+# exceptions this file raises itself: PL001 for a missing license, which it
+# checks inline and adds to the findings array, and DEP002 on the one source it
+# cannot hold soft — the SKILL.md it reads that license out of. A source it
+# could not read is named in the report; a *target* it could not read leaves no
+# report to name anything in, so that one exits 3.
+# What relays is check-structure.sh's whole findings array, so DEP001, DEP002,
 # PL002, PL003, PL004, PL005, PT001, PT002 and PATH all reach a consumer
 # through here without this file naming any of them in a finding it built —
 # which is exactly why they are enumerated rather than left implied.
@@ -149,14 +153,10 @@ else
 fi
 
 # --- PL001: license check (inline — avoids double-running skill-validator) ---
-frontmatter="$(awk '
-  BEGIN { in_fm = 0 }
-  /^---$/ {
-    if (in_fm) { exit }
-    in_fm = 1; next
-  }
-  in_fm { print }
-' "$skill_md")"
+# The frontmatter comes from the shared primitive, which is where the question
+# "where does the frontmatter end" is now asked, once, for all of these scripts.
+frontmatter="$(skill_frontmatter "$skill_md")" \
+  || cannot_compute DEP002 "could not read the frontmatter of $skill_md" false
 
 if ! echo "$frontmatter" | grep -qE "^license:[[:space:]]"; then
   policy_findings=$(echo "$policy_findings" | jq -c \

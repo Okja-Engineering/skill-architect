@@ -4,10 +4,12 @@
 # and markdown links, then resolves them against the filesystem.
 # Exit codes: 0=pass, 1=path failure, 3=execution error.
 # Findings carry rule IDs: at level fail, PT001 missing script/reference and
-# PT002 missing markdown link, plus DEP001 when a required tool is absent; at
-# level unverified, PATH for a reference built from a glob or a variable, which
-# cannot be resolved and so is reported without being judged — an unverified
-# finding is not a failure and does not change the exit status.
+# PT002 missing markdown link, plus DEP001 when a required tool is absent and
+# DEP002 when a source this script has to read gave it no answer it could use —
+# a SKILL.md it could not read the body out of; at level unverified, PATH for a
+# reference built from a glob or a variable, which cannot be resolved and so is
+# reported without being judged — an unverified finding is not a failure and
+# does not change the exit status.
 # Use --json for machine-readable output: {"findings": [...], "passed": bool},
 # plus an "error" key on the exit-3 payload naming why no verdict was reached.
 # --json builds its verdict with jq and requires it.
@@ -60,15 +62,11 @@ fi
 fail=0
 findings=()
 
-# Extract body (after frontmatter)
-body="$(awk '
-  BEGIN { in_fm = 0 }
-  /^---$/ {
-    if (in_fm) { in_fm = 0; next }
-    in_fm = 1; next
-  }
-  !in_fm { print }
-' "$skill_md")"
+# The body, read through the shared primitive. This was a private toggle that
+# re-entered frontmatter on a third `---`, so one markdown horizontal rule ended
+# every check below it and a skill with broken references reported none.
+body="$(skill_body "$skill_md")" \
+  || cannot_compute DEP002 "could not read the body of $skill_md" "$json_output"
 
 # Check markdown links [text](path) — skip http/https/anchor/mailto
 while IFS= read -r path; do

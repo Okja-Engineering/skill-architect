@@ -1,12 +1,32 @@
-# Shared guards for the skill-audit check scripts.
+# Shared primitives for the skill-audit check scripts: the verdict guards, and
+# the one reading of a SKILL.md that every verdict about its contents is
+# computed over.
 #
 # A check script must never report a verdict it could not compute. Whenever a
 # tool it needs is missing, or a child check exits with a status it cannot
 # interpret, it says so and exits 3 (execution error) instead of letting the
 # failure read as a clean pass.
 #
+# Reading the source belongs here for the same reason the guards do, and the
+# reason is not tidiness. "Where does the frontmatter end" is one question, and
+# four scripts each answered it privately, with four answers that disagreed.
+# check-frontmatter.sh and audit-report.sh exited at the second `---` and were
+# right. check-paths.sh ran a toggle, so a third `---` put it back into
+# frontmatter: one markdown horizontal rule silently ended every path check
+# after it, and a skill with two broken references reported none. And
+# check-structure.sh did not ask at all, so its whole house-policy verdict was
+# satisfiable out of frontmatter — six required headings written as column-0
+# YAML comments, a code fence inside a block scalar, and the `---` delimiter
+# itself read as a list item gave `summary.passed: true` and zero findings to a
+# skill whose body was one prose sentence. A question with four answers has no
+# answer, and deleting only the two wrong copies would leave the next reader
+# looking at two. So it is asked once, here, beside the guards all four of those
+# scripts already load.
+#
 # The rule ID this file emits directly is DEP001, a required tool is absent.
-# Its callers pass it DEP002 for a child result they could not interpret.
+# Its callers pass it DEP002 for a source they could not read — a child check
+# whose status or payload they cannot interpret, or a source they could not get
+# a usable answer out of at all.
 #
 # Source this from a check script, checking the load on both sides:
 #
@@ -210,18 +230,84 @@ payload_is_conforming() {
     end'
 }
 
+# skill_section <frontmatter|body> <skill-md>
+#
+# Echo one of the two halves of a SKILL.md. The shared reading skill_frontmatter
+# and skill_body are both spellings of: a SKILL.md opens with YAML frontmatter
+# delimited by `---`, and everything after that is body.
+#
+# Three decisions, each stated because each was a defect somewhere:
+#
+# Frontmatter opens on line 1 or it does not open at all. A `---` further down
+# is a markdown horizontal rule, which is body, and a file that never had
+# frontmatter has none to find. Scanning for the first `---` anywhere made a
+# rule in the body open a frontmatter that was not there, so a `license:` line
+# written in prose satisfied the license gate and the real frontmatter above it
+# was never read.
+#
+# Frontmatter closes once and never re-opens. The next `---` after the opener
+# closes it; every `---` after that is body, because there is only one
+# frontmatter block and it has already ended. A toggle reads the third
+# delimiter as a second opening — the horizontal-rule defect above.
+#
+# Frontmatter that never closes leaves no body. A file that opens a block and
+# runs to EOF inside it has frontmatter and nothing else, on any reading, so the
+# body is empty rather than being the frontmatter over again.
+#
+# The delimiter is exactly `---` on a line of its own, as it was in all four of
+# the private copies: no leading space, no trailing space, no `...`. Widening
+# that is a separate question from asking it in one place, and is not smuggled
+# in here.
+#
+# It answers with awk, so it is callable only where awk is a proven
+# precondition, and it passes awk's status through: an unreadable file leaves
+# awk non-zero, and a caller that cannot read the source has no verdict to
+# report about it. Every caller checks.
+skill_section() {
+  local want="$1"
+  local file="$2"
+  awk -v want="$want" '
+    NR == 1 {
+      if ($0 == "---") { in_fm = 1; next }
+      past_fm = 1
+    }
+    in_fm {
+      if ($0 == "---") { in_fm = 0; past_fm = 1; next }
+      if (want == "frontmatter") print
+      next
+    }
+    past_fm && want == "body" { print }
+  ' "$file"
+}
+
+# skill_frontmatter <skill-md> — the YAML between the delimiters.
+# skill_body <skill-md>        — everything after the closing delimiter.
+#
+# Two names rather than one with an argument, because the argument would be the
+# same string at every call site and a caller that mistyped it would silently
+# get the other half.
+skill_frontmatter() {
+  skill_section frontmatter "$1"
+}
+
+skill_body() {
+  skill_section body "$1"
+}
+
 # verdict_guard_ready
 #
-# Succeed when every guard this file exists to provide is defined. This is the
-# one question a caller asks after sourcing, so the set lives here rather than
-# being re-listed at every call site — where it would be re-listed incompletely,
-# and each omission would be a guard whose absence nothing catches.
+# Succeed when every primitive this file exists to provide is defined. This is
+# the one question a caller asks after sourcing, so the set lives here rather
+# than being re-listed at every call site — where it would be re-listed
+# incompletely, and each omission would be a primitive whose absence nothing
+# catches.
 #
 # Defined last on purpose: a file that did not reach the end does not define
 # this either, so "stopped short" fails by the same route as "never had it".
 verdict_guard_ready() {
   local g
-  for g in json_string cannot_compute require_tool json_document_conforms payload_is_conforming; do
+  for g in json_string cannot_compute require_tool json_document_conforms \
+           payload_is_conforming skill_section skill_frontmatter skill_body; do
     declare -F "$g" >/dev/null 2>&1 || return 1
   done
   return 0

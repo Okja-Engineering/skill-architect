@@ -4,11 +4,14 @@
 # skill-validator handles spec compliance and link resolution separately;
 # this script covers our repository-specific policy rules (PL002-PL005, PT001-PT002).
 # Exit codes: 0=pass, 1=path failure, 2=policy failure, 3=execution error.
-# Findings carry rule IDs: PL002 a missing heading, PL003 a SKILL.md over the
-# line limit, PL004 no code blocks, PL005 no list items; DEP001 a required tool
-# is absent; DEP002 check-paths.sh returned a result this script cannot read —
-# an unenumerated exit status, a payload that is not the documented shape, or a
-# payload that contradicts itself or the status it arrived with. In --json mode
+# Every rule here is a rule about the body, and is computed over the body: the
+# frontmatter is metadata, not the content these rules judge.
+# Findings carry rule IDs: PL002 a missing heading, PL003 a SKILL.md body over
+# the line limit, PL004 no code blocks, PL005 no list items; DEP001 a required
+# tool is absent; DEP002 a source returned a result this script cannot read —
+# check-paths.sh answering with an unenumerated exit status, a payload that is
+# not the documented shape, or a payload that contradicts itself or the status
+# it arrived with; or a SKILL.md it could not read the body out of. In --json mode
 # it also relays check-paths.sh's own findings unchanged, so PT001, PT002 and
 # PATH reach a consumer through here too.
 # Use --json for machine-readable output: {"findings": [...], "passed": bool},
@@ -64,31 +67,52 @@ fail=0
 findings=()
 
 # --- Policy checks (grep-based absence detection) ---
+#
+# Every rule below is a rule about the body, so every rule below reads the body
+# and nothing else. Reading the whole file instead made the entire policy
+# verdict satisfiable out of frontmatter: `## When to use` at column 0 inside
+# the YAML is a comment to a parser and a heading to this grep, a code fence
+# indented in a block scalar matches PL004's `^[[:space:]]*```, and the closing
+# `---` matches PL005's `^[[:space:]]*[-*]`. A skill whose body was one prose
+# sentence passed all four, and audit-report.sh reported it clean.
+#
+# The body is read once, here, rather than per rule: four reads of one file are
+# four chances for the rules to disagree about what they are judging, and the
+# tool that does the reading has to be answered for once either way.
+body="$(skill_body "$skill_md")" \
+  || cannot_compute DEP002 "could not read the body of $skill_md" "$json_output"
 
 # Required headings (case-insensitive) — match the original check-structure.sh patterns
 for heading_spec in "When to use" ".*Process" "Examples?" "Deterministic" "Orchestration" "Constraints"; do
-  if ! grep -qiE "^#{2,6}[[:space:]]+${heading_spec}" "$skill_md"; then
+  if ! grep -qiE "^#{2,6}[[:space:]]+${heading_spec}" <<< "$body"; then
     findings+=("fail|PL002|missing heading matching '${heading_spec}'")
     fail=2
   fi
 done
 
 # Code blocks
-if ! grep -qE '^[[:space:]]*```' "$skill_md"; then
+if ! grep -qE '^[[:space:]]*```' <<< "$body"; then
   findings+=("fail|PL004|no code blocks found")
   fail=2
 fi
 
 # List items
-if ! grep -qE '^[[:space:]]*[-*]' "$skill_md"; then
+if ! grep -qE '^[[:space:]]*[-*]' <<< "$body"; then
   findings+=("fail|PL005|no list items found")
   fail=2
 fi
 
-# Line count
-line_count="$(wc -l < "$skill_md" | tr -d '[:space:]')"
+# Line count. PL003 is a limit on the body, as draft-rewrite.sh's own statement
+# of the rule says ("`SKILL.md` body is under ~500 lines"): frontmatter is
+# metadata a reader does not pay for, and counting it made the limit depend on
+# how much of it a skill declared. An empty body is zero lines rather than the
+# one a newline-terminated read of nothing would report.
+line_count=0
+if [[ -n "$body" ]]; then
+  line_count="$(wc -l <<< "$body" | tr -d '[:space:]')"
+fi
 if [[ "$line_count" -gt 500 ]]; then
-  findings+=("fail|PL003|SKILL.md is $line_count lines (max 500)")
+  findings+=("fail|PL003|SKILL.md body is $line_count lines (max 500)")
   fail=2
 fi
 
