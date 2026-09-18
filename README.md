@@ -388,7 +388,7 @@ verified were run against a clean install on this release's tree.
 | Agent | Command | Status |
 |---|---|---|
 | Devin | `devin plugins install Okja-Engineering/skill-architect` | not verified — the `owner/repo` form syncs to Devin Cloud and needs a logged-in account, which this release had no way to exercise. The local-path form under "Local checkout" *was* run and is verified |
-| Codex | Install from the local plugin directory or marketplace entry (see [Codex plugin docs](https://www.codex-docs.com/en/docs/build-plugins)) | not verified |
+| Codex | Install from the local plugin directory or marketplace entry (see [Codex plugin docs](https://developers.openai.com/codex/plugins)) | not verified — no Codex CLI was reachable to run it. The citation moved: the page this row used to link was a third-party mirror that defers to OpenAI's own docs for the authoritative version |
 | Cursor | Copy or symlink the plugin directory to your Cursor plugins folder (see [Cursor plugin docs](https://cursor.com/docs/plugins)) | not verified |
 
 All native plugins use the same namespace:
@@ -448,7 +448,22 @@ does not fail loudly: it still writes a `REWRITE-DRAFT.md`, but the "Current sta
 section contains `No such file or directory` for `check-frontmatter.sh` and
 `check-structure.sh` instead of an audit.
 
-The exact path depends on the agent (`~/.claude/skills/`, `.cursor/skills/`, `.codex/skills/`, `.devin/skills/`, etc.).
+The exact path depends on the agent, and only two of these were confirmed against the tool
+itself in this release:
+
+- **Claude Code** — `~/.claude/skills/`, the destination in the commands above. Verified.
+- **Devin** — `.devin/skills/` for a project, `~/.config/devin/skills/` globally. Verified by
+  running `devin skills paths`, which prints both. Note it is *not* `~/.devin/skills/`.
+- **Cursor, Codex** — **not verified in this release**; no CLI for either was reachable here.
+  Get the current path from the vendor, not from this list: Cursor's
+  [skills docs](https://cursor.com/docs/plugins) and Codex's
+  [skills docs](https://developers.openai.com/codex/skills). Earlier releases of this README
+  asserted `.codex/skills/`, which OpenAI's own documentation does not list as a discovery
+  location — it names `.agents/skills` paths instead. We could not run Codex to confirm
+  either way, so treat that as the vendor's claim and not ours, and verify before you copy.
+
+A skill placed somewhere the agent does not read fails silently — it simply never appears —
+so confirm the path with the agent rather than with this table.
 
 ## Quick example
 
