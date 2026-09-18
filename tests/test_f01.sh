@@ -1180,14 +1180,69 @@ if [[ -n "$unprobed_tools" ]]; then
   echo "  required with neither a probe nor a stated exemption:$unprobed_tools"
 fi
 
-broken_cases=0
-for bscript in "$SCRIPTS_DIR"/check-structure.sh "$SCRIPTS_DIR"/check-paths.sh \
-               "$SCRIPTS_DIR"/check-frontmatter.sh "$SCRIPTS_DIR"/audit-report.sh; do
-  bname="$(basename "$bscript")"
-  bjson=""
-  case "$bname" in
-    check-structure.sh|check-paths.sh) bjson="--json" ;;
+# The scripts the cross product drives are read off the tree, not written down
+# here. The hand-written list was four, and the two it left out were the two
+# that needed it: `mktemp` is required by `draft-rewrite.sh` alone, and
+# `check-quality.sh` is in neither `--json` mode, so the one mechanism built to
+# catch a present-and-broken tool never reached either of them. The mktemp probe
+# that accepted any answer at all was reachable only through the drafter, and
+# nothing drove the drafter. A list of names has to be edited by whoever adds a
+# script, who is the person least likely to notice it needs editing — the same
+# reason the tool list above is read off the scripts rather than restated.
+ADVERSE_SCRIPTS="$SCRIPTS_DIR/check-structure.sh $SCRIPTS_DIR/check-paths.sh
+$SCRIPTS_DIR/check-frontmatter.sh $SCRIPTS_DIR/check-quality.sh
+$SCRIPTS_DIR/audit-report.sh skills/skill-rewrite/scripts/draft-rewrite.sh"
+
+# adverse_args_of <basename> — the invocation that reaches a verdict, with
+# `@target` standing for the skill directory. A runnable script with no entry
+# fails the coverage assertion below instead of being quietly skipped.
+adverse_args_of() {
+  case "$1" in
+    check-structure.sh|check-paths.sh) echo "--json @target" ;;
+    check-frontmatter.sh|check-quality.sh|audit-report.sh) echo "@target" ;;
+    draft-rewrite.sh) echo "-t @target" ;;
+    *) return 1 ;;
   esac
+}
+
+# Coverage, both directions: every runnable script in both skills is driven
+# here, and every script driven here exists.
+adverse_uncovered=""
+for ascript in "$SCRIPTS_DIR"/*.sh skills/skill-rewrite/scripts/*.sh; do
+  case "$ascript" in *verdict-guard.sh) continue ;; esac
+  [[ -x "$ascript" ]] || continue
+  # Unquoted, so the list's newlines collapse to single spaces and a path at the
+  # start or end of a line is still surrounded by them.
+  case " $(echo $ADVERSE_SCRIPTS) " in
+    *" $ascript "*) ;;
+    *) adverse_uncovered="$adverse_uncovered $(basename "$ascript")" ;;
+  esac
+  adverse_args_of "$(basename "$ascript")" >/dev/null \
+    || adverse_uncovered="$adverse_uncovered $(basename "$ascript")(no-invocation)"
+done
+assert_value "every runnable script in both skills is driven against a broken tool" \
+  "$([[ -z "$adverse_uncovered" ]] && echo true || echo false)"
+if [[ -n "$adverse_uncovered" ]]; then
+  echo "  runnable but never driven against a broken tool:$adverse_uncovered"
+fi
+
+# A fresh target per case. `draft-rewrite.sh` writes its draft into the target
+# it was handed, so a shared copy would carry the previous case's draft into the
+# next one. The copy keeps the fixture's own directory name because
+# skill-validator checks `name` against it, and a renamed copy would fail the
+# control for a reason that has nothing to do with the tool under test.
+adverse_target() {
+  local root="$mask_root/adverse"
+  rm -rf "$root"
+  mkdir -p "$root"
+  cp -R tests/fixtures/f01/valid-full "$root/valid-full"
+  echo "$root/valid-full"
+}
+
+broken_cases=0
+for bscript in $ADVERSE_SCRIPTS; do
+  bname="$(basename "$bscript")"
+  bargs="$(adverse_args_of "$bname")"
   for btool in $(tools_required_by "$bscript"); do
     # Only the tools the guard has a probe for; the rest are proven at their read.
     case "
@@ -1198,15 +1253,26 @@ $btool
 "*) ;;
       *) continue ;;
     esac
+    bjson=""
+    case "$bargs" in *--json*) bjson="--json" ;; esac
     for bmode in silent erroring wrong; do
       broken_cases=$((broken_cases + 1))
-      run_on_path "$(broken_tool_path "$btool" "$bmode")" "$bscript" ${bjson:+$bjson} tests/fixtures/f01/valid-full
+      btarget="$(adverse_target)"
+      run_on_path "$(broken_tool_path "$btool" "$bmode")" "$bscript" ${bargs//@target/$btarget}
       assert_value "$bname, $btool present but $bmode: exits 3, not a status meaning a verdict" \
         "$([[ $code -eq 3 ]] && echo true || echo false)"
       assert_value "$bname, $btool present but $bmode: never reports passed true" \
         "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
       assert_value "$bname, $btool present but $bmode: the diagnostic names $btool, not another component" \
         "$(echo "$errout" | grep -q -- "$btool" && echo true || echo false)"
+      # A script that produces a document must not have produced one. The
+      # drafter is the case that matters: a tool it could not use left it
+      # writing a draft anyway, at exit 0, and the draft is what a reader then
+      # treats as the audit's findings.
+      if [[ "$bname" == draft-rewrite.sh ]]; then
+        assert_value "$bname, $btool present but $bmode: no draft was written" \
+          "$([[ ! -f "$btarget/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+      fi
       if [[ -n "$bjson" ]]; then
         assert_value "$bname, $btool present but $bmode: the payload carries DEP002" \
           "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP002")' >/dev/null 2>&1 && echo true || echo false)"
@@ -1222,7 +1288,8 @@ $btool
       fi
     done
     # The control, per tool: forwarded to the real thing, the verdict is reached.
-    run_on_path "$(working_tool_path "$btool")" "$bscript" ${bjson:+$bjson} tests/fixtures/f01/valid-full
+    btarget="$(adverse_target)"
+    run_on_path "$(working_tool_path "$btool")" "$bscript" ${bargs//@target/$btarget}
     assert_value "$bname, $btool forwarded to the real tool: reaches its verdict (exit 0)" \
       "$([[ $code -eq 0 ]] && echo true || echo false)"
   done
@@ -1230,7 +1297,130 @@ done
 
 echo "  present-but-broken cases driven: $broken_cases"
 assert_value "the present-but-broken cross product was enumerated, not read as empty" \
-  "$([[ "$broken_cases" -ge 30 ]] && echo true || echo false)"
+  "$([[ "$broken_cases" -ge 45 ]] && echo true || echo false)"
+
+# --- What a probe that accepts any answer actually costs ------------------------
+#
+# The three assertions above say exit 3, no pass, and the right tool named. They
+# do not say where the answer went. `mktemp` was the one arm of tool_answers
+# that compared against nothing — it asked only that there *was* an answer —
+# and the answer is not a diagnostic: it is a path, which the drafter opens,
+# writes an audit into, reads back, and states in the draft as that draft's
+# provenance. So a mktemp answering `not-an-answer` at exit 0 passed the probe
+# and the drafter created a file called `not-an-answer` in whatever directory
+# the caller happened to be standing in, then published a draft at exit 0
+# naming it as the audit it was composed from.
+#
+# The case is driven from a directory of its own, because the defect is defined
+# by where the file lands. Running it from the repository root would put the
+# stray file in the repository.
+
+# run_in_dir <dir> <path> <cmd> [args...] — run_on_path, from a given cwd.
+run_in_dir() {
+  local dir="$1"
+  shift
+  local use_path="$1"
+  shift
+  local errfile="$mask_root/stderr"
+  code=0
+  output=$(cd "$dir" && PATH="$use_path" "$@" 2>"$errfile") || code=$?
+  errout="$(cat "$errfile")"
+}
+
+mktemp_answer="not-an-answer"
+mktemp_cwd="$mask_root/mktemp-caller-cwd"
+rm -rf "$mktemp_cwd"
+mkdir -p "$mktemp_cwd"
+mktemp_target="$(adverse_target)"
+DRAFT_ABS="$(CDPATH= cd -P -- skills/skill-rewrite/scripts && pwd -P)/draft-rewrite.sh"
+run_in_dir "$mktemp_cwd" "$(broken_tool_path mktemp wrong)" "$DRAFT_ABS" -t "$mktemp_target"
+
+assert_value "drafter, mktemp answers with a name it did not make: exits 3, not 0" \
+  "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "drafter, mktemp answers with a name it did not make: names mktemp on stderr" \
+  "$(echo "$errout" | grep -q 'mktemp' && echo true || echo false)"
+assert_value "drafter, mktemp answers with a name it did not make: no draft was written" \
+  "$([[ ! -f "$mktemp_target/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+assert_value "drafter, mktemp answers with a name it did not make: nothing is created in the caller's directory" \
+  "$([[ -z "$(ls -A "$mktemp_cwd")" ]] && echo true || echo false)"
+assert_value "drafter, mktemp answers with a name it did not make: no draft claims that answer as its provenance" \
+  "$(grep -rq "$mktemp_answer" "$mktemp_target" 2>/dev/null && echo false || echo true)"
+
+# The probe itself, asked directly, over every way a tool can answer wrongly.
+# Each of these satisfies "there is an answer" and none of them is one.
+mktemp_probe_cases=0
+for mcase in "wrong|an answer that is not a name it made" \
+             "silent|no answer at all" \
+             "erroring|a status instead of an answer"; do
+  mmode="${mcase%%|*}"
+  mwhy="${mcase#*|}"
+  mktemp_probe_cases=$((mktemp_probe_cases + 1))
+  run_on_path "$(broken_tool_path mktemp "$mmode")" \
+    /usr/bin/env bash -c 'source skills/skill-audit/scripts/verdict-guard.sh; tool_answers mktemp'
+  assert_value "the mktemp probe refuses $mwhy" \
+    "$([[ $code -ne 0 ]] && echo true || echo false)"
+done
+echo "  mktemp probe cases driven: $mktemp_probe_cases"
+assert_value "the mktemp probe cases were enumerated, not read as empty" \
+  "$([[ "$mktemp_probe_cases" -eq 3 ]] && echo true || echo false)"
+
+# The control: the real mktemp answers its own probe, so the cases above fail
+# because the probe now reads the answer and not because it refuses everything.
+run_on_path "$(working_tool_path mktemp)" \
+  /usr/bin/env bash -c 'source skills/skill-audit/scripts/verdict-guard.sh; tool_answers mktemp'
+assert_value "the mktemp probe accepts the real mktemp" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+
+# --- A temp directory the real mktemp cannot write in ---------------------------
+#
+# No stub is involved. The drafter asks mktemp for a file under `$TMPDIR`, and
+# `mktemp` exits 1 when it cannot make one there — a TMPDIR that does not exist,
+# or one it may not write to. Exit 1 is "usage or target error" in this script's
+# own contract, so a broken temp directory arrived as a statement about the
+# caller's command line, with no sentence naming mktemp and no "no draft was
+# written". The status was never read.
+#
+# Driven both ways round, because they fail at different depths: a directory
+# that is not there, and one that is there and refuses the write.
+mktemp_env_cases=0
+for tcase in "$mask_root/tmpdir-that-does-not-exist|a TMPDIR that does not exist" \
+             "$mask_root/tmpdir-unwritable|a TMPDIR that cannot be written to"; do
+  ttmp="${tcase%%|*}"
+  twhy="${tcase#*|}"
+  mktemp_env_cases=$((mktemp_env_cases + 1))
+  rm -rf "$ttmp"
+  case "$twhy" in
+    *"cannot be written"*) mkdir -p "$ttmp"; chmod 500 "$ttmp" ;;
+  esac
+  ttarget="$(adverse_target)"
+  code=0
+  errout="$(TMPDIR="$ttmp" "$DRAFT_ABS" -t "$ttarget" 2>&1 >/dev/null)" || code=$?
+  assert_value "drafter, $twhy: exits 3, not 1 — a broken temp directory is not the caller's usage" \
+    "$([[ $code -eq 3 ]] && echo true || echo false)"
+  assert_value "drafter, $twhy: names mktemp as the thing that could not answer" \
+    "$(echo "$errout" | grep -q 'mktemp' && echo true || echo false)"
+  assert_value "drafter, $twhy: says no draft was written" \
+    "$(echo "$errout" | grep -q 'no draft was written' && echo true || echo false)"
+  assert_value "drafter, $twhy: and none was" \
+    "$([[ ! -f "$ttarget/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+  [[ -d "$ttmp" ]] && chmod 700 "$ttmp"
+done
+echo "  mktemp temp-directory cases driven: $mktemp_env_cases"
+assert_value "the mktemp temp-directory cases were enumerated, not read as empty" \
+  "$([[ "$mktemp_env_cases" -eq 2 ]] && echo true || echo false)"
+
+# The control: a writable TMPDIR of its own, and the drafter reaches its verdict.
+mktemp_ok_tmp="$mask_root/tmpdir-writable"
+mkdir -p "$mktemp_ok_tmp"
+mktemp_ok_target="$(adverse_target)"
+code=0
+TMPDIR="$mktemp_ok_tmp" "$DRAFT_ABS" -t "$mktemp_ok_target" >/dev/null 2>&1 || code=$?
+assert_value "drafter, a writable TMPDIR: reaches its verdict (exit 0)" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "drafter, a writable TMPDIR: wrote the draft" \
+  "$([[ -f "$mktemp_ok_target/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+assert_value "drafter, a writable TMPDIR: left no temporary audit behind in it" \
+  "$([[ -z "$(ls -A "$mktemp_ok_tmp")" ]] && echo true || echo false)"
 
 # --- check-quality.sh, inside the guard with its four siblings -----------------
 #
