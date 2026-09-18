@@ -574,4 +574,96 @@ assert "the drafter never reads skill-audit's evaluation matrix" \
 assert "the draft's title names the target skill" \
   grep -qF '# Rewrite draft: all-sections' "$no_templates_target/REWRITE-DRAFT.md"
 
+# --- the compatibility the skill actually has ---------------------------------
+#
+# A `compatibility:` line is a promise to whoever is deciding whether to install
+# the skill, and it is the one claim in the frontmatter nothing was checking.
+# Three ways to break it, so three checks, each decidable everywhere rather than
+# only on the machine the suite happens to run on.
+compatibility_line() {
+  { grep -m1 -E '^compatibility:' "$SKILL" || true; }
+}
+
+# "POSIX shell" is read as a claim of `sh`, because that is what it means to
+# whoever is deciding whether to install: the word does not have to appear for
+# the claim to have been made, and check (3) below is where it is answered.
+claimed_interpreters_in() {
+  {
+    printf '%s\n' "$1" \
+      | { grep -oE '(^|[^a-z-])(sh|bash|zsh|ksh|dash|fish)([^a-z-]|$)' || true; } \
+      | { grep -oE '(sh|bash|zsh|ksh|dash|fish)' || true; }
+    if printf '%s\n' "$1" | grep -qi 'POSIX'; then echo sh; fi
+  } | sort -u
+}
+claimed_interpreters() { claimed_interpreters_in "$(compatibility_line)"; }
+
+# The commands named on the line that are not interpreters: a compatibility
+# line that names a tool is stating a dependency on it.
+claimed_commands_in() {
+  local w out=""
+  for w in $(printf '%s\n' "$1" | tr -cs 'a-zA-Z0-9_-' ' '); do
+    case " $(claimed_interpreters_in "$1" | tr '\n' ' ') " in *" $w "*) continue ;; esac
+    if command -v "$w" >/dev/null 2>&1; then
+      out="$out$w
+"
+    fi
+  done
+  printf '%s' "$out" | sort -u
+}
+claimed_commands() { claimed_commands_in "$(compatibility_line)"; }
+
+# (1) Behavioural: every interpreter the line claims runs the drafter to a
+# draft that carries the audit. Not merely "exits 0" — under zsh the drafter
+# exits 0 having written a draft whose Current state is two file-not-found
+# lines, and an exit-status check would call that compatibility.
+runs_the_drafter() {
+  local interp="$1" target
+  command -v "$interp" >/dev/null 2>&1 || return 1
+  target="$(target_from tests/fixtures/rewrite/all-sections "under-$interp")"
+  "$interp" "$DRAFTER" -t "$target" >/dev/null 2>&1 || return 1
+  [ -f "$target/REWRITE-DRAFT.md" ] || return 1
+  grep -qF 'frontmatter OK' "$target/REWRITE-DRAFT.md"
+}
+
+assert "the compatibility line names an interpreter at all" \
+  test -n "$(claimed_interpreters)"
+for interp in $(claimed_interpreters); do
+  assert "the skill works under $interp, which its compatibility line claims" \
+    runs_the_drafter "$interp"
+done
+
+# (2) Every tool the line names is a tool the skill needs. `git` was on it and
+# no script in either skill runs git.
+for tool in $(claimed_commands); do
+  assert "the compatibility line's $tool is a tool this skill actually needs" \
+    tool_is_required "$tool"
+done
+# The control for the command extractor, which reads nothing once the line is
+# corrected. Without it, "every tool named is needed" would be true of a line
+# naming anything at all.
+assert "the compatibility-line reader finds a tool named on such a line" \
+  test "$(claimed_commands_in 'compatibility: POSIX shell (bash 3.2+ or zsh), git.')" = "git"
+
+# (3) Declarative: the line claims the interpreter the bundled script's shebang
+# names, and no other family. This is what makes "POSIX shell" answerable — a
+# behavioural `sh` run cannot answer it, because /bin/sh is bash in sh mode on
+# macOS and dash on Linux, so the same assertion passes here and fails there.
+shebang_interpreter() {
+  sed -n '1s|^#!.*[/ ]\([a-z]*sh\)[[:space:]]*$|\1|p' "$DRAFTER"
+}
+assert "the bundled script's shebang names an interpreter" \
+  test -n "$(shebang_interpreter)"
+assert "the compatibility line claims the shebang's interpreter and no other family" \
+  test "$(claimed_interpreters)" = "$(shebang_interpreter)"
+if [ "$(claimed_interpreters)" != "$(shebang_interpreter)" ]; then
+  echo "  claimed: $(claimed_interpreters | tr '\n' ' ')"
+  echo "  shebang: $(shebang_interpreter)"
+fi
+
+# The version half of the claim, pinned where it can be pinned. CI runs one
+# Linux job with one bash, so "3.2+" is a claim no run verifies; what a run can
+# verify is that the script uses nothing bash 3.2 lacks.
+assert "the drafter uses no construct bash 3.2 does not have" \
+  test -z "$(grep -nE 'declare -A|mapfile|readarray|local -n|wait -n|globstar|\$\{[A-Za-z_][A-Za-z_0-9]*,,\}|\$\{[A-Za-z_][A-Za-z_0-9]*\^\^\}' "$DRAFTER" || true)"
+
 harness_summary
