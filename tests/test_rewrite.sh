@@ -644,8 +644,46 @@ guard_is_load_bearing() {
 }
 assert "without the sibling's verdict-guard.sh the drafter cannot produce the audit" \
   guard_is_load_bearing
-assert "the SKILL.md names the sibling skill-audit directory as a dependency" \
-  grep -qF 'verdict-guard.sh' "$SKILL"
+# What the dependency paragraph claims, each half decided rather than greped
+# for. It says this skill bundles one script and runs every check from the
+# sibling's directory, and names which two: three comparisons between the
+# document and the tree, so neither side can move without the other.
+#
+# The document's side is read by the same extractor the documented-path census
+# uses, which reads bash fences and skips ```text — a command is written in a
+# fence, and a script merely discussed in a sentence is not a claim that this
+# skill runs it.
+bundled_scripts() {
+  { ls skills/skill-rewrite/scripts/ || true; } | sort -u
+}
+documented_bundled_scripts() {
+  doc_referenced_paths "$SKILL" \
+    | { grep -E '^\$\{?skill_root\}?/scripts/' || true; } \
+    | sed -e 's|.*/||' | sort -u
+}
+sibling_checks_the_drafter_runs() {
+  { grep -hoE '\$\{?skill_audit_root\}?/scripts/[A-Za-z0-9_.-]+\.sh' "$DRAFTER" || true; } \
+    | sed -e 's|.*/||' | sort -u
+}
+documented_sibling_checks() {
+  doc_referenced_paths "$SKILL" \
+    | { grep -E '^\$\{?audit_root\}?/scripts/' || true; } \
+    | sed -e 's|.*/||' | sort -u
+}
+every_check_it_runs_loads_the_guard() {
+  local s
+  for s in $(sibling_checks_the_drafter_runs); do
+    grep -qF 'verdict-guard.sh' "skills/skill-audit/scripts/$s" || return 1
+  done
+  [ -n "$(sibling_checks_the_drafter_runs)" ]
+}
+
+assert "the scripts this skill bundles are the ones the SKILL.md shows it running, and no others" \
+  test "$(bundled_scripts)" = "$(documented_bundled_scripts)"
+assert "the sibling checks the drafter runs are the ones the SKILL.md shows it running, and no others" \
+  test "$(sibling_checks_the_drafter_runs)" = "$(documented_sibling_checks)"
+assert "every check this skill runs loads verdict-guard.sh, as the SKILL.md says both of them do" \
+  every_check_it_runs_loads_the_guard
 
 # A claim about the rest of the repository is decidable against the rest of the
 # repository, and this one was not decided. The document called

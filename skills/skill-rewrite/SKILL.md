@@ -45,7 +45,7 @@ Stage 1 runs the check directly, so it exits 3 with `required tool not found: sk
 
 Nothing on this skill's path needs `skillscore`, which scores quality this skill does not run, or `jq`, which `skill-audit`'s scripts require only in their `--json` modes; add them if you extend the stages to use them.
 
-This skill is not self-contained. It bundles `draft-rewrite.sh` and borrows every check from `$audit_root/scripts/`, including `verdict-guard.sh`, which no other file references by name and which every one of those scripts refuses to compute a verdict without. Install or prune the two skills together.
+This skill is not self-contained. It bundles `draft-rewrite.sh` and runs no check of its own: every check it runs comes from `$audit_root/scripts/` — `check-frontmatter.sh` and `check-structure.sh`, which both load `verdict-guard.sh` and refuse to compute a verdict without it. A pruner who removes the guard as an unused file, or who installs this skill alone, gets a draft built from nothing. Install or prune the two skills together.
 
 ### Stage 1: Run audit if needed
 
