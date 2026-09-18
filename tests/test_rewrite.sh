@@ -120,6 +120,44 @@ assert "the documented-path census refuses a document carrying a path that does 
 assert "the documented-path check reads a bash fence rather than skipping it" \
   test "$(doc_referenced_paths "$control_doc")" = "scripts/no-such-script.sh"
 
+# --- the roots those paths hang from ------------------------------------------
+#
+# Stage 0 says every command below is anchored on `skill_root`, directly or
+# through `audit_root`. Two things have to hold for that to be true, and the
+# second one did not: every path in a fence carries one of the two roots, and
+# every definition of `audit_root` derives it from `skill_root`. Stage 1 set
+# `audit_root` to a literal path of its own, so an input Stage 0 had already
+# defined had a second definition, and the first block under the claim was not
+# anchored on the root the claim names.
+unanchored_doc_paths_in() {
+  doc_referenced_paths "$1" \
+    | { grep -vE '^\$\{?(skill_root|audit_root)\}?/' || true; }
+}
+audit_root_definitions() {
+  { grep -hoE '^audit_root=[^ ]*' "$SKILL" || true; } | sort -u
+}
+every_audit_root_definition_derives_from_skill_root() {
+  local d found=0
+  for d in $(audit_root_definitions); do
+    found=1
+    case "$d" in
+      *'$skill_root'*) ;;
+      *) echo "  the document defines $d, which is not derived from \$skill_root" >&2
+         return 1 ;;
+    esac
+  done
+  [ "$found" -eq 1 ]
+}
+
+assert "every path the SKILL.md writes in a bash fence is anchored on one of its two roots" \
+  test -z "$(unanchored_doc_paths_in "$SKILL")"
+assert "the SKILL.md derives audit_root from skill_root wherever it defines it" \
+  every_audit_root_definition_derives_from_skill_root
+# The control, on the same bare path the census above is held by: a document
+# that anchors nothing must read as anchoring nothing.
+assert "the anchoring check reads a bare path as anchored on neither root" \
+  test "$(unanchored_doc_paths_in "$control_doc")" = "scripts/no-such-script.sh"
+
 # --- the documented invocation ------------------------------------------------
 #
 # Rendered and run, not read. "The documented invocation works" is not a
