@@ -2,6 +2,7 @@ package profiler
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -247,4 +248,117 @@ func TestProvenance_AnAbsentScopeIsNotAForeignScope(t *testing.T) {
 		t.Fatalf("tokens state = %q (%s), want present — no record in this export names a foreign scope",
 			profile.Tokens.State, profile.Tokens.Reason)
 	}
+}
+
+// --- probe is unscoped by session, and by nothing else ---
+
+// probe and capture are asked different questions, so they are allowed to give
+// different answers about one file, and this is the divergence that follows:
+// probe is not told a session, so it answers for the export as a whole, while a
+// capture answers for the session it names.
+//
+// The pair is asserted together because the divergence is only honest if the
+// profile's own capability block comes from its own scoped read. An export
+// holding two sessions probes `otel` and a capture of a session it does not
+// hold reports `none` — a disagreement between two questions, never inside one
+// profile.
+func TestProvenance_ProbeAnswersForTheExportAndACaptureForItsSession(t *testing.T) {
+	adapter := ClaudeCodeAdapter{OtelExportFile: fixture("two_sessions.ndjson")}
+
+	report := adapter.Probe()
+	for _, metric := range []MetricName{MetricTokens, MetricToolCalls, MetricTiming} {
+		if got := report.Capabilities[metric]; got != SourceOtel {
+			t.Errorf("probe capability %s = %q, want %q — probe was told no session, so it answers for the export",
+				metric, got, SourceOtel)
+		}
+	}
+
+	profile, err := adapter.Capture(sessionAbsent, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, metric := range []MetricName{MetricTokens, MetricToolCalls, MetricTiming} {
+		if got := profile.Capability.Capabilities[metric]; got != SourceNone {
+			t.Errorf("profile capability %s = %q, want %q — this profile's capability block is its own scoped read, not probe's",
+				metric, got, SourceNone)
+		}
+	}
+}
+
+// The session test is the only one probe drops. A record naming another
+// product's scope is that product's whatever question is being asked, so an
+// export whose only token metric was recorded by some.other.product can yield
+// nothing — and probe must say so rather than advertising a capability the
+// capture could only ever refuse.
+func TestProvenance_ProbeStillRefusesAForeignScope(t *testing.T) {
+	const foreign = `{"resourceMetrics":[{"scopeMetrics":[{"scope":{"name":"some.other.product"},` +
+		`"metrics":[{"name":"claude_code.token.usage","sum":{"aggregationTemporality":1,"dataPoints":[{` +
+		`"attributes":[{"key":"session.id","value":{"stringValue":"` + fixtureSession + `"}},` +
+		`{"key":"type","value":{"stringValue":"input"}}],"timeUnixNano":"1789332596272000000","asDouble":100}]}}]}]}]}`
+
+	adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, foreign)}
+
+	if got := adapter.Probe().Capabilities[MetricTokens]; got != SourceNone {
+		t.Errorf("probe capability tokens = %q, want %q — the one token metric in this export is another product's",
+			got, SourceNone)
+	}
+}
+
+// anySession, named and greppable, is what drops the session test, and probe is
+// the only thing that sets it. Asserted on the projection rather than through a
+// profile, because this is where the two provenances differ: one keeps every
+// session's points, the other keeps one session's.
+//
+// The capture side is the load-bearing half. A capture provenance that dropped
+// the session test would report every session in the export, which is the
+// defect this whole repair exists for.
+func TestProvenance_OnlyProbeDropsTheSessionTest(t *testing.T) {
+	var adapter ClaudeCodeAdapter
+
+	if !adapter.probeProvenance().anySession {
+		t.Error("probeProvenance does not drop the session test: probe is asked what the export can yield, without a session")
+	}
+	if adapter.provenanceFor(sessionA).anySession {
+		t.Fatal("a capture provenance drops the session test: the profile would report every session in the export")
+	}
+
+	export := readFixtureExport(t, "two_sessions_one_metric.json")
+	if got, want := keptSessions(export.scopedTo(adapter.probeProvenance())), []string{sessionB, sessionA, sessionB, sessionA}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("probe's projection keeps sessions %v, want %v — every point in the array, whoever's it is", got, want)
+	}
+	if got, want := keptSessions(export.scopedTo(adapter.provenanceFor(sessionA))), []string{sessionA, sessionA}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("a capture of session A keeps sessions %v, want %v", got, want)
+	}
+}
+
+// readFixtureExport is a fixture read but not projected, for the two tests that
+// assert what a projection does to it.
+func readFixtureExport(t *testing.T, name string) otlpExport {
+	t.Helper()
+	f, err := os.Open(fixture(name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	export, err := readOTLP(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return export
+}
+
+// keptSessions is the session id of every token data point a projection kept,
+// in walk order.
+func keptSessions(scoped scopedExport) []string {
+	ids := make([]string, 0, 4)
+	for m := range scoped.metrics(otelTokenUsageMetric) {
+		if m.Sum == nil {
+			continue
+		}
+		for _, dp := range m.Sum.DataPoints {
+			id, _ := dp.Attributes.String(otelSessionAttr)
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
