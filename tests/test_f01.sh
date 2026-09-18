@@ -1417,6 +1417,73 @@ echo "  mktemp temp-directory cases driven: $mktemp_env_cases"
 assert_value "the mktemp temp-directory cases were enumerated, not read as empty" \
   "$([[ "$mktemp_env_cases" -eq 2 ]] && echo true || echo false)"
 
+# --- The call site, which the probe cannot stand in for -------------------------
+#
+# The probe now refuses a temp directory mktemp cannot write in, so the two
+# cases above are caught before the drafter asks for its file. That is one
+# layer, and it is the wrong one to rely on: a precondition is checked once, and
+# the directory can stop being writable between the check and the call. A
+# precondition proved earlier is not a status read later, and the status is what
+# the script's own exit is made of under errexit.
+#
+# So the call site is driven on its own, with the only stub that can reach it: a
+# mktemp that answers the probe correctly — it forwards `-u` to the real tool —
+# and fails the call that actually makes the file. Nothing else gets past
+# require_tool to the line under test.
+mktemp_late_dir="$mask_root/broken-mktemp-late"
+if [[ ! -d "$mktemp_late_dir" ]]; then
+  mkdir -p "$mktemp_late_dir"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf '# Answers the probe, refuses the real request.\n'
+    printf 'if [[ "${1:-}" == -u ]]; then exec %s "$@"; fi\n' "$(command -v mktemp)"
+    printf 'echo "mktemp: cannot create a file there" >&2\n'
+    printf 'exit 1\n'
+  } > "$mktemp_late_dir/mktemp"
+  chmod +x "$mktemp_late_dir/mktemp"
+fi
+
+# The stub is the control for itself: the probe must accept it, or the case
+# below would be testing require_tool over again rather than the call site.
+run_on_path "$mktemp_late_dir:$PATH" \
+  /usr/bin/env bash -c 'source skills/skill-audit/scripts/verdict-guard.sh; tool_answers mktemp'
+assert_value "the late-failing mktemp stub does answer the probe, so the case below reaches the call site" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+
+late_target="$(adverse_target)"
+run_on_path "$mktemp_late_dir:$PATH" "$DRAFT_ABS" -t "$late_target"
+assert_value "drafter, mktemp fails the call it passed the probe for: exits 3, not 1" \
+  "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "drafter, mktemp fails the call it passed the probe for: names mktemp" \
+  "$(echo "$errout" | grep -q 'mktemp' && echo true || echo false)"
+assert_value "drafter, mktemp fails the call it passed the probe for: says no draft was written" \
+  "$(echo "$errout" | grep -q 'no draft was written' && echo true || echo false)"
+assert_value "drafter, mktemp fails the call it passed the probe for: and none was" \
+  "$([[ ! -f "$late_target/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+assert_value "drafter, mktemp fails the call it passed the probe for: stdout carries no verdict" \
+  "$([[ -z "$output" ]] && echo true || echo false)"
+
+# And the other half of the same status: a mktemp that exits 0 saying nothing.
+# An empty answer is a path the shell would open as the empty string, so the
+# status alone is not the whole question the call site has to ask.
+mktemp_empty_dir="$mask_root/broken-mktemp-empty"
+if [[ ! -d "$mktemp_empty_dir" ]]; then
+  mkdir -p "$mktemp_empty_dir"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'if [[ "${1:-}" == -u ]]; then exec %s "$@"; fi\n' "$(command -v mktemp)"
+    printf 'exit 0\n'
+  } > "$mktemp_empty_dir/mktemp"
+  chmod +x "$mktemp_empty_dir/mktemp"
+fi
+empty_target="$(adverse_target)"
+run_on_path "$mktemp_empty_dir:$PATH" "$DRAFT_ABS" -t "$empty_target"
+assert_value "drafter, mktemp exits 0 naming no file: exits 3" \
+  "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "drafter, mktemp exits 0 naming no file: names mktemp" \
+  "$(echo "$errout" | grep -q 'mktemp' && echo true || echo false)"
+assert_value "drafter, mktemp exits 0 naming no file: no draft was written" \
+  "$([[ ! -f "$empty_target/REWRITE-DRAFT.md" ]] && echo true || echo false)"
 
 # The control: a writable TMPDIR of its own, and the drafter reaches its verdict.
 mktemp_ok_tmp="$mask_root/tmpdir-writable"
