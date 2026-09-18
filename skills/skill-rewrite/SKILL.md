@@ -28,6 +28,8 @@ Do not use this skill to apply changes silently; the draft must be reviewed and 
 
 Inputs:
 
+- `skill_root`: the directory holding this `SKILL.md` — the `skill-rewrite` skill directory. Every command below is anchored on it, so the commands run from any working directory rather than only from the skill's own.
+- `audit_root`: the sibling `skill-audit` skill directory, `"$skill_root/../skill-audit"`. `skill-rewrite` runs `skill-audit`'s check scripts and reads its evaluation matrix; it bundles neither.
 - `target_skill`: the skill directory to rewrite.
 - `audit_report`: optional path to an existing audit report. If omitted, run `skill-audit` first.
 
@@ -36,20 +38,23 @@ Inputs:
 If no audit report is provided, run the audit:
 
 ```bash
-skill_root="<path-to-skill-architect>/skills/skill-audit"
+audit_root="<path-to-skill-architect>/skills/skill-audit"
 target_skill="<target-skill-dir>"
-"$skill_root/scripts/check-frontmatter.sh" "$target_skill"
-"$skill_root/scripts/check-structure.sh" "$target_skill"
+"$audit_root/scripts/check-frontmatter.sh" "$target_skill"
+"$audit_root/scripts/check-structure.sh" "$target_skill"
 ```
 
-Capture the output and score the 10 dimensions using `references/evaluation-matrix.md` from `skill-audit`.
+Capture the output and score the 10 dimensions against `"$audit_root/references/evaluation-matrix.md"`.
 
 ### Stage 2: Generate rewrite draft
 
-Run the rewrite drafter:
+Run the rewrite drafter. Without `-a` it runs the Stage 1 checks itself; with `-a` it reads the report you already have:
 
 ```bash
-scripts/draft-rewrite.sh -t <target-skill-dir> [-a <audit-report-path>]
+skill_root="<path-to-skill-architect>/skills/skill-rewrite"
+target_skill="<target-skill-dir>"
+"$skill_root/scripts/draft-rewrite.sh" -t "$target_skill"
+"$skill_root/scripts/draft-rewrite.sh" -t "$target_skill" -a "<audit-report-path>"
 ```
 
 This creates a `REWRITE-DRAFT.md` next to the target skill's `SKILL.md` with:
@@ -116,10 +121,11 @@ When in doubt, keep the draft conservative and flag the uncertainty for the main
 ### Generate a rewrite draft
 
 ```bash
-scripts/draft-rewrite.sh -t skills/release-check -a ./release-check-audit.md
+skill_root="<path-to-skill-architect>/skills/skill-rewrite"
+"$skill_root/scripts/draft-rewrite.sh" -t <target-skill-dir> -a <audit-report-path>
 ```
 
-Output: `skills/release-check/REWRITE-DRAFT.md`.
+Output: `<target-skill-dir>/REWRITE-DRAFT.md`.
 
 ### Rewrite plan outline
 
