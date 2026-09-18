@@ -879,6 +879,40 @@ func TestSeriesIdentity_MapsThatAreEqualShareOneSeries(t *testing.T) {
 	}
 }
 
+// A map carrying one key twice is input OTLP does not define: nothing says
+// which member wins. The reader does not pick one — both members stay in the
+// identity, so such a map is neither of its single-member readings — and it
+// does not make arrival order meaningful for a duplicate key when it is
+// meaningless for every other map, so the two orders are one series.
+//
+// That is the map rule applied whole rather than a special case for input the
+// data model leaves open, and it is pinned because it is a choice: under a
+// last-one-wins reading these two would be {x:2} and {x:1}, and the profile
+// would hold two running totals where a reader sees one attribute set.
+func TestSeriesIdentity_ADuplicateKeyKeepsBothMembersAndNoOrder(t *testing.T) {
+	const attrs = `[{"key":"k","value":%s}]`
+	const (
+		dup      = `{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}},{"key":"x","value":{"stringValue":"2"}}]}}`
+		reversed = `{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"2"}},{"key":"x","value":{"stringValue":"1"}}]}}`
+		single   = `{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"2"}}]}}`
+	)
+
+	ids := seriesIDs(t, "m",
+		batch("", "", fmt.Sprintf(attrs, dup)),
+		batch("", "", fmt.Sprintf(attrs, reversed)))
+	if ids[0] != ids[1] {
+		t.Errorf("one duplicate-key map in two member orders is two series:\n  %q\n  %q", ids[0], ids[1])
+	}
+
+	ids = seriesIDs(t, "m",
+		batch("", "", fmt.Sprintf(attrs, dup)),
+		batch("", "", fmt.Sprintf(attrs, single)))
+	if ids[0] == ids[1] {
+		t.Errorf("a duplicate-key map shares one series identity %q with the map holding one of its members: a member was dropped",
+			ids[0])
+	}
+}
+
 // A kind written as JSON null is the kind unset, not the kind holding its zero
 // value — so such an attribute is an AnyValue of no kind, which is the answer
 // the table above pins an empty map against.
