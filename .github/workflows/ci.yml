@@ -21,12 +21,15 @@ jobs:
           skill-validator --version
       - name: Install skillscore
         run: npm install -g skillscore@2.0.2
-      # First, because the suites below are only worth running if their
-      # substrate can report a failure. This checks that every suite is on the
-      # shared harness, that none of them can reach a verdict without saying so,
-      # and that no assertion in any of them is incapable of failing. It also
-      # holds this workflow to the suite glob, so a suite that exists but is
-      # never run here fails rather than sitting silent.
+      # First, because the suites below are only worth running if their substrate
+      # can report a failure. This checks that every suite is on the shared
+      # harness, that none of them can reach a verdict without saying so, that no
+      # assertion in any of them is incapable of failing, and that the suites in
+      # tests/ are exactly the ones named in this file and in the README — a
+      # suite CI never runs reports nothing, and neither does one a reader is
+      # never told to run. It counts them from this file rather than carrying a
+      # number of its own, so adding a suite below is all that adding a suite
+      # takes.
       - name: Run verification-harness tests
         run: tests/test_harness.sh
       - name: Run skill layout tests

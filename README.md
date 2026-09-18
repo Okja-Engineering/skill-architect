@@ -561,7 +561,11 @@ This produces `~/.claude/skills/my-skill/REWRITE-DRAFT.md` for review before any
 Run the tests:
 
 ```bash
+# First: the suite for the substrate the others are written on
+tests/test_harness.sh
+
 tests/test_skill.sh
+tests/test_install.sh
 tests/test_walk.sh
 tests/test_f01.sh
 tests/test_f02.sh
@@ -569,6 +573,9 @@ tests/test_f02.sh
 # Profiler tests (Go)
 cd profiler && go test ./...
 ```
+
+`tests/test_harness.sh` holds this list to the suites CI runs, so a suite missing from
+here fails it rather than going quietly unrun.
 
 ## What this plugin does not do
 

@@ -16,7 +16,10 @@
 #   does not reach its summary says so.
 #
 # The suite list is a glob, so a suite added tomorrow is covered the day it
-# lands. Both halves are read out of the source text by
+# lands — and every count this file compares against is read out of the CI
+# workflow or the README rather than written down here, so a suite added
+# tomorrow cannot leave a stale number behind that quietly stops guarding.
+# Both halves are read out of the source text by
 # tests/lib/audit-suites.sh: a verdict that cannot depend on the repository, and
 # a private copy of the harness — including a private EXIT trap — that a repair
 # to the shared one would never reach. Neither is answerable at runtime, and
@@ -92,11 +95,54 @@ for suite in tests/test_*.sh; do
   suite_count=$((suite_count + 1))
 done
 
-# The denominator. An empty or shrunken glob would make every per-suite check
-# below vacuously true, which is the failure this file exists to refuse.
-assert "tests/ still holds every suite this check is written against" \
-  test "$suite_count" -ge 6
+# The two other places the same list is written down, read out of those places
+# rather than restated here. Every count below is derived from one of them, so
+# there is no number in this file for the next suite to make wrong.
+WORKFLOW=.github/workflows/ci.yml
+
+workflow_suites() {
+  grep -oE 'tests/test_[A-Za-z0-9_]+\.sh' "$WORKFLOW" | sort -u
+}
+
+# The block the README tells a reader to run. A reader who follows a list that
+# is missing a suite never runs it, which is the same defect as a suite CI never
+# runs, one audience over.
+readme_test_block() {
+  awk '
+    /^Run the tests:$/ { found = 1; next }
+    found && /^```bash$/ { in_block = 1; next }
+    in_block && /^```$/ { exit }
+    in_block { print }
+  ' README.md
+}
+
+listed_in_the_readme() {
+  readme_test_block | grep -qF -- "$1"
+}
+
+workflow_suite_count="$(workflow_suites | wc -l | tr -d '[:space:]')"
+
+# The denominator, and it is a precondition: an empty or shrunken glob makes
+# every per-suite check below vacuously true, which is the failure this file
+# exists to refuse, and a vacuous check that only reports is not refused.
+#
+# It is derived rather than written down, and that is the whole repair. The
+# number used to be a floor — `-ge 6`, raised by hand each time a suite landed.
+# A branch adding the seventh suite did not touch this file, because nothing
+# made it: the floor still passed, one suite went unexamined, and removing a
+# suite altogether would have passed too. So the count this file expects is now
+# the number of suites the workflow runs, compared for *equality* rather than as
+# a bound. Equality in both directions, because each suite in the glob is also
+# required to be a step in the workflow below: the two lists cannot differ in
+# either direction without this failing.
+require "the CI workflow names suites, so these checks have a denominator" \
+  test "$workflow_suite_count" -gt 0
+require "tests/ holds exactly the suites the CI workflow runs" \
+  test "$suite_count" -eq "$workflow_suite_count"
+require "the README's list of tests to run is extractable" \
+  test -n "$(readme_test_block)"
 echo "  suites examined:$suites"
+echo "  suites the workflow runs: $(workflow_suites | tr '\n' ' ')"
 
 for suite in $suites; do
   assert "$suite is on the shared harness" grep -q 'lib/harness\.sh' "$suite"
@@ -108,7 +154,9 @@ for suite in $suites; do
   # Everything above holds only over the suites that actually execute, so the
   # glob and the workflow are held to the same list.
   assert "$suite is a step in the CI workflow" \
-    grep -qF -- "$suite" .github/workflows/ci.yml
+    grep -qF -- "$suite" "$WORKFLOW"
+  assert "$suite is in the README's list of the tests to run" \
+    listed_in_the_readme "$suite"
 done
 
 # The audit ran over something. A tokenizer that matched nothing would report no
