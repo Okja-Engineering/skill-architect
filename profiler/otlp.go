@@ -696,8 +696,14 @@ func lengthPrefixed(s string) string {
 //
 // The scalar kinds are canonicalised rather than kept verbatim, because the
 // OTLP JSON encoding lets one 64-bit integer arrive as 5 or as "5" and those
-// are one series, not two. A composite is compacted but not otherwise
-// normalised: the order of a composite's members is part of its value.
+// are one series, not two. The composite kinds are canonicalised for the same
+// reason, each by what its own kind is: an arrayValue's member order is part of
+// its value and is kept, a kvlistValue is a map and two maps are equal
+// irrespective of the order their members arrive in. Both recurse, because a
+// map nested in an array is still a map — and because the alternative, taking
+// the compacted JSON as the identity, made one time series read as two and,
+// under cumulative temporality, added two running totals into a number no data
+// point in the export ever carried.
 func (v otlpAttrValue) identity() string {
 	switch {
 	case v.StringValue != nil:
@@ -715,14 +721,66 @@ func (v otlpAttrValue) identity() string {
 		}
 		return "d?" + compactJSON(v.DoubleValue)
 	case len(v.ArrayValue) > 0:
-		return "a" + compactJSON(v.ArrayValue)
+		return "a" + arrayIdentity(v.ArrayValue)
 	case len(v.KvlistValue) > 0:
-		return "k" + compactJSON(v.KvlistValue)
+		return "k" + kvlistIdentity(v.KvlistValue)
 	case len(v.BytesValue) > 0:
 		return "y" + compactJSON(v.BytesValue)
 	}
 	// No kind was set at all, which is not the same answer as any of them.
 	return "-"
+}
+
+// arrayIdentity is an ArrayValue as a canonical string: its members in the
+// order they arrived, each canonicalised as the value it is. Order is kept
+// because an array's order is part of its value; the members are canonicalised
+// because a member is an AnyValue and every rule above applies to it too.
+//
+// The member count goes in front so that no rearrangement of members can spell
+// another array — one member that renders as two cannot, because each member is
+// written behind its own byte length, and the count makes that explicit rather
+// than implied.
+//
+// A value that does not decode as an ArrayValue keeps its bytes verbatim, behind
+// a tag no canonical form can start with, so an undecodable value is never
+// mistaken for a decoded one. Same rule as the "i?" and "d?" forms above.
+func arrayIdentity(raw json.RawMessage) string {
+	var arr struct {
+		Values []otlpAttrValue `json:"values"`
+	}
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return "?" + compactJSON(raw)
+	}
+	var b strings.Builder
+	b.WriteString(lengthPrefixed(strconv.Itoa(len(arr.Values))))
+	for _, v := range arr.Values {
+		b.WriteString(lengthPrefixed(v.identity()))
+	}
+	return b.String()
+}
+
+// kvlistIdentity is a KvlistValue as a canonical string. A KvlistValue is a map,
+// and the OTel common data model defines two maps as equal irrespective of the
+// order their members arrive in — so the members are sorted, which is exactly
+// what otlpAttrs.identity already does for the attribute set a data point
+// carries. It is the same structure and the same rule, so it is the same code:
+// a KvlistValue is a list of key/AnyValue pairs, which is what otlpAttrs is.
+//
+// Recursion falls out of that, because otlpAttrs.identity reads each member
+// through otlpAttrValue.identity, which reaches this function again for a nested
+// map and arrayIdentity for a nested array.
+//
+// A duplicate key is left as the two members it arrived as rather than
+// collapsed: OTLP does not define which of them wins, and picking one would
+// merge two series over a guess.
+func kvlistIdentity(raw json.RawMessage) string {
+	var kvlist struct {
+		Values otlpAttrs `json:"values"`
+	}
+	if err := json.Unmarshal(raw, &kvlist); err != nil {
+		return "?" + compactJSON(raw)
+	}
+	return lengthPrefixed(strconv.Itoa(len(kvlist.Values))) + kvlist.Values.identity()
 }
 
 // compactJSON is raw with its insignificant whitespace removed, so a

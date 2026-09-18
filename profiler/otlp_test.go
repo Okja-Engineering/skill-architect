@@ -807,22 +807,27 @@ func TestSeriesIdentity_AMapAttributeIsEqualWhateverItsMemberOrder(t *testing.T)
 // genuinely distinct and report a session's tokens as a fraction of themselves,
 // which is the same defect in the other direction.
 func TestSeriesIdentity_MapsThatDifferAreStillDifferentSeries(t *testing.T) {
-	const attrs = `[{"key":"k","value":{"kvlistValue":{"values":%s}}}]`
+	const attrs = `[{"key":"k","value":%s}]`
 	for _, tc := range []struct{ name, a, b string }{
 		{"a different value under the same key",
-			`[{"key":"x","value":{"stringValue":"1"}}]`,
-			`[{"key":"x","value":{"stringValue":"2"}}]`},
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}}]}}`,
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"2"}}]}}`},
 		{"a different key carrying the same value",
-			`[{"key":"x","value":{"stringValue":"1"}}]`,
-			`[{"key":"y","value":{"stringValue":"1"}}]`},
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}}]}}`,
+			`{"kvlistValue":{"values":[{"key":"y","value":{"stringValue":"1"}}]}}`},
 		{"one member against two",
-			`[{"key":"x","value":{"stringValue":"1"}}]`,
-			`[{"key":"x","value":{"stringValue":"1"}},{"key":"y","value":{"stringValue":"2"}}]`},
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}}]}}`,
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}},{"key":"y","value":{"stringValue":"2"}}]}}`},
 		{"the keys and values swapped between two members",
-			`[{"key":"x","value":{"stringValue":"y"}}]`,
-			`[{"key":"y","value":{"stringValue":"x"}}]`},
-		{"an empty map against no map at all",
-			`[]`, `null`},
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"y"}}]}}`,
+			`{"kvlistValue":{"values":[{"key":"y","value":{"stringValue":"x"}}]}}`},
+		{"an empty map against no value of any kind",
+			`{"kvlistValue":{"values":[]}}`, `{}`},
+		{"an empty map against an empty array",
+			`{"kvlistValue":{"values":[]}}`, `{"arrayValue":{"values":[]}}`},
+		{"a map against the array of its members",
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}}]}}`,
+			`{"arrayValue":{"values":[{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}}]}}]}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ids := seriesIDs(t, "m",
@@ -853,6 +858,15 @@ func TestSeriesIdentity_MapsThatAreEqualShareOneSeries(t *testing.T) {
 		{"pretty-printed against compact",
 			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}}]}}`,
 			`{"kvlistValue": { "values": [ { "key": "x", "value": { "stringValue": "1" } } ] }}`},
+		// ProtoJSON reads a JSON null as the field's default, so a members list
+		// written null and one written [] are two encodings of one empty map.
+		// The envelope's resourceMetrics/resourceLogs are the deliberate
+		// exception, and for a different question: there, absent and empty
+		// decide whether the file is an export at all.
+		{"a null members list against an empty one",
+			`{"kvlistValue":{"values":null}}`, `{"kvlistValue":{"values":[]}}`},
+		{"a null array members list against an empty one",
+			`{"arrayValue":{"values":null}}`, `{"arrayValue":{"values":[]}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ids := seriesIDs(t, "m",
