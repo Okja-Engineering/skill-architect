@@ -476,4 +476,102 @@ assert "without the sibling's verdict-guard.sh the drafter cannot produce the au
 assert "the SKILL.md names the sibling skill-audit directory as a dependency" \
   grep -qF 'verdict-guard.sh' "$SKILL"
 
+# --- the draft the SKILL.md describes -----------------------------------------
+#
+# The inventory the document gives, against the headings a run actually writes.
+# This is the comparison the cluster turns on: the document promised preserved
+# frontmatter, five section templates and a checklist mapping each failed audit
+# dimension to a fix, and the script writes none of the first, three of the
+# second — one of which the document does not list — and a fixed five-item
+# boilerplate for the third.
+#
+# Two targets, because the drafter's only variation is three probes for
+# headings the target may already have. tests/fixtures/rewrite/all-sections
+# holds all three, so no template fires; tests/fixtures/f01/valid-minimal holds
+# none, so every template fires. Each probe is therefore observed in both
+# directions, and their union is the whole set of headings the script can
+# write — which is what makes the comparison below a comparison over the set
+# rather than over one path through it.
+headings_of() {
+  { grep -E '^#{2,4} ' "$1/REWRITE-DRAFT.md" || true; } | sort -u
+}
+
+no_templates_target="$(target_from tests/fixtures/rewrite/all-sections no-templates)"
+draft_run -t "$no_templates_target"
+assert "a target holding every probed heading still gets a draft" test "$code" -eq 0
+
+all_templates_target="$(target_from tests/fixtures/f01/valid-minimal all-templates)"
+draft_run -t "$all_templates_target"
+assert "a target holding none of them gets a draft too" test "$code" -eq 0
+
+# The control on the fixture pair. If both targets drew the same templates, the
+# union below would be one path's headings and the inventory could agree with it
+# while the document stayed wrong about the conditional ones.
+assert "the two targets draw different templates, so both directions of each probe are observed" \
+  test "$(headings_of "$no_templates_target")" != "$(headings_of "$all_templates_target")"
+
+emitted_sections() {
+  { headings_of "$no_templates_target"; headings_of "$all_templates_target"; } | sort -u
+}
+
+# The inventory: the ```text block under the heading that introduces it. Read as
+# a block of headings rather than as prose, so the document cannot list a
+# section in a sentence the comparison does not see.
+documented_sections() {
+  awk '
+    !seen && /^#### The sections the drafter writes/ { seen = 1; next }
+    seen && /^```/ { if (fence) exit; fence = 1; next }
+    seen && fence  { print }
+  ' "$SKILL" | { grep -E '^#{2,4} ' || true; } | sort -u
+}
+
+assert "the SKILL.md carries an inventory of the draft's sections" \
+  test -n "$(documented_sections)"
+assert "the drafter writes a section at all, so the comparison has two sides" \
+  test -n "$(emitted_sections)"
+assert "the SKILL.md inventories every section the drafter writes, and none it does not" \
+  test "$(emitted_sections)" = "$(documented_sections)"
+if [ "$(emitted_sections)" != "$(documented_sections)" ]; then
+  echo "  written    : $(emitted_sections | tr '\n' '|')"
+  echo "  inventoried: $(documented_sections | tr '\n' '|')"
+fi
+
+# The three claims the document made that the script does not keep, each asked
+# of the artifact rather than of the prose. They are asserted as absences on
+# purpose: 0.4.3 corrects the description, and building the capability is
+# 0.5.0. When it is built these three go red, which is the point — they are
+# what will stop the document being left describing the old draft a second
+# time.
+assert "the draft does not carry the target's frontmatter, so the document must not promise it" \
+  test -z "$(grep -m1 -F 'name: all-sections' "$no_templates_target/REWRITE-DRAFT.md" || true)"
+assert "the drafter writes no Deterministic actions template" \
+  test -z "$(grep -E '^#{3,4} Deterministic' "$all_templates_target/REWRITE-DRAFT.md" || true)"
+assert "the drafter writes no Orchestration template" \
+  test -z "$(grep -E '^#{3,4} Orchestration' "$all_templates_target/REWRITE-DRAFT.md" || true)"
+assert "the drafter writes no Constraints template" \
+  test -z "$(grep -E '^#{3,4} Constraints' "$all_templates_target/REWRITE-DRAFT.md" || true)"
+
+# And the checklist. Byte-identical for a target that audits clean and one that
+# fails, which is the whole of the claim that it maps each failed dimension to
+# a fix.
+checklist_of() {
+  sed -n '/^## Action items$/,/^## Notes$/p' "$1/REWRITE-DRAFT.md"
+}
+current_state_of() {
+  sed -n '/^## Current state$/,/^## Proposed structure$/p' "$1/REWRITE-DRAFT.md"
+}
+assert "the audit reported different things about the two targets" \
+  test "$(current_state_of "$no_templates_target")" != "$(current_state_of "$all_templates_target")"
+assert "the Action items checklist is the same text whatever the audit found" \
+  test "$(checklist_of "$no_templates_target")" = "$(checklist_of "$all_templates_target")"
+assert "the checklist read is not empty, so its sameness means something" \
+  test -n "$(checklist_of "$no_templates_target")"
+assert "the drafter never reads skill-audit's evaluation matrix" \
+  test -z "$(grep -F 'evaluation-matrix' "$DRAFTER" || true)"
+
+# The draft's title names the skill it is for. Level 1, so the inventory above
+# does not cover it, and target-dependent, so it cannot be a listed literal.
+assert "the draft's title names the target skill" \
+  grep -qF '# Rewrite draft: all-sections' "$no_templates_target/REWRITE-DRAFT.md"
+
 harness_summary
