@@ -379,13 +379,15 @@ claude plugin install skill-architect@skill-architect
 
 `claude plugin list` then shows `skill-architect@skill-architect` at version 0.4.2.
 
-The three below are **not verified in this release** — nobody ran them against a clean
-install, unlike the Claude Code route above. They are what each agent's documentation
-describes; if one is wrong, the manual copy under "Local checkout" works everywhere.
+Every row below carries the status of the route as **executed in this release**, not as
+described by a vendor's documentation. Where a route says "not verified", nobody here could
+run it and the row is a pointer to the vendor's own docs rather than a claim of ours; if it
+turns out wrong, the manual copy under "Local checkout" works everywhere. Routes marked
+verified were run against a clean install on this release's tree.
 
 | Agent | Command | Status |
 |---|---|---|
-| Devin | `devin plugins install Okja-Engineering/skill-architect` | not verified; check the exact source form against Devin's own docs, since this release found that `.` and `./` are not interchangeable for Claude Code |
+| Devin | `devin plugins install Okja-Engineering/skill-architect` | not verified — the `owner/repo` form syncs to Devin Cloud and needs a logged-in account, which this release had no way to exercise. The local-path form under "Local checkout" *was* run and is verified |
 | Codex | Install from the local plugin directory or marketplace entry (see [Codex plugin docs](https://www.codex-docs.com/en/docs/build-plugins)) | not verified |
 | Cursor | Copy or symlink the plugin directory to your Cursor plugins folder (see [Cursor plugin docs](https://cursor.com/docs/plugins)) | not verified |
 
@@ -399,16 +401,27 @@ All native plugins use the same namespace:
 ### Local checkout
 
 ```bash
-# Devin — not verified in this release
-devin plugins install .
+# Devin (from inside the repo) — verified live against Devin 3000.6.14
+devin plugins install --local .
 
 # Claude Code (from inside the repo) — verified live against a clean install
 claude plugin marketplace add ./
 claude plugin install skill-architect@skill-architect
 ```
 
-The trailing slash matters: `claude plugin marketplace add .` is rejected as an invalid
-source format, `./` is accepted.
+`--local` is not optional for a local path. Without it Devin refuses the install outright,
+because a local path is not a source it can sync to Devin Cloud:
+
+```text
+$ devin plugins install .
+Error: local path sources can't sync to Devin Cloud; run `devin plugins install --local .` to install on this machine only.
+```
+
+Devin rejects `.` and `./` identically, naming the same flag for each, so the
+trailing-slash trap below is specific to Claude Code and not a Devin concern.
+
+The trailing slash matters for Claude Code: `claude plugin marketplace add .` is rejected as
+an invalid source format, `./` is accepted.
 
 ### Manual standalone copy
 
