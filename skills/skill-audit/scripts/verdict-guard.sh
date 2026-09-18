@@ -207,6 +207,44 @@ cannot_compute() {
 # No pipelines: `grep -q` exits on its first match, and under `pipefail` a
 # writer that then takes SIGPIPE makes a successful match read as a failed
 # pipeline. A here-string has no writer to kill.
+# mktemp is the arm that had no known answer to compare against. It asked only
+# that there *was* an answer, which every one of these faults satisfies, and
+# unlike every other probe here the answer is not something the caller discards:
+# it is a path the caller opens, writes to, reads back, and publishes as the
+# provenance of what it composed. A mktemp printing `not-an-answer` at exit 0
+# passed, and the drafter then created a file under that name in the caller's
+# own working directory and named it in the draft as the audit it was built
+# from. So the answer is compared to the question: the template it was given,
+# with the `X` run replaced.
+#
+# What is known about the answer is its shape, and it is checked as far as the
+# caller depends on it — the fixed prefix it asked for, then exactly six
+# substituted characters. `[[:alnum:]]` rather than a range, so the class is not
+# the collation order's to decide; six single-character classes rather than a
+# count, because a glob cannot state one. The substitution is required to have
+# happened at all by refusing the template verbatim. It is not checked for the
+# absence of `X`: mktemp draws from the alphanumerics, so a legitimate answer
+# may contain one, and a probe that fails a valid answer would report a working
+# tool as broken.
+#
+# The template is under `${TMPDIR:-/tmp}` because that is the directory the
+# callers ask mktemp to write in, and "mktemp works" is not a question that can
+# be separated from where. `-u` here does more than name-only: on BSD it creates
+# the file and unlinks it before exiting — which is why it exits 1 on an
+# unwritable directory — so the probe proves the write it is a precondition for
+# and still leaves nothing behind. (The previous comment claimed `-u` created
+# nothing. It does; it removes it. The conclusion was right and the reason was
+# wrong, and a wrong reason is how the next reader talks themselves out of a
+# check.)
+mktemp_answers() {
+  local prefix="${TMPDIR:-/tmp}/verdict-guard-probe."
+  local template="${prefix}XXXXXX"
+  local answer
+  answer="$(mktemp -u "$template" 2>/dev/null)" || return 1
+  [[ "$answer" != "$template" ]] || return 1
+  [[ "$answer" == "$prefix"[[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]][[:alnum:]] ]]
+}
+
 tool_answers() {
   case "$1" in
     jq)   [[ "$(jq -n '1 + 1' 2>/dev/null)" == 2 ]] ;;
@@ -214,9 +252,7 @@ tool_answers() {
     sed)  [[ "$(sed 's/a/b/' <<< a 2>/dev/null)" == b ]] ;;
     tr)   [[ "$(tr a b <<< a 2>/dev/null)" == b ]] ;;
     cat)  [[ "$(cat <<< a 2>/dev/null)" == a ]] ;;
-    # `-u` asks for a name without creating anything, so the probe has no file
-    # to clean up and cannot itself become the leak it is asked about.
-    mktemp) [[ -n "$(mktemp -u 2>/dev/null)" ]] ;;
+    mktemp) mktemp_answers ;;
     wc)   [[ "$(wc -l <<< $'a\nb' 2>/dev/null)" =~ ^[[:space:]]*2[[:space:]]*$ ]] ;;
     grep) grep -q a <<< a >/dev/null 2>&1 && ! grep -q b <<< a >/dev/null 2>&1 ;;
     *)    return 0 ;;
@@ -470,9 +506,10 @@ skill_body() {
 # this either, so "stopped short" fails by the same route as "never had it".
 verdict_guard_ready() {
   local g
-  for g in json_string cannot_compute tool_answers require_tool text_matches \
-           text_extract json_document_conforms payload_is_conforming \
-           quality_report_conforms skill_section skill_frontmatter skill_body; do
+  for g in json_string cannot_compute mktemp_answers tool_answers require_tool \
+           text_matches text_extract json_document_conforms \
+           payload_is_conforming quality_report_conforms skill_section \
+           skill_frontmatter skill_body; do
     declare -F "$g" >/dev/null 2>&1 || return 1
   done
   return 0

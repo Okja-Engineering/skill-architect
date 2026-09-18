@@ -1399,15 +1399,24 @@ for tcase in "$mask_root/tmpdir-that-does-not-exist|a TMPDIR that does not exist
     "$([[ $code -eq 3 ]] && echo true || echo false)"
   assert_value "drafter, $twhy: names mktemp as the thing that could not answer" \
     "$(echo "$errout" | grep -q 'mktemp' && echo true || echo false)"
-  assert_value "drafter, $twhy: says no draft was written" \
-    "$(echo "$errout" | grep -q 'no draft was written' && echo true || echo false)"
-  assert_value "drafter, $twhy: and none was" \
+  # The sentence here is the guard's, not this script's: a tool precondition is
+  # refused by require_tool, which says "no verdict was computed" in the same
+  # words for all six callers and does not know that this one's product is a
+  # draft. Making that message caller-specific would put six spellings of one
+  # refusal back where the guard exists to hold one. What this path owes the
+  # caller is a refusal that names the tool and a target with no draft in it;
+  # the "no draft was written" sentence is asserted below, on the path that
+  # belongs to this script.
+  assert_value "drafter, $twhy: stated a refusal rather than dying silently" \
+    "$(echo "$errout" | grep -q 'ERROR:' && echo true || echo false)"
+  assert_value "drafter, $twhy: no draft was written" \
     "$([[ ! -f "$ttarget/REWRITE-DRAFT.md" ]] && echo true || echo false)"
   [[ -d "$ttmp" ]] && chmod 700 "$ttmp"
 done
 echo "  mktemp temp-directory cases driven: $mktemp_env_cases"
 assert_value "the mktemp temp-directory cases were enumerated, not read as empty" \
   "$([[ "$mktemp_env_cases" -eq 2 ]] && echo true || echo false)"
+
 
 # The control: a writable TMPDIR of its own, and the drafter reaches its verdict.
 mktemp_ok_tmp="$mask_root/tmpdir-writable"
