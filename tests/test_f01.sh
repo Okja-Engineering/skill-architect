@@ -315,6 +315,88 @@ run_present "$CHECK_FM" tests/fixtures/f01/malformed-yaml
 assert_value "frontmatter, validator present: malformed-yaml fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
 assert_value "frontmatter, validator present: malformed-yaml reports SPEC FAIL" "$(echo "$output" | grep -q 'SPEC FAIL' && echo true || echo false)"
 
+# --- The spec source's payload is read, not inferred from its exit status ---
+#
+# check-frontmatter.sh asks for `-o json` and derived its whole spec verdict
+# from `$?`, reading the payload only to quote it back in a failure message. On
+# a healthy toolchain the status is a faithful proxy for the payload, which is
+# what kept this invisible: a skill-validator that exits 0 while printing
+# something that is not JSON satisfied every check and printed `frontmatter OK`.
+# Masking the tool does not reach it — absence was already handled. The tool has
+# to be *present and lying*.
+#
+# Both directions are driven, because a check on one of them is a check on the
+# status again: a payload that cannot be read, and a payload that can be read
+# and disagrees with the status it arrived with, each way round.
+
+# spec_source_path <name> <exit> <stdout> — a skill-validator that says exactly
+# this. One directory, one file, prepended to the real PATH.
+spec_source_path() {
+  local name="$1"
+  local exit_code="$2"
+  local payload="$3"
+  local dir="$mask_root/spec-$name"
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir"
+    printf '%s' "$payload" > "$dir/spec-payload"
+    printf '#!/usr/bin/env bash\ncat "$(dirname "$0")/spec-payload"\nexit %s\n' "$exit_code" \
+      > "$dir/skill-validator"
+    chmod +x "$dir/skill-validator"
+  fi
+  echo "$dir:$PATH"
+}
+
+# name | exit | payload | why it is no verdict
+spec_liars="
+notjson|0|checked 1 skill, all good|exit 0 with a payload that is not JSON
+notjson-fail|1|1 error found|exit 1 with a payload that is not JSON
+empty|0||exit 0 with nothing on the payload channel
+number|0|7|exit 0 with a JSON document that is not an object
+noerrors|0|{\"passed\": true}|exit 0 with an object carrying no errors count
+stream|0|{\"errors\": 0}{\"errors\": 0}|exit 0 with two documents
+clean-at-1|1|{\"passed\": true, \"errors\": 0}|exit 1 beside a payload reporting no error
+dirty-at-0|0|{\"passed\": false, \"errors\": 3}|exit 0 beside a payload reporting three
+dirty-at-2|2|{\"passed\": false, \"errors\": 2}|exit 2 beside a payload reporting two
+"
+
+spec_liar_cases=0
+while IFS='|' read -r sname sexit spayload swhy; do
+  [[ -z "$sname" ]] && continue
+  spec_liar_cases=$((spec_liar_cases + 1))
+  run_on_path "$(spec_source_path "$sname" "$sexit" "$spayload")" "$CHECK_FM" tests/fixtures/f01/valid-full
+  assert_value "frontmatter, spec source $swhy: exits 3, not a status meaning a verdict" \
+    "$([[ $code -eq 3 ]] && echo true || echo false)"
+  assert_value "frontmatter, spec source $swhy: never prints frontmatter OK" \
+    "$(echo "$output" | grep -q 'frontmatter OK' && echo false || echo true)"
+  assert_value "frontmatter, spec source $swhy: never reports a policy verdict either" \
+    "$(echo "$output" | grep -q 'PL001' && echo false || echo true)"
+  assert_value "frontmatter, spec source $swhy: says on stderr that it could not read the source" \
+    "$(echo "$errout" | grep -qi 'skill-validator' && echo true || echo false)"
+done <<< "$spec_liars"
+
+echo "  spec-source disagreement cases driven: $spec_liar_cases"
+assert_value "the spec-source cases were enumerated, not read as empty" \
+  "$([[ "$spec_liar_cases" -eq 9 ]] && echo true || echo false)"
+
+# The controls, both statuses that carry a verdict. Without these the cases
+# above would pass against a script that refused every payload there is.
+run_on_path "$(spec_source_path "agrees-clean" 0 '{"passed": true, "errors": 0, "warnings": 0}')" \
+  "$CHECK_FM" tests/fixtures/f01/valid-full
+assert_value "frontmatter, spec source agreeing at exit 0: reaches its verdict (exit 0)" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+
+run_on_path "$(spec_source_path "agrees-warn" 2 '{"passed": true, "errors": 0, "warnings": 1}')" \
+  "$CHECK_FM" tests/fixtures/f01/valid-full
+assert_value "frontmatter, spec source agreeing at exit 2: warnings only is not a spec failure" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+
+run_on_path "$(spec_source_path "agrees-fail" 1 '{"passed": false, "errors": 1, "warnings": 0}')" \
+  "$CHECK_FM" tests/fixtures/f01/valid-full
+assert_value "frontmatter, spec source agreeing at exit 1: reports the spec failure (exit 1)" \
+  "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert_value "frontmatter, spec source agreeing at exit 1: relays the payload it read" \
+  "$(echo "$output" | grep -q 'SPEC FAIL' && echo true || echo false)"
+
 # --- Every enumeration the guard introduced, walked at both edges ---
 #
 # A `case` arm or an `||` splits results into two sets: the ones a script will
@@ -332,12 +414,27 @@ assert_value "frontmatter, validator present: malformed-yaml reports SPEC FAIL" 
 # cannot interpret. An arm that reached the license gate anyway would print
 # "frontmatter OK" over a validator that never ran — S2's exact symptom.
 
-for spec in "0:0:ok" "1:1:no" "2:0:ok" "3:3:no" "4:3:no" "42:3:no"; do
+#
+# Each stub here carries a payload that *agrees* with the status it exits with,
+# so these cases ask about the status enumeration and nothing else. They used to
+# carry a line of plain text, which made every one of them also a case about an
+# unreadable payload — and passed, because the payload was not read at all. The
+# payload question is its own section above, walked in both directions; keeping
+# the two apart is what lets either boundary move without the other's cases
+# going quiet.
+SPEC_AGREES_CLEAN='{"passed": true, "errors": 0, "warnings": 0}'
+SPEC_AGREES_FAIL='{"passed": false, "errors": 1, "warnings": 0}'
+
+for spec in "0:0:ok:clean" "1:1:no:fail" "2:0:ok:clean" "3:3:no:clean" "4:3:no:clean" "42:3:no:clean"; do
   vcode="${spec%%:*}"
   vrest="${spec#*:}"
   vwant="${vrest%%:*}"
-  vverdict="${vrest#*:}"
-  run_on_path "$(stub_tool_path skill-validator "$vcode")" "$CHECK_FM" tests/fixtures/f01/valid-full
+  vrest="${vrest#*:}"
+  vverdict="${vrest%%:*}"
+  vshape="${vrest#*:}"
+  vpayload="$SPEC_AGREES_CLEAN"
+  [[ "$vshape" == "fail" ]] && vpayload="$SPEC_AGREES_FAIL"
+  run_on_path "$(spec_source_path "status-$vcode" "$vcode" "$vpayload")" "$CHECK_FM" tests/fixtures/f01/valid-full
   assert_value "frontmatter, validator exits $vcode: exits $vwant" \
     "$([[ $code -eq $vwant ]] && echo true || echo false)"
   if [[ "$vverdict" == "ok" ]]; then
@@ -351,11 +448,11 @@ done
 
 # The unenumerated arm still names what it could not interpret, and the
 # enumerated exit-3 arm names the tool that failed to run.
-run_on_path "$(stub_tool_path skill-validator 42)" "$CHECK_FM" tests/fixtures/f01/valid-full
+run_on_path "$(spec_source_path "status-42" 42 "$SPEC_AGREES_CLEAN")" "$CHECK_FM" tests/fixtures/f01/valid-full
 assert_value "frontmatter, validator exits 42: names the tool and the status" \
   "$(echo "$errout" | grep -q 'skill-validator' && echo "$errout" | grep -q '42' && echo true || echo false)"
 
-run_on_path "$(stub_tool_path skill-validator 3)" "$CHECK_FM" tests/fixtures/f01/valid-full
+run_on_path "$(spec_source_path "status-3" 3 "$SPEC_AGREES_CLEAN")" "$CHECK_FM" tests/fixtures/f01/valid-full
 assert_value "frontmatter, validator exits 3: names the tool that failed to run" \
   "$(echo "$errout" | grep -q 'skill-validator' && echo true || echo false)"
 
