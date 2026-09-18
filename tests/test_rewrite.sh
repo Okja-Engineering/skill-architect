@@ -101,10 +101,22 @@ assert "every path skill-rewrite's SKILL.md documents resolves as the document s
 
 # The control. A document whose path is bare and broken must be refused, or the
 # assertion above is a report that the extractor found nothing.
+#
+# Three lines, because the control is three separate questions and only one of
+# them is the refusal: the path is not there, the extractor reads it out of a
+# bash fence, and the census refuses the document that carries it. The first
+# two are premises and say so — naming them "the check refuses an unresolvable
+# path" would put a claim in a CI log that the line underneath it never
+# decided.
 control_doc="$work/control-SKILL.md"
 printf 'Run it:\n\n```bash\nscripts/no-such-script.sh\n```\n' > "$control_doc"
-assert "the documented-path check refuses a bare path that does not resolve" \
+control_doc_is_refused() {
+  ! doc_paths_all_resolve "$control_doc" 2>/dev/null
+}
+assert "the control's bare path is not there, so the census has something to refuse" \
   test ! -e "$(resolve_doc_path scripts/no-such-script.sh)"
+assert "the documented-path census refuses a document carrying a path that does not resolve" \
+  control_doc_is_refused
 assert "the documented-path check reads a bash fence rather than skipping it" \
   test "$(doc_referenced_paths "$control_doc")" = "scripts/no-such-script.sh"
 
@@ -372,9 +384,16 @@ assert "a target directory that is not there exits 1" test "$code" -eq 1
 # when there is no `$2` makes it an unbound-variable abort instead: the caller
 # gets a line of bash internals naming a position in the parser rather than the
 # option they mistyped.
+#
+# Which of the two happened is not a question the exit status answers — an
+# unbound-variable abort under `set -u` exits 1 as well — so the status line
+# below claims only the status, and the line that tells the two states apart is
+# the one that reads stderr for the abort's own words. A label that named a
+# distinction its own command cannot make would be read in CI as a check that
+# had made it.
 for flag in -t --target -a --audit; do
   draft_run "$flag"
-  assert "$flag with no value exits 1 rather than aborting on an unbound variable" \
+  assert "$flag with no value exits 1, the status the drafter's header registers for a usage error" \
     test "$code" -eq 1
   assert "$flag with no value names the option rather than a shell positional" \
     test -z "$(grep -F 'unbound variable' "$drafted/stderr" || true)"
