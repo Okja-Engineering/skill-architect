@@ -99,7 +99,12 @@ type otlpResourceLogs struct {
 	ScopeLogs []otlpScopeLogs `json:"scopeLogs"`
 }
 
+// otlpScopeLogs is the log records one instrumentation scope recorded. The
+// scope is decoded for the same reason the metric side decodes it: it is the
+// only thing in the envelope that says which library wrote the records under
+// it, and below the walk there is nothing left of the envelope to ask.
 type otlpScopeLogs struct {
+	Scope      otlpScope       `json:"scope"`
 	LogRecords []otlpLogRecord `json:"logRecords"`
 }
 

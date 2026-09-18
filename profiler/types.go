@@ -82,6 +82,18 @@ func ExportFileUnsupportedError(harness string) error {
 	return fmt.Errorf("--export-file is not read by the %s adapter; supply an OTel export with --otel-file", harness)
 }
 
+// SessionIDRequiredError is the refusal for a Capture with no session id.
+//
+// A capture reads only the records carrying the session it was asked for, so an
+// empty id is not a session that matched nothing — it is no assertion, and a
+// profile stamped with it could only report every session the export happens to
+// carry. The adapter owns the contract and returns this from Capture; the CLI
+// requires the same flag before it gets that far, so a library caller and a
+// command-line caller are told the same thing.
+func SessionIDRequiredError(harness string) error {
+	return fmt.Errorf("--session is required by the %s adapter: a profile names one session and reads only the records carrying its session.id", harness)
+}
+
 // ProfilerAdapter is implemented by each harness adapter.
 type ProfilerAdapter interface {
 	// Name returns the harness identifier.

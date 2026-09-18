@@ -8,6 +8,7 @@
               "timeUnixNano": "1789332595300000000",
               "body": { "stringValue": "claude_code.tool_decision" },
               "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
                 { "key": "event.name", "value": { "stringValue": "tool_decision" } },
                 { "key": "tool_name", "value": { "stringValue": "Read" } },
                 { "key": "tool_use_id", "value": { "stringValue": "toolu_01AAAA" } },
@@ -19,6 +20,7 @@
               "timeUnixNano": "1789332595400000000",
               "body": { "stringValue": "claude_code.tool_decision" },
               "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
                 { "key": "event.name", "value": { "stringValue": "tool_decision" } },
                 { "key": "tool_name", "value": { "stringValue": "Bash" } },
                 { "key": "tool_use_id", "value": { "stringValue": "toolu_01BBBB" } },

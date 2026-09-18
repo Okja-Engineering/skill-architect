@@ -28,11 +28,19 @@ func writeExport(t *testing.T, content string) string {
 	return path
 }
 
+// The data point carries fixtureSession, because a capture reads only the
+// records carrying the session it was asked for: an export whose points name no
+// session is one no producer writes, and pinning a format-layer behaviour to it
+// would test the format layer against an input the reader is right to refuse.
 const metricsBatch = `{"resourceMetrics":[{"scopeMetrics":[{"metrics":[{"name":"claude_code.token.usage",` +
-	`"sum":{"aggregationTemporality":1,"dataPoints":[{"attributes":[{"key":"type","value":{"stringValue":"input"}}],` +
+	`"sum":{"aggregationTemporality":1,"dataPoints":[{"attributes":[` +
+	`{"key":"session.id","value":{"stringValue":"%SESSION%"}},` +
+	`{"key":"type","value":{"stringValue":"input"}}],` +
 	`"timeUnixNano":"1789332596272000000","asDouble":%VALUE%}]}}]}]}]}`
 
-func metricsBatchWith(value string) string { return strings.ReplaceAll(metricsBatch, "%VALUE%", value) }
+func metricsBatchWith(value string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(metricsBatch, "%SESSION%", fixtureSession), "%VALUE%", value)
+}
 
 // An editor, a shell redirect, or a Windows tool can leave a UTF-8 byte-order
 // mark at the head of a capture file. It is not JSON, and it must not cost the
@@ -40,7 +48,7 @@ func metricsBatchWith(value string) string { return strings.ReplaceAll(metricsBa
 func TestOTLP_LeadingByteOrderMarkIsStripped(t *testing.T) {
 	path := writeExport(t, "\xef\xbb\xbf"+metricsBatchWith("1523"))
 	adapter := ClaudeCodeAdapter{OtelExportFile: path}
-	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +65,7 @@ func TestOTLP_LeadingByteOrderMarkIsStripped(t *testing.T) {
 func TestOTLP_ConcatenatedObjectsNeedNoNewline(t *testing.T) {
 	path := writeExport(t, metricsBatchWith("100")+metricsBatchWith("200"))
 	adapter := ClaudeCodeAdapter{OtelExportFile: path}
-	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +119,7 @@ func TestOTLP_ATailThatIsNotABatchFailsTheWholeFile(t *testing.T) {
 
 			// At the adapter: what the person holding the file is told.
 			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, content)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -153,7 +161,7 @@ func TestOTLP_ABatchAfterAnUnreadableTailIsNotReadPast(t *testing.T) {
 	}
 
 	adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, content)}
-	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +202,7 @@ func TestOTLP_AFileEndsAtItsLastBatchOrTheWhitespaceAfterIt(t *testing.T) {
 				t.Fatalf("read %d batches, want %d", len(export), tc.batches)
 			}
 			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, tc.content)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -224,7 +232,7 @@ func TestOTLP_TopLevelValueThatIsNotAnObject(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, tc.content)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -265,7 +273,7 @@ func TestOTLP_ANullEnvelopeIsNoEnvelope(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, tc.content)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -312,7 +320,7 @@ func TestOTLP_ASchemaMismatchNamesAFieldPathOnlyWhenThereIsOne(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, tc.content)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -810,7 +818,7 @@ func TestOTLP_AnOffsetNamesTheOffendingByteInTheFile(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, tc.content)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
