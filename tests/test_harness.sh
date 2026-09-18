@@ -104,6 +104,11 @@ for suite in $suites; do
     grep -q 'harness_summary' "$suite"
   assert "$suite has no assertion that cannot fail, and no harness of its own" \
     audit_accepts "$suite"
+  # A suite CI never runs reports nothing either, whatever it would have said.
+  # Everything above holds only over the suites that actually execute, so the
+  # glob and the workflow are held to the same list.
+  assert "$suite is a step in the CI workflow" \
+    grep -qF -- "$suite" .github/workflows/ci.yml
 done
 
 # The audit ran over something. A tokenizer that matched nothing would report no
