@@ -100,8 +100,18 @@ done
 # there is no number in this file for the next suite to make wrong.
 WORKFLOW=.github/workflows/ci.yml
 
+# The suites the workflow runs, as a list that is allowed to be empty.
+#
+# `grep` exits 1 when it matches nothing, and a workflow that names no suites is
+# a state this file *reports* rather than one it dies on. That status used to
+# come out of the command substitution that derives the count, and `set -e`
+# killed the suite there, one line above the precondition written to refuse
+# exactly that — so the invariant failed closed through the abort guard and the
+# diagnostic naming the cause was lost. Finding nothing is an empty list here.
+# Whether an empty list is acceptable is the precondition's to say, and it is
+# the only thing that says it.
 workflow_suites() {
-  grep -oE 'tests/test_[A-Za-z0-9_]+\.sh' "$WORKFLOW" | sort -u
+  grep -oE 'tests/test_[A-Za-z0-9_]+\.sh' "$WORKFLOW" | sort -u || :
 }
 
 # The block the README tells a reader to run. A reader who follows a list that
