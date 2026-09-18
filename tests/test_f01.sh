@@ -617,10 +617,21 @@ done
 # only that one runs on to `command not found`, or — worse, and reproduced —
 # straight through to a clean exit 0 with no guard behind the verdict at all.
 # These modes take the real guard and cut out one definition each, so the check
-# has to cover the whole set rather than whichever names a caller listed. Adding
-# a guard to the shared file without adding it to that set fails here.
+# has to cover the whole set rather than whichever names a caller listed.
+#
+# The set is read out of the guard rather than written here, so a primitive
+# added to the shared file tomorrow is covered the day it lands. A hand-kept
+# list is the same defect one level up: it covers the names a fixer remembered,
+# and the one it did not is exactly the one whose absence nothing catches. The
+# count is asserted first, because an expression that matched no definition
+# would make every case below vacuously true.
+guard_definitions="$(sed -n 's/^\([a-z_][a-z_0-9]*\)() {$/\1/p' skills/skill-audit/scripts/verdict-guard.sh)"
+guard_definition_count="$(printf '%s\n' "$guard_definitions" | grep -c '[a-z]' || true)"
+assert_value "the guard's definitions were enumerated, not read as an empty set" \
+  "$([[ "${guard_definition_count:-0}" -ge 6 ]] && echo true || echo false)"
+echo "  guard primitives examined: $(printf '%s' "$guard_definitions" | tr '\n' ' ')"
 
-for gdrop in json_string cannot_compute require_tool json_document_conforms payload_is_conforming verdict_guard_ready; do
+for gdrop in $guard_definitions; do
   gdir="$(guard_broken_tree "drop-$gdrop")"
   run_present "$gdir/check-structure.sh" --json tests/fixtures/f01/valid-full
   assert_value "check-structure.sh --json, guard missing $gdrop: exits 3, not a status meaning a verdict" \
@@ -970,5 +981,128 @@ assert_value "structure --json, SKILL.md over the line limit: exits 2 (policy fa
   "$([[ $code -eq 2 ]] && echo true || echo false)"
 assert_value "structure --json, SKILL.md over the line limit: the message names the count and the limit" \
   "$(echo "$output" | jq -e '.findings[] | select(.rule == "PL003") | select(.message | test("500"))' >/dev/null 2>&1 && echo true || echo false)"
+
+# --- Where the frontmatter ends: one question, one answer ----------------------
+#
+# Four scripts used to answer it privately and they disagreed. Two exited at the
+# second `---` and were right. check-paths.sh ran a toggle, so a third `---` put
+# it back into frontmatter and one markdown horizontal rule ended every path
+# check after it. check-structure.sh never asked, so its whole house-policy
+# verdict was satisfiable out of frontmatter.
+#
+# These cases are pinned to the invariants, not to the primitive that now holds
+# them: a rule about the body is computed over the body, and frontmatter ends
+# once. A later repair is free to move the reading anywhere as long as both
+# still hold.
+
+BLEED=tests/fixtures/f01/frontmatter-bleed
+RULE_REFS=tests/fixtures/f01/rule-before-refs
+NO_RULE_REFS=tests/fixtures/f01/no-rule-before-refs
+
+# The bleed fixture's preconditions, asserted rather than assumed. Each policy
+# rule below has to be satisfiable from this file and unsatisfied by its body,
+# or the case that follows would pass over a fixture that no longer reproduces
+# anything — which is how a regression test quietly stops being one. Six
+# heading-shaped lines, two fence-shaped lines and two list-shaped lines are in
+# the file; none of them is in the body.
+assert_value "bleed fixture: its frontmatter still holds six heading-shaped lines" \
+  "$([[ "$(grep -cE '^#{2,6}[[:space:]]+' "$BLEED/SKILL.md" | tr -d '[:space:]')" -eq 6 ]] && echo true || echo false)"
+assert_value "bleed fixture: its frontmatter still holds a code fence" \
+  "$([[ "$(grep -cE '^[[:space:]]*```' "$BLEED/SKILL.md" | tr -d '[:space:]')" -ge 1 ]] && echo true || echo false)"
+assert_value "bleed fixture: its delimiters still read as list items" \
+  "$([[ "$(grep -cE '^[[:space:]]*[-*]' "$BLEED/SKILL.md" | tr -d '[:space:]')" -ge 1 ]] && echo true || echo false)"
+assert_value "bleed fixture: skill-validator passes it, so the toolchain is healthy" \
+  "$("$SV" validate structure -o json "$BLEED" >/dev/null 2>&1 && echo true || echo false)"
+
+# G1-01. Every rule about the body, reported missing from the body, while the
+# file that contains all of them sits right there.
+run_present "$CHECK_STRUCT" --json "$BLEED"
+assert_value "structure --json, body rules satisfied only in frontmatter: reports all six headings missing" \
+  "$([[ "$(echo "$output" | jq '[.findings[] | select(.rule == "PL002")] | length')" -eq 6 ]] && echo true || echo false)"
+assert_value "structure --json, body rules satisfied only in frontmatter: reports PL004, the body has no fence" \
+  "$(echo "$output" | jq -e '.findings[] | select(.rule == "PL004")' >/dev/null 2>&1 && echo true || echo false)"
+assert_value "structure --json, body rules satisfied only in frontmatter: reports PL005, the body has no list" \
+  "$(echo "$output" | jq -e '.findings[] | select(.rule == "PL005")' >/dev/null 2>&1 && echo true || echo false)"
+assert_value "structure --json, body rules satisfied only in frontmatter: never reports passed true" \
+  "$([[ "$(echo "$output" | jq -r '.passed')" == "false" ]] && echo true || echo false)"
+assert_value "structure --json, body rules satisfied only in frontmatter: exits 2 (policy failure)" \
+  "$([[ $code -eq 2 ]] && echo true || echo false)"
+
+# The headline command is the surface the defect was reported on, so it is the
+# surface the repair is confirmed on. A green unit case over the child proves a
+# branch runs; it does not prove audit-report.sh stopped issuing a clean bill of
+# health.
+run_present skills/skill-audit/scripts/audit-report.sh "$BLEED"
+assert_value "audit-report, body rules satisfied only in frontmatter: summary.passed is false" \
+  "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "false" ]] && echo true || echo false)"
+assert_value "audit-report, body rules satisfied only in frontmatter: counts every body rule it broke" \
+  "$([[ "$(echo "$output" | jq -r '.summary.policy_failures')" -ge 8 ]] && echo true || echo false)"
+assert_value "audit-report, body rules satisfied only in frontmatter: still exits 0, the report generated" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+
+# G1-02. The pair differs by one `---`. A frontmatter reading that re-enters
+# reads everything after that line as frontmatter and checks none of it.
+assert_value "rule fixture pair: they still differ by exactly one delimiter line" \
+  "$([[ "$(grep -c '^---$' "$RULE_REFS/SKILL.md" | tr -d '[:space:]')" -eq 3 && "$(grep -c '^---$' "$NO_RULE_REFS/SKILL.md" | tr -d '[:space:]')" -eq 2 ]] && echo true || echo false)"
+
+run_present "$CHECK_PATHS" --json "$RULE_REFS"
+rule_findings="$(echo "$output" | jq -S -c '.findings')"
+rule_code=$code
+run_present "$CHECK_PATHS" --json "$NO_RULE_REFS"
+no_rule_findings="$(echo "$output" | jq -S -c '.findings')"
+no_rule_code=$code
+
+# Parity on its own is not the invariant: two clean passes are also identical.
+# The pair has to agree *and* both have to be the failure the references are.
+assert_value "paths --json, a horizontal rule before the broken references: finds them anyway" \
+  "$([[ "$rule_code" -eq 1 ]] && echo true || echo false)"
+assert_value "paths --json, a horizontal rule before the broken references: same findings as without it" \
+  "$([[ "$rule_findings" == "$no_rule_findings" ]] && echo true || echo false)"
+assert_value "paths --json, a horizontal rule before the broken references: same exit as without it" \
+  "$([[ "$rule_code" -eq "$no_rule_code" ]] && echo true || echo false)"
+if [[ "$rule_findings" != "$no_rule_findings" ]]; then
+  echo "  with a rule   : $rule_findings"
+  echo "  without a rule: $no_rule_findings"
+fi
+
+# G1-03. PL003 is a limit on the body. Both skills here have a body under the
+# limit or over it by one line, and a *file* over it either way — so a count
+# taken over the whole file raises PL003 on the conforming one.
+for body_lines in 500 501; do
+  boundary_skill="$mask_root/pl003-body-$body_lines"
+  mkdir -p "$boundary_skill"
+  {
+    printf -- '---\nname: pl003-body-%s\ndescription: A skill whose body is %s lines long, in a file that is longer, so PL003 can be seen to count the body.\nlicense: MIT\n---\n' \
+      "$body_lines" "$body_lines"
+    i=1
+    while [[ $i -le $body_lines ]]; do printf 'body line %s\n' "$i"; i=$((i + 1)); done
+  } > "$boundary_skill/SKILL.md"
+  run_present "$CHECK_STRUCT" --json "$boundary_skill"
+  raised="$(echo "$output" | jq -e '.findings[] | select(.rule == "PL003")' >/dev/null 2>&1 && echo true || echo false)"
+  expected=false
+  [[ $body_lines -gt 500 ]] && expected=true
+  assert_value "structure --json, a $body_lines-line body in a longer file: PL003 raised is $expected" \
+    "$([[ "$raised" == "$expected" ]] && echo true || echo false)"
+  assert_value "structure --json, a $body_lines-line body: the file itself is over the limit, so the count is the body's" \
+    "$([[ "$(wc -l < "$boundary_skill/SKILL.md" | tr -d '[:space:]')" -gt 500 ]] && echo true || echo false)"
+done
+
+# And the class, not just the two instances. A script that scans for the
+# frontmatter delimiter itself holds a private answer to a question that has
+# one, and the next reader is back to choosing between copies.
+private_scanners="$(grep -lE '\^---\$|== "---"' skills/skill-audit/scripts/*.sh skills/skill-rewrite/scripts/*.sh \
+  | grep -v 'verdict-guard\.sh' || true)"
+assert_value "no script outside the shared primitive reads the frontmatter delimiter itself" \
+  "$([[ -z "$private_scanners" ]] && echo true || echo false)"
+if [[ -n "$private_scanners" ]]; then
+  echo "  private frontmatter scans: $(printf '%s' "$private_scanners" | tr '\n' ' ')"
+fi
+
+# The control. A check that can only ever say "nothing found" is the shape this
+# whole repository spent a cluster removing, so it is given something to find.
+scanner_control="$mask_root/private-scanner.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'awk '\''$0 == "---" { next }'\'' "$1"' > "$scanner_control"
+assert_value "the private-frontmatter-scan check fires on a script that has one" \
+  "$([[ -n "$(grep -lE '\^---\$|== "---"' "$scanner_control" || true)" ]] && echo true || echo false)"
 
 harness_summary
