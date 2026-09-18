@@ -52,7 +52,12 @@
 # Exit codes: 0=report generated, 3=execution error.
 set -euo pipefail
 
-script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# `dirname` runs before the guard exists to announce it, so it carries the same
+# explicit refusal the load check below uses. Unread, its status was this
+# script's own: a broken dirname left `cd` with nothing to enter and errexit
+# exited 1, which is a status this contract spends on a verdict.
+script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" \
+  || { echo "ERROR: cannot resolve this script's own directory: dirname or cd gave no answer; no verdict was computed" >&2; exit 3; }
 verdict_guard="$script_dir/verdict-guard.sh"
 # The guard is the one dependency it cannot announce itself, so loading it is
 # checked before and after — see its header for why an unchecked source would
@@ -88,16 +93,27 @@ fi
 # Each is required to be present *and* to answer a question with a known answer
 # — a jq on PATH that runs and prints nothing satisfies a presence check and
 # then emits an empty report at exit 0, which is the fault this closes.
-#
-# date is not on the list. Its output is a report field rather than a verdict,
-# and it is resolved before the guard's own diagnostics could name it; a clock
-# that failed leaves a visibly empty timestamp beside a report whose findings
-# are all still true.
 require_tool jq false
 require_tool awk false
 require_tool grep false
 
-timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+# `date` is not on that list and its status is read here instead, because the
+# question the list asks cannot be asked of a clock: a probe compares an answer
+# against one this file already knows, and the whole point of asking the time is
+# that this file does not know it. There is no portable constant to ask for
+# either — `-r 0` on BSD and `-d @0` on GNU are different commands.
+#
+# What was here was a comment concluding that date needed no guard at all,
+# because a clock that failed leaves a visibly empty timestamp beside a report
+# whose findings are all still true. That is correct for the ways date can fail
+# at exit 0, and it does not cover a nonzero exit, which is the case that
+# existed: under errexit a date exiting 2 made this script exit 2 — outside the
+# {0, 3} its header states — with no report and no diagnostic at all. A report
+# generator that emits nothing must say why, and 3 is how this file says it.
+timestamp_status=0
+timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")" || timestamp_status=$?
+[[ $timestamp_status -eq 0 && -n "$timestamp" ]] \
+  || cannot_compute DEP002 "date could not answer what time it is (status $timestamp_status); no report was generated" false
 
 # source_failure <source> <status> <output>
 #

@@ -37,8 +37,15 @@
 # a check that could not compute a verdict is not, and stops the draft.
 set -euo pipefail
 
-script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-skill_audit_root="$(dirname "$script_dir")/../skill-audit"
+# `dirname` runs before the guard exists to announce it, so both calls carry the
+# same explicit refusal the load check below uses. Unread, their status was this
+# script's own: a broken dirname left `cd` with nothing to enter and errexit
+# exited 1, which this contract spends on "usage or target error" — a broken
+# tool reported as a mistake in the caller's command line.
+script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" \
+  || { echo "ERROR: cannot resolve this script's own directory: dirname or cd gave no answer; no draft was written" >&2; exit 3; }
+skill_audit_root="$(dirname "$script_dir")/../skill-audit" \
+  || { echo "ERROR: cannot resolve the skill-audit directory: dirname gave no answer; no draft was written" >&2; exit 3; }
 verdict_guard="$skill_audit_root/scripts/verdict-guard.sh"
 # The guard is the one dependency it cannot announce itself, so loading it is
 # checked before and after — see its header for why an unchecked source would
@@ -64,15 +71,29 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Written with the shell's own `printf` rather than a `cat` heredoc, and that is
+# the fix rather than a style preference. This function runs on the
+# argument-parsing paths — `-h`, no argument, an unknown option — which are all
+# before `require_tool cat` further down, and there is nowhere earlier to put
+# that precondition: the arguments have to be read before this script knows
+# whether it was asked to do any work at all. So a broken `cat` made `-h` exit 2
+# where this contract says 0, and the other two exit 2 where it says 1, printing
+# nothing on either channel.
+#
+# Reordering the precondition would not have fixed it and would have cost
+# something: `-h` would then refuse to print help because a tool the help text
+# does not need was broken. Telling the caller how to invoke this script is not
+# a computation, so it is done with no tool to require and no status to read.
+# `cat` stays a stated precondition below, where the draft is composed, which is
+# the work that genuinely needs it.
 usage() {
-  cat <<EOF
-Usage: draft-rewrite.sh -t <target-skill-dir> [-a <audit-report-path>]
-
-Options:
-  -t, --target    Target skill directory to rewrite (required)
-  -a, --audit     Path to an existing skill-audit report (optional)
-  -h, --help      Show this help
-EOF
+  printf '%s\n' \
+    'Usage: draft-rewrite.sh -t <target-skill-dir> [-a <audit-report-path>]' \
+    '' \
+    'Options:' \
+    '  -t, --target    Target skill directory to rewrite (required)' \
+    '  -a, --audit     Path to an existing skill-audit report (optional)' \
+    '  -h, --help      Show this help'
 }
 
 # require_value <option> <count> — refuse an option written without its value.

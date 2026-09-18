@@ -21,7 +21,12 @@
 # there is nothing left to build a payload with.
 set -euo pipefail
 
-script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# `dirname` runs before the guard exists to announce it, so it carries the same
+# explicit refusal the load check below uses. Unread, its status was this
+# script's own: a broken dirname left `cd` with nothing to enter and errexit
+# exited 1, which is a status this contract spends on a verdict.
+script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" \
+  || { echo "ERROR: cannot resolve this script's own directory: dirname or cd gave no answer; no verdict was computed" >&2; exit 3; }
 verdict_guard="$script_dir/verdict-guard.sh"
 # The guard is the one dependency it cannot announce itself, so loading it is
 # checked before and after — see its header for why an unchecked source would
