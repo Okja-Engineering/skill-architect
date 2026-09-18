@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 . "$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/harness.sh"
+
+# This file's own path, resolved here because `harness_init` changes directory.
+# One control below reads this suite's source text rather than its behaviour:
+# "the destination is never evaluated by a shell" is a claim about an
+# implementation, and a sweep of constructs can only sample it.
+suite_source="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
+
 harness_init
 
 # The suite for the documented install routes.
@@ -631,6 +638,275 @@ resolution_refuses_a_climb_through_a_path_that_does_not_exist_yet() {
     '~/not-created-yet/../../../../../../ESCAPED-THE-SCRATCH-ROOT/.claude/skills'
 }
 
+# --- The destination is expanded, and evaluating it is not how ----------------
+#
+# Deciding where a destination lands means knowing what its text means, and
+# "means" used to be answered by handing the text to a shell:
+# `eval "printf %s\n $text"`, the text unquoted, screened by the shape pass
+# above. That arrangement was closed one spelling at a time for three rounds —
+# a `$(…)`, a backtick, an arithmetic expansion — and every round left its
+# shape untouched: a list of the expansion shapes someone had thought of,
+# standing in front of a shell. The fourth round found the category the list had
+# never contained. `x;id>FILE` carries no expansion at all, so all five rules
+# passed it, and the `eval` honoured the `;` and the `>` — `id` ran on the
+# machine doing the verifying, inside the decision whose whole purpose is
+# refusing unsafe input, with every check below printing PASS.
+#
+# A screen in front of an `eval` cannot be the safety argument, for the same
+# reason a list of escape spellings could not be the containment argument: it is
+# complete only about what its author enumerated, and the next category is never
+# on it. So the shell is gone from here, and the list is inverted. The
+# expansions a destination actually needs are three — a leading `~` with no user
+# name, `$HOME`, and `${HOME}` — and those three are performed below as
+# substitution over text. Every other character has to be one that is inert in a
+# path: a letter, a digit, `.`, `_`, `-`, `/`. A separator, a redirection, a
+# pipe, a quote, a backslash, a brace, a glob character, a newline, a `#`, a `$`
+# in front of any other name — none of these is refused for being on a list of
+# dangerous things. They are refused because expanding them is not something
+# this suite implements, so the category nobody thought of is refused by
+# default rather than found by a reviewer. A destination that cannot be expanded
+# without a shell is a destination this suite refuses.
+#
+# The cost is stated rather than hidden. A legitimate destination spelled with a
+# character outside that set is refused too, and the refusal names the
+# character, so widening the set is a deliberate edit and not a reflex. `~name`
+# is no longer read from the password database and `$OTHER` is no longer an
+# unbound-variable error inside a subshell: both are refusals here now, the same
+# verdict reached by a mechanism that cannot execute. `$PWD` is not implemented
+# either — the shape pass accounts for it in the words resolution cannot reach,
+# but no destination needs it, and an expansion nothing needs is surface.
+
+# The one effect every spelling in the sweep below is written to have: a file
+# that cannot exist unless something ran.
+expansion_marker() {
+  printf '%s\n' "$(containment_probe_dir)/the-expansion-ran"
+}
+
+# <destination text> <marker> — the construct in the text did not run.
+#
+# Not redundant with the verdict, and this is the lesson of all four rounds: a
+# construct that reaches a shell has already had its effect by the time any
+# verdict is reported, so a control that asked only "was it refused?" printed
+# PASS through every one of them. It did.
+expansion_ran_nothing() {
+  if [ -e "$2" ]; then
+    printf 'the destination text was evaluated — the construct in it ran:\n  destination: %s\n  it left:     %s\n' \
+      "$1" "$2" >&2
+    rm -f "$2"
+    return 1
+  fi
+  return 0
+}
+
+# <destination text> — the resolution refuses this destination, and nothing in
+# it ran.
+#
+# Asked of the resolution *alone*, with the shape pass out of the way, because
+# the resolution is the seam where the expansion happens. While the shape pass
+# refuses a spelling first, a shell standing behind it is invisible — which is
+# exactly how three rounds of closing the shape pass left the shell in place.
+# The same spellings are put through the whole decision as well, further down.
+expansion_refuses() {
+  local dir marker
+  dir="$(containment_probe_dir)"
+  marker="$(expansion_marker)"
+  rm -f "$marker"
+  if destination_resolves_inside_the_scratch_root "$dir" "$1" >/dev/null 2>&1; then
+    printf 'the resolution accepted a destination carrying a shell construct:\n  %s\n' "$1" >&2
+    rm -f "$marker"
+    return 1
+  fi
+  expansion_ran_nothing "$1" "$marker" || return 1
+  return 0
+}
+
+# Command lists. Each of these makes one word carry two commands, which is the
+# category the five-shape screen never contained.
+expansion_refuses_every_command_separator() {
+  local m
+  m="$(expansion_marker)"
+  expansion_refuses "x;id>$m" || return 1
+  expansion_refuses "x&&id>$m" || return 1
+  expansion_refuses "x||id>$m" || return 1
+  expansion_refuses "x&id>$m" || return 1
+  expansion_refuses "$(printf 'x\nid>%s' "$m")" || return 1
+  return 0
+}
+
+# Redirections. `>` and `>>` and `<>` create their target, so for those the
+# marker is left by `printf` itself rather than by a second command; `<` can
+# only read, so its proof is the refusal and the creating forms above carry the
+# effect. A pipe is in here rather than with the separators because what it
+# does to this seam is take the expansion's own output away.
+expansion_refuses_every_redirection() {
+  local m
+  m="$(expansion_marker)"
+  expansion_refuses "x>$m" || return 1
+  expansion_refuses "x>>$m" || return 1
+  expansion_refuses "x<>$m" || return 1
+  expansion_refuses "x2>$m" || return 1
+  expansion_refuses "x<$m" || return 1
+  expansion_refuses "x|id>$m" || return 1
+  return 0
+}
+
+# The category the three previous rounds closed, re-asked here of a mechanism
+# that cannot run them rather than of a screen that had to recognise them.
+# `${HOME:-/etc}` is in the sweep because an expander that matched `${HOME` and
+# stopped looking would accept it.
+expansion_refuses_every_substitution() {
+  local m
+  m="$(expansion_marker)"
+  expansion_refuses "\$(id>$m)/.claude/skills" || return 1
+  expansion_refuses "\`id>$m\`/.claude/skills" || return 1
+  expansion_refuses 'x$((1+1))/.claude/skills' || return 1
+  expansion_refuses 'x$OTHER/.claude/skills' || return 1
+  expansion_refuses 'x${OTHER}/.claude/skills' || return 1
+  expansion_refuses 'x$1/.claude/skills' || return 1
+  expansion_refuses 'x$HOMEX/.claude/skills' || return 1
+  expansion_refuses '${HOME:-/etc}/.claude/skills' || return 1
+  return 0
+}
+
+# Everything else a shell does to a word: brace expansion, globbing, quote
+# removal, escaping, word splitting, and a tilde anywhere but the front. None
+# of these runs a command, and none of them is harmless — each one makes the
+# value the resolution judged different from the value the block will use,
+# which is the other half of the same defect.
+expansion_refuses_every_other_shell_construct() {
+  expansion_refuses 'x{a,b}/.claude/skills' || return 1
+  expansion_refuses 'x*/.claude/skills' || return 1
+  expansion_refuses 'x?/.claude/skills' || return 1
+  expansion_refuses 'x[ab]/.claude/skills' || return 1
+  expansion_refuses 'x"y"/.claude/skills' || return 1
+  expansion_refuses "x'y'/.claude/skills" || return 1
+  expansion_refuses 'x\;/.claude/skills' || return 1
+  expansion_refuses 'x y/.claude/skills' || return 1
+  expansion_refuses "$(printf 'x\ty/.claude/skills')" || return 1
+  expansion_refuses 'x~root/.claude/skills' || return 1
+  return 0
+}
+
+# A `#` is a comment only where a word begins. `x#;id>FILE` is one word, so the
+# `#` in it is an ordinary character, the `;` after it is a separator, and a
+# reader of the text who stops at the first `#` has read a different
+# destination from the one the shell will use.
+expansion_refuses_a_construct_after_a_hash() {
+  local m
+  m="$(expansion_marker)"
+  expansion_refuses "x#;id>$m" || return 1
+  expansion_refuses "x #;id>$m" || return 1
+  return 0
+}
+
+# The same sweep through the whole decision, which is the path the README's own
+# destination takes: a respelled line in the document, extracted, judged, and —
+# if judged contained — run. This is where the defect was live, so this is where
+# it has to be refused with nothing having run.
+#
+# Only the single-word spellings are here. A destination carrying whitespace
+# cannot reach this seam as one value, because the extractor stops at
+# whitespace; those spellings are swept at the resolution above, which is the
+# seam that would be handed one.
+containment_refuses_a_destination_that_runs_a_command() {
+  local dir marker text
+  dir="$(containment_probe_dir)"
+  marker="$(expansion_marker)"
+  for text in \
+    "x;id>$marker" \
+    "x&&id>$marker" \
+    "x||id>$marker" \
+    "x&id>$marker" \
+    "x|id>$marker" \
+    "x>$marker" \
+    "x>>$marker" \
+    "x<>$marker" \
+    "x#;id>$marker" \
+    "\$(id>$marker)/.claude/skills" \
+    "\`id>$marker\`/.claude/skills"; do
+    rm -f "$marker"
+    if containment_verdict "$dir" "$(block_with_destination "$text")" >/dev/null 2>&1; then
+      printf 'the containment decision accepted a block whose destination runs a command:\n  %s\n' \
+        "$text" >&2
+      rm -f "$marker"
+      return 1
+    fi
+    expansion_ran_nothing "$text" "$marker" || return 1
+  done
+  return 0
+}
+
+# The other direction, because a function that refuses everything expands
+# nothing. The three expansions this suite implements, each required to produce
+# exactly the substitution, and two inert texts required back unchanged. A shell
+# would agree with every line here — that is the point. These pin what the
+# expansion is *for*; the sweep above pins what it must not do.
+expansion_is() {
+  local got
+  got="$(expanded_destination "$1" "$2")" || return 1
+  [ "$got" = "$3" ] && return 0
+  printf 'the destination expanded to the wrong value:\n  %s\n  expanded to %s\n  expected    %s\n' \
+    "$2" "$got" "$3" >&2
+  return 1
+}
+
+the_expansion_substitutes_home_and_nothing_else() {
+  local dir
+  dir="$(containment_probe_dir)"
+  expansion_is "$dir" '~/.claude/skills' "$dir/home/.claude/skills" || return 1
+  expansion_is "$dir" '$HOME/.claude/skills' "$dir/home/.claude/skills" || return 1
+  expansion_is "$dir" '${HOME}/.claude/skills' "$dir/home/.claude/skills" || return 1
+  expansion_is "$dir" '~' "$dir/home" || return 1
+  expansion_is "$dir" '.claude/skills' '.claude/skills' || return 1
+  expansion_is "$dir" '../sibling/skills' '../sibling/skills' || return 1
+  return 0
+}
+
+# <name> — the text of a function defined in this suite, read out of this
+# suite's own source.
+suite_function_body() {
+  awk -v name="$1" '
+    $0 == name "() {" { inside = 1; next }
+    inside && $0 == "}" { exit }
+    inside { print }
+  ' "$suite_source"
+}
+
+# The one control here that does not depend on anyone having thought of the
+# construct. Four rounds of this defect were four constructs, and a fifth would
+# be a fifth construct: the sweep above can only refuse the spellings written
+# into it, which is the same completeness claim, one level up. What cannot be
+# enumerated away is the shell itself, so this reads the expansion's own source
+# text and requires that it reaches no interpreter — no `eval`, no command
+# substitution in either spelling, no `bash`, no `sh`, no `env`, and none of
+# awk's own two ways out, `system()` and a command into `getline`.
+#
+# Its boundary, stated rather than implied: it asks the one function that turns
+# the raw text into a value. A recurrence that moved the evaluation into a
+# different function would be caught by the sweep above and not by this, and a
+# construct the sweep never thought of would be caught by this and not by that.
+# Neither is sufficient alone, which is why both are here.
+the_destination_expansion_uses_no_shell() {
+  local body offender found
+  found=""
+  body="$(suite_function_body expanded_destination)"
+  if [ -z "$body" ]; then
+    printf 'expanded_destination was not found in %s, so this control measured nothing\n' \
+      "$suite_source" >&2
+    return 1
+  fi
+  for offender in 'eval' '$(' '`' 'suite_bash' 'bash' 'sh -c' 'env ' 'source ' 'system(' 'getline'; do
+    case "$body" in
+      *"$offender"*)
+        printf 'the destination expansion names %s, so the destination text can reach a shell again:\n%s\n' \
+          "$offender" "$body" >&2
+        found=yes
+        ;;
+    esac
+  done
+  [ -z "$found" ]
+}
+
 # The precondition the whole containment argument rests on, and it is now a
 # question about the block. What stood here compared the install scratch path
 # with the harness scratch path it had just been built from — true by
@@ -1069,6 +1345,23 @@ require "the resolved verdict alone refuses a destination that resolves through 
   resolution_refuses_a_destination_that_resolves_through_a_symlink
 require "the resolved verdict alone refuses a climb through a path that does not exist yet" \
   resolution_refuses_a_climb_through_a_path_that_does_not_exist_yet
+
+require "the destination expansion substitutes this run's home and nothing else" \
+  quietly the_expansion_substitutes_home_and_nothing_else
+require "the destination expansion refuses every command separator, and runs none of them" \
+  quietly expansion_refuses_every_command_separator
+require "the destination expansion refuses every redirection, and runs none of them" \
+  quietly expansion_refuses_every_redirection
+require "the destination expansion refuses every substitution, and runs none of them" \
+  quietly expansion_refuses_every_substitution
+require "the destination expansion refuses everything else a shell does to a word" \
+  quietly expansion_refuses_every_other_shell_construct
+require "the destination expansion refuses a construct written after a #" \
+  quietly expansion_refuses_a_construct_after_a_hash
+require "the containment decision refuses a destination that runs a command, and it does not run" \
+  quietly containment_refuses_a_destination_that_runs_a_command
+require "the destination expansion reaches no shell" \
+  quietly the_destination_expansion_uses_no_shell
 
 require "the README's manual-copy block names nothing outside a redirected home" \
   quietly block_names_nothing_outside_a_redirected_home
