@@ -20,6 +20,12 @@ const (
 	// Every Claude Code event name is qualified with this prefix in a record's
 	// body and unqualified in its event.name attribute.
 	otelEventPrefix = "claude_code."
+
+	// otelSessionAttr is the attribute Claude Code puts the run's identity on.
+	// Every metric data point and every log record carries it — see README,
+	// "A capture identifies you" — which is what makes a session-scoped read
+	// possible at all.
+	otelSessionAttr = "session.id"
 )
 
 // Token type attribute values on claude_code.token.usage. They are camelCase on
@@ -72,10 +78,12 @@ type otelSignals struct {
 	Timing    TimingResult
 }
 
-// resolve reads and parses the export file once and settles all three signals.
+// resolve reads and parses the export file once, projects it onto the
+// provenance it was given, and settles all three signals from the projection.
 //
-// It owns file resolution and failure classification for this adapter; nothing
-// below it re-decides either, so all three signals share one error path:
+// It owns file resolution, provenance and failure classification for this
+// adapter; nothing below it re-decides any of them, so all three signals share
+// one error path:
 //
 //   - no file configured — unknown, naming what to configure;
 //   - the file could not be read as an OTLP/JSON export — error, naming the
@@ -83,8 +91,11 @@ type otelSignals struct {
 //     caller to fix the one thing that is not wrong;
 //   - it parsed but carries no OTLP envelope — unknown, naming the format
 //     expected. Nothing failed; the file simply is not an export;
-//   - parsed — each extractor settles its own signal from what it can read.
-func (a ClaudeCodeAdapter) resolve() otelSignals {
+//   - parsed — the export is projected onto prov, and each extractor settles
+//     its own signal from what it can read of the projection. An export that
+//     carries nothing of prov's is not a failure of the export: each signal
+//     reports for itself that it read nothing, and says what was there instead.
+func (a ClaudeCodeAdapter) resolve(prov provenance) otelSignals {
 	if a.OtelExportFile == "" {
 		return unknownSignals("OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile.")
 	}
@@ -106,10 +117,38 @@ func (a ClaudeCodeAdapter) resolve() otelSignals {
 			"Claude Code emits OTLP via OTEL_EXPORTER_OTLP_PROTOCOL=http/json; see README 'Capturing an OTel export'.")
 	}
 
+	scoped := export.scopedTo(prov)
+
 	return otelSignals{
-		Tokens:    extractTokenCounts(export),
-		ToolCalls: extractToolCalls(export),
-		Timing:    extractTiming(export),
+		Tokens:    extractTokenCounts(scoped),
+		ToolCalls: extractToolCalls(scoped),
+		Timing:    extractTiming(scoped),
+	}
+}
+
+// provenanceFor is the test a record must pass to be read into a profile of
+// sessionID.
+//
+// The namespace is the adapter's own Name(), which is the same token its signal
+// names are qualified with, so there is no second copy of the harness's
+// identity in the code to drift from the first.
+func (a ClaudeCodeAdapter) provenanceFor(sessionID string) provenance {
+	return provenance{
+		namespace:   a.Name(),
+		sessionAttr: otelSessionAttr,
+		sessionID:   sessionID,
+	}
+}
+
+// probeProvenance is the same test with the session half dropped, because probe
+// is asked what an export can yield without being told which session. It is the
+// one place anySession is set, and it is not reachable from Capture: Capture
+// refuses an empty session id rather than falling back to this.
+func (a ClaudeCodeAdapter) probeProvenance() provenance {
+	return provenance{
+		namespace:   a.Name(),
+		sessionAttr: otelSessionAttr,
+		anySession:  true,
 	}
 }
 
@@ -168,6 +207,14 @@ func sourceOf(r RawMetricResult) MetricSource {
 //
 // "none" is all the report can say, so a caller who needs to know whether a
 // supplied export was the problem wants ProbeWithDiagnostics instead.
+//
+// Probe is not session-scoped, because it is not given a session: it answers
+// what the export can yield for the session the export belongs to. A capture
+// names a session and reads only that session's records, so an export carrying
+// several sessions can probe "otel" and capture "unknown" for a session it does
+// not contain. The profile's own capability block is derived from the capture's
+// scoped resolution, not from this one, so a profile can never disagree with
+// itself.
 func (a ClaudeCodeAdapter) Probe() CapabilityReport {
 	report, _ := a.ProbeWithDiagnostics()
 	return report
@@ -178,9 +225,11 @@ func (a ClaudeCodeAdapter) Probe() CapabilityReport {
 //
 // This is the whole probe path now, and Probe delegates to it, so the report
 // and its explanation are always computed from one read of one file and cannot
-// disagree.
+// disagree. That one read is scoped by probeProvenance — every session, but no
+// foreign instrumentation scope — so the reasons account for exactly the
+// records the report was derived from.
 func (a ClaudeCodeAdapter) ProbeWithDiagnostics() (CapabilityReport, []string) {
-	sig := a.resolve()
+	sig := a.resolve(a.probeProvenance())
 	return a.capabilityReport(sig), failureReasons(sig)
 }
 
@@ -214,6 +263,10 @@ func failureReasons(sig otelSignals) []string {
 }
 
 // Capture reads telemetry for a specific Claude Code session and produces a Profile.
+//
+// sessionID is what the capture reads by, not only what the profile is stamped
+// with: an export legitimately carries several sessions, so only the records
+// carrying this session.id contribute to the numbers below.
 func (a ClaudeCodeAdapter) Capture(sessionID string, opts CaptureOpts) (Profile, error) {
 	// The adapter owns its input contract. CaptureOpts.ExportFile is a session
 	// export for an adapter that reads one; this adapter reads OTLP/JSON and
@@ -222,8 +275,17 @@ func (a ClaudeCodeAdapter) Capture(sessionID string, opts CaptureOpts) (Profile,
 	if opts.ExportFile != "" {
 		return Profile{}, ExportFileUnsupportedError(a.Name())
 	}
+	// The same rule for the identity. An empty session id is not a session that
+	// matched nothing; it is no assertion at all, and a profile stamped with it
+	// would have to either report every session in the export — the defect this
+	// scoping exists to remove — or report a session nobody named. Refusing it
+	// is what makes --session load-bearing in the library and not only in the
+	// CLI that restates the requirement.
+	if sessionID == "" {
+		return Profile{}, SessionIDRequiredError(a.Name())
+	}
 
-	sig := a.resolve()
+	sig := a.resolve(a.provenanceFor(sessionID))
 
 	return Profile{
 		Schema:       ProfileSchema,
@@ -263,10 +325,21 @@ func (a ClaudeCodeAdapter) Capture(sessionID string, opts CaptureOpts) (Profile,
 // form keeps the names in the reasons below greppable against the user's own
 // export.
 func eventName(r otlpLogRecord) string {
-	name, ok := bodyName(r.Body)
-	if !ok || name == "" {
-		name, _ = r.Attributes.String("event.name")
+	if name, ok := bodyName(r.Body); ok && name != "" {
+		// The body carries the qualified name, and qualifying it here instead
+		// would manufacture an identity: a body naming a bare tool_result is a
+		// record of something that is not one of this harness's events, and
+		// adding the prefix to it promoted another product's log record into
+		// the profile's tool_calls.
+		if !strings.HasPrefix(name, otelEventPrefix) {
+			return ""
+		}
+		return name
 	}
+	// Only the event.name attribute is qualified here, because the short form
+	// is the documented spelling of it and the body — the record's primary
+	// identity — said nothing.
+	name, _ := r.Attributes.String("event.name")
 	if name == "" {
 		return ""
 	}
@@ -281,7 +354,7 @@ func eventName(r otlpLogRecord) string {
 // Data points and log records that cannot be read are skipped, and the profile
 // does not report how many: a present result carries no reason in schema v1.
 
-func extractTokenCounts(export otlpExport) TokenResult {
+func extractTokenCounts(export scopedExport) TokenResult {
 	acc := counterAccumulator{}
 	var seen, points int
 	var c tokenPointCounters
@@ -364,13 +437,17 @@ func extractTokenCounts(export otlpExport) TokenResult {
 	totals := acc.reduce()
 	c.mixedTemporality = acc.refused()
 
+	// Every unknown reason carries what the provenance projection removed, so a
+	// reason saying this signal was not found cannot be read as saying the
+	// export carries nothing of the kind. The clause is empty when nothing was
+	// removed.
 	switch {
 	case seen == 0:
-		return UnknownTokenResult("no " + otelTokenUsageMetric + " metric found in OTel export")
+		return UnknownTokenResult("no " + otelTokenUsageMetric + " metric found in OTel export" + export.metricsNotRead())
 	case points == 0:
-		return UnknownTokenResult("no readable " + otelTokenUsageMetric + " metric in OTel export: it carried no sum data points")
+		return UnknownTokenResult("no readable " + otelTokenUsageMetric + " metric in OTel export: it carried no sum data points" + export.metricsNotRead())
 	case len(totals) == 0:
-		return UnknownTokenResult("no readable " + otelTokenUsageMetric + " metric in OTel export: " + c.reason())
+		return UnknownTokenResult("no readable " + otelTokenUsageMetric + " metric in OTel export: " + c.reason() + export.metricsNotRead())
 	}
 	return PresentTokenResult(tokenCounts(totals), string(SourceOtel))
 }
@@ -485,7 +562,7 @@ func isTokenType(s string) bool {
 // de-duplication by tool_use_id is needed. An export captured mid-run has
 // accepts whose results have not been written yet; those calls are not listed,
 // and the reason below says so.
-func extractToolCalls(export otlpExport) ToolCallResult {
+func extractToolCalls(export scopedExport) ToolCallResult {
 	var calls []timedCall
 	var c toolCallCounters
 
@@ -530,9 +607,9 @@ func extractToolCalls(export otlpExport) ToolCallResult {
 	switch {
 	case c.seen == 0:
 		return UnknownToolCallResult("no " + otelToolResultLog + " or " + otelToolDecisionLog +
-			" log events found in OTel export")
+			" log events found in OTel export" + export.logsNotRead())
 	case len(calls) == 0:
-		return UnknownToolCallResult("no tool call outcomes in OTel export: " + c.reason())
+		return UnknownToolCallResult("no tool call outcomes in OTel export: " + c.reason() + export.logsNotRead())
 	}
 	return PresentToolCallResult(orderedEntries(calls), string(SourceOtel))
 }
@@ -618,7 +695,7 @@ func orderedEntries(calls []timedCall) []ToolCallEntry {
 // span excludes the prompt before the first request and any tool activity after
 // the last one, which the spec says out loud. Per-request duration_ms and
 // active_time.total measure different quantities and have no field in schema v1.
-func extractTiming(export otlpExport) TimingResult {
+func extractTiming(export scopedExport) TimingResult {
 	var first, last time.Time
 	seen, have := 0, false
 
@@ -645,10 +722,10 @@ func extractTiming(export otlpExport) TimingResult {
 
 	switch {
 	case seen == 0:
-		return UnknownTimingResult("no " + otelAPIRequestLog + " log events found in OTel export")
+		return UnknownTimingResult("no " + otelAPIRequestLog + " log events found in OTel export" + export.logsNotRead())
 	case !have:
 		return UnknownTimingResult("no readable " + otelAPIRequestLog +
-			" log events in OTel export: none carried a parseable timeUnixNano")
+			" log events in OTel export: none carried a parseable timeUnixNano" + export.logsNotRead())
 	}
 	// A single request is a zero-length span: a value that was read, not an
 	// absence. The nanosecond digits stay out of the profile — these fields are

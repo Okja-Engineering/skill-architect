@@ -9,6 +9,7 @@
               "timeUnixNano": "1789332594304000000",
               "body": { "stringValue": "claude_code.hook_registered" },
               "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
                 { "key": "event.name", "value": { "stringValue": "hook_registered" } },
                 { "key": "event.sequence", "value": { "intValue": 0 } },
                 { "key": "hook_event", "value": { "stringValue": "PreToolUse" } },
@@ -19,6 +20,7 @@
               "timeUnixNano": "1789332594523000000",
               "body": { "stringValue": "claude_code.user_prompt" },
               "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
                 { "key": "event.name", "value": { "stringValue": "user_prompt" } },
                 { "key": "event.sequence", "value": { "intValue": 1 } },
                 { "key": "prompt_length", "value": { "stringValue": "40" } },
