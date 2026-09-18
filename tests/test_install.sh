@@ -113,22 +113,42 @@ BLOCK_SKILLS
 # through the part of the path that exists — and shown to land strictly inside
 # the harness scratch root. Every spelling of every escape above resolves to
 # somewhere outside and is refused by where it lands rather than by how it
-# looks, and a destination that cannot be resolved at all is refused too.
+# looks — each of them handed to the resolved verdict on its own, below, with
+# the shape pass out of the way, so that what refuses them is not in doubt.
 #
-# The shape pass below is kept, and it is a diagnostic and a second fence: it
-# reads every word of every line and says which line and why. What it refuses
-# is stated the other way round from before — not a list of the escapes it
-# knows, but the demand that a word be accountable: no absolute path, no
-# `~name`, no `..` in any position, and no expansion whose value this suite
-# cannot name. Only HOME, PWD and the names the block itself binds are
-# accountable; anything else, including a command substitution, is refused.
-# PATH is deliberately not on that list: the run provides it, its value is
-# absolute, and nothing an install block does is resolved from it. Refusing an
-# unaccountable expansion is also what makes expanding the destination below
-# safe, since a destination carrying a substitution never reaches the shell.
+# The shape pass below is the other fence, and it is not the lesser one. The
+# resolved verdict can only decide the *destination*, because that is the one
+# word whose value is fixed before the block runs; `"$skills_dir/$skill"` has no
+# value until the loop binding `$skill` is running, so there is nothing to
+# resolve and the question has to be asked of the name instead. So the two
+# fences divide the block between them: resolution decides where the write
+# lands, and the shape pass decides every word resolution cannot reach. What it
+# demands is stated the other way round from the old list — not the escapes it
+# knows, but that a word be accountable: no absolute path, no `~name`, no `..`
+# in any position, and no expansion whose value this suite cannot name. Only
+# HOME, PWD and the names the block itself binds are accountable; anything else,
+# including a command substitution, is refused. PATH is deliberately not on that
+# list: the run provides it, its value is absolute, and nothing an install block
+# does is resolved from it.
 #
-# Both are `require`s, not `assert`s: a failed precondition has to stop the
-# suite, because a reported failure is not a refusal.
+# It also runs *first*, and that ordering is load-bearing rather than tidy.
+# Resolving a destination means expanding it with a shell, so a destination
+# carrying a substitution has to be refused before the resolution is reached. It
+# was not, once: a precondition went straight to the resolved verdict and a
+# substitution written into the README ran on the machine doing the verifying.
+#
+# Nothing above is left standing on its own word. Every mechanism either
+# paragraph names has a control below that hands it something it must refuse,
+# and reverting the mechanism reddens its own control — which is the difference
+# between this and what stood here before, where the argument *was* the claim.
+# The residue is named rather than implied: resolution decides the destination
+# only, the shape pass decides the rest by name, and a destination that survives
+# both and still cannot be resolved is refused by the resolution yielding
+# nothing. That last one is a backstop, not a measured mechanism, because
+# nothing the shape pass admits is known to reach it.
+#
+# All of these are `require`s, not `assert`s: a failed precondition has to stop
+# the suite, because a reported failure is not a refusal.
 
 text_names_nothing_outside_a_redirected_home() {
   awk '
@@ -473,6 +493,142 @@ containment_refuses_a_destination_that_resolves_through_a_symlink() {
 containment_refuses_a_block_whose_second_line_escapes() {
   containment_refuses 'skills_dir=~/.claude/skills
 cp -R skills/skill-audit /etc/codex/skills/skill-audit'
+}
+
+# --- What the shape pass alone decides ----------------------------------------
+#
+# The resolved verdict cannot reach any of these: three are words that are not
+# the destination, and two are destinations whose value cannot be asked for
+# without running something. Each was a mechanism the section above asserted and
+# nothing measured, which is the same defect as the claim of completeness it
+# replaced — a sentence doing the work a control should do.
+
+# The scan used to stop at a line's first `#` token, so anything after one went
+# uninspected. A `#` is only a comment at the start of a word, and a `#` that is
+# its own word *inside* a quoted string is not one — the text after it is code,
+# and here it is an absolute path.
+containment_refuses_an_escape_after_a_quoted_hash() {
+  containment_refuses 'skills_dir=~/.claude/skills
+echo "installing # into the skills directory" && cp -R skills/skill-audit /etc/codex/skills/skill-audit'
+}
+
+# A destination whose value is only known by running it, and the one control
+# the ordering of the two fences exists for. Being refused is not enough here:
+# the resolution expands the destination with a shell, so a substitution that
+# gets as far as the resolution has already had its effect, and a verdict of
+# "refused" arrives after the damage. So what is measured is the marker, not
+# only the verdict — the substitution's one effect is to create a file, and the
+# file must not exist.
+#
+# Both spellings are handed over, and each isolates one rule: `$(…)` is refused
+# as an expansion this pass cannot name, and a backtick has no `$` in it at all,
+# so nothing but the backtick rule can catch it. The effect is written as a
+# redirection rather than an argument so the destination stays a single word,
+# which is how everything here reads "the first assignment's value".
+substitution_left_no_marker() {
+  if [ -e "$1" ]; then
+    printf 'a substitution in the destination ran before it was refused:\n  %s exists\n' "$1" >&2
+    return 1
+  fi
+  return 0
+}
+
+containment_refuses_a_substitution_before_it_can_run() {
+  local dir marker
+  dir="$(containment_probe_dir)"
+  marker="$dir/a-substitution-ran"
+
+  rm -f "$marker"
+  containment_refuses "$(block_with_destination \
+    "\$(id>$marker)/.claude/skills")" || return 1
+  substitution_left_no_marker "$marker" || return 1
+
+  rm -f "$marker"
+  containment_refuses "$(block_with_destination \
+    "\`id>$marker\`/.claude/skills")" || return 1
+  substitution_left_no_marker "$marker" || return 1
+
+  return 0
+}
+
+# A name the block never binds, on a line that is *not* the destination. The
+# resolution never looks there, so the shape pass is the only thing that can
+# refuse it — which is what makes this a control on the shape pass rather than
+# on `set -u` in the expansion, which covers the destination form anyway.
+containment_refuses_an_unbound_name_away_from_the_destination() {
+  containment_refuses 'skills_dir=~/.claude/skills
+cp -R skills/skill-audit "$SKILLS_BACKUP/skill-audit"'
+}
+
+# A block with nothing to resolve is not a block that may run. Waving one
+# through is how "the destination is contained" becomes true of a block that has
+# no destination and does whatever it likes.
+containment_refuses_a_block_that_assigns_no_destination() {
+  containment_refuses 'mkdir -p skill-audit
+cp -R skills/skill-audit skill-audit'
+}
+
+# --- The resolved verdict, measured on its own --------------------------------
+#
+# The invariant is that containment is decided by where the write lands and not
+# by how the destination is spelled. That is a claim about the resolved verdict
+# *without* the shape pass in front of it, so it is asked of the resolved
+# verdict directly. Every spelling that escaped the old guard is handed to it
+# here, and each is refused with the shape pass out of the way — which is what
+# says the fence holding the escapes out is the resolution and not a denylist
+# wearing new words.
+resolution_refuses() {
+  if destination_resolves_inside_the_scratch_root \
+       "$(containment_probe_dir)" "$1" >/dev/null 2>&1; then
+    printf 'the resolved verdict accepted a destination it must refuse:\n  %s\n' "$1" >&2
+    return 1
+  fi
+  return 0
+}
+
+# The other direction, because a verdict that refuses everything proves nothing.
+# A literal the suite owns, not the README's text: handing the document's own
+# words to this seam is what the fence ordering above exists to prevent.
+resolution_accepts_an_ordinary_destination() {
+  destination_resolves_inside_the_scratch_root \
+    "$(containment_probe_dir)" '~/.claude/skills'
+}
+
+resolution_refuses_an_absolute_destination() {
+  resolution_refuses '/Users/you/.claude/skills'
+}
+
+resolution_refuses_a_tilde_with_a_user_name() {
+  resolution_refuses '~root/.claude/skills'
+}
+
+resolution_refuses_a_climb_out_of_a_redirected_home() {
+  resolution_refuses '$HOME/../../../../ESCAPED-THE-SCRATCH-ROOT/.claude/skills'
+}
+
+resolution_refuses_a_climb_out_of_the_working_directory() {
+  resolution_refuses '../../../../ESCAPED-THE-SCRATCH-ROOT/.claude/skills'
+}
+
+resolution_refuses_a_climb_that_ends_in_an_absolute_path() {
+  resolution_refuses \
+    '$HOME/../../../../../../../../../../../../../../../Users/decoy-operator/.claude/skills'
+}
+
+resolution_refuses_a_destination_that_resolves_through_a_symlink() {
+  resolution_refuses '~/checkout/skills'
+}
+
+# The climb that leaves through a part of the path which does not exist yet, and
+# the reason `.` and `..` are folded away before the filesystem is consulted.
+# Following symlinks can only start from the longest prefix that exists, so a
+# `..` beyond that point is still in the string when the two paths are compared
+# — and a string beginning with the scratch root compares as inside it however
+# far out of it the path actually goes. Folding first is what makes the compare
+# mean what it says, and this is the only control that can tell.
+resolution_refuses_a_climb_through_a_path_that_does_not_exist_yet() {
+  resolution_refuses \
+    '~/not-created-yet/../../../../../../ESCAPED-THE-SCRATCH-ROOT/.claude/skills'
 }
 
 # The precondition the whole containment argument rests on, and it is now a
@@ -888,6 +1044,32 @@ require "the containment decision refuses a destination that resolves through a 
   containment_refuses_a_destination_that_resolves_through_a_symlink
 require "the containment decision reads the whole block, not just its first line" \
   containment_refuses_a_block_whose_second_line_escapes
+require "the containment decision inspects what follows a quoted # on a line" \
+  containment_refuses_an_escape_after_a_quoted_hash
+require "a substitution in the destination is refused before it can run" \
+  quietly containment_refuses_a_substitution_before_it_can_run
+require "the containment decision refuses a name the block never binds, away from the destination" \
+  containment_refuses_an_unbound_name_away_from_the_destination
+require "the containment decision refuses a block that assigns no destination" \
+  containment_refuses_a_block_that_assigns_no_destination
+
+require "the resolved verdict accepts an ordinary destination" \
+  resolution_accepts_an_ordinary_destination
+require "the resolved verdict alone refuses an absolute destination" \
+  resolution_refuses_an_absolute_destination
+require "the resolved verdict alone refuses a tilde with a user name" \
+  resolution_refuses_a_tilde_with_a_user_name
+require "the resolved verdict alone refuses a climb out of a redirected home" \
+  resolution_refuses_a_climb_out_of_a_redirected_home
+require "the resolved verdict alone refuses a climb out of the working directory" \
+  resolution_refuses_a_climb_out_of_the_working_directory
+require "the resolved verdict alone refuses a climb that ends in an absolute path" \
+  resolution_refuses_a_climb_that_ends_in_an_absolute_path
+require "the resolved verdict alone refuses a destination that resolves through a symlink" \
+  resolution_refuses_a_destination_that_resolves_through_a_symlink
+require "the resolved verdict alone refuses a climb through a path that does not exist yet" \
+  resolution_refuses_a_climb_through_a_path_that_does_not_exist_yet
+
 require "the README's manual-copy block names nothing outside a redirected home" \
   quietly block_names_nothing_outside_a_redirected_home
 require "the destination the README's block resolves to is inside the harness scratch root" \
