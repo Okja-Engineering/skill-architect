@@ -136,29 +136,96 @@ block_names_nothing_outside_a_redirected_home() {
   documented_manual_copy_block | text_names_nothing_outside_a_redirected_home
 }
 
-# The control for the guard. A guard that cannot refuse is not a proof of
-# anything, so each escape it exists to catch is handed to it and the refusal is
-# required — before anything is run, because these two checks are what the
+# The containment decision, in one place, so that what the controls below
+# measure and what the run sites ask are the same question with one definition.
+#
+# <run dir> <block text> — may this block be run in this run's environment?
+#
+# At this revision the answer is a function of the block's text alone: the run
+# directory is accepted and never consulted, and the decision is the shape pass
+# above. That is exactly what the controls measure.
+containment_verdict() {
+  printf '%s\n' "$2" | text_names_nothing_outside_a_redirected_home
+}
+
+# A run directory for the decisions that are taken before anything is run: the
+# same shape and the same depth under the scratch root as the staged runs
+# below, so a decision taken in it is the decision a real run gets.
+#
+# Its home holds a symlink to the checkout, because a reader's home commonly
+# does, and because a destination can leave the scratch root without a single
+# suspicious character in it — `~/checkout/skills` is a path whose shape says
+# nothing and whose resolution says everything.
+containment_probe_dir() {
+  local dir
+  dir="$install_scratch/containment-probe"
+  if [ ! -d "$dir/home" ]; then
+    mkdir -p "$dir/home" "$dir/cwd"
+    ln -s "$harness_repo_root" "$dir/home/checkout"
+  fi
+  printf '%s\n' "$dir"
+}
+
+# A block in the shape of the documented one with its destination respelled.
+# The controls differ from the README's block in exactly the one thing the
+# README asks a reader to change, because a wrong destination is what a reader
+# — or an author editing that line — actually produces.
+block_with_destination() {
+  printf 'skills_dir=%s\n' "$1"
+  printf 'mkdir -p "$skills_dir"\n'
+  printf 'rm -rf "$skills_dir/skill-audit" && cp -R "skills/skill-audit" "$skills_dir/skill-audit"\n'
+}
+
+# The control for the decision. A decision that cannot refuse is not a proof of
+# anything, so every escape containment has to exclude is handed to it and the
+# refusal is required — before anything is run, because this is what the
 # containment argument rests on.
-guard_refuses() {
-  local why
-  if why="$(printf '%s\n' "$1" | text_names_nothing_outside_a_redirected_home 2>&1)"; then
-    printf 'the containment guard accepted a block it must refuse:\n%s\n' "$1" >&2
+containment_refuses() {
+  if containment_verdict "$(containment_probe_dir)" "$1" >/dev/null 2>&1; then
+    printf 'the containment decision accepted a block it must refuse:\n%s\n' "$1" >&2
     return 1
   fi
   return 0
 }
 
-guard_refuses_an_absolute_destination() {
-  guard_refuses 'rm -rf /Users/you/.claude/skills/skill-audit && cp -R skills/skill-audit /Users/you/.claude/skills/skill-audit'
+containment_refuses_an_absolute_destination() {
+  containment_refuses "$(block_with_destination '/Users/you/.claude/skills')"
 }
 
-guard_refuses_a_tilde_with_a_user_name() {
-  guard_refuses 'cp -R skills/skill-audit ~root/.claude/skills/skill-audit'
+containment_refuses_a_tilde_with_a_user_name() {
+  containment_refuses "$(block_with_destination '~root/.claude/skills')"
 }
 
-guard_refuses_a_block_whose_second_line_escapes() {
-  guard_refuses 'mkdir -p ~/.claude/skills
+# The climbs. A redirected HOME and a working directory inside the scratch root
+# are not containment on their own: both are places to climb out of, and both
+# were climbed out of while every check here passed.
+containment_refuses_a_climb_out_of_a_redirected_home() {
+  containment_refuses \
+    "$(block_with_destination '$HOME/../../../../ESCAPED-THE-SCRATCH-ROOT/.claude/skills')"
+}
+
+containment_refuses_a_climb_out_of_the_working_directory() {
+  containment_refuses \
+    "$(block_with_destination '../../../../ESCAPED-THE-SCRATCH-ROOT/.claude/skills')"
+}
+
+# Enough climbs to reach the filesystem root, where `..` stops, and then an
+# absolute tail. This is the one that reaches a named home directory, and with
+# a real user's name in it, the live skills directory inside it.
+containment_refuses_a_climb_that_ends_in_an_absolute_path() {
+  containment_refuses "$(block_with_destination \
+    '$HOME/../../../../../../../../../../../../../../../Users/decoy-operator/.claude/skills')"
+}
+
+# And the one no reading of the text can catch: a destination with nothing
+# wrong in it that resolves outside the scratch root anyway, because something
+# on the way is a symlink.
+containment_refuses_a_destination_that_resolves_through_a_symlink() {
+  containment_refuses "$(block_with_destination '~/checkout/skills')"
+}
+
+containment_refuses_a_block_whose_second_line_escapes() {
+  containment_refuses 'skills_dir=~/.claude/skills
 cp -R skills/skill-audit /etc/codex/skills/skill-audit'
 }
 
@@ -543,12 +610,20 @@ MANIFEST_DIRS
 # Everything below runs the README's commands, so these come first and each one
 # stops the suite rather than reporting on its way past.
 
-require "the containment guard refuses an absolute destination" \
-  guard_refuses_an_absolute_destination
-require "the containment guard refuses a tilde with a user name" \
-  guard_refuses_a_tilde_with_a_user_name
-require "the containment guard reads the whole block, not just its first line" \
-  guard_refuses_a_block_whose_second_line_escapes
+require "the containment decision refuses an absolute destination" \
+  containment_refuses_an_absolute_destination
+require "the containment decision refuses a tilde with a user name" \
+  containment_refuses_a_tilde_with_a_user_name
+require "the containment decision refuses a climb out of a redirected home" \
+  containment_refuses_a_climb_out_of_a_redirected_home
+require "the containment decision refuses a climb out of the working directory" \
+  containment_refuses_a_climb_out_of_the_working_directory
+require "the containment decision refuses a climb that ends in an absolute path" \
+  containment_refuses_a_climb_that_ends_in_an_absolute_path
+require "the containment decision refuses a destination that resolves through a symlink" \
+  containment_refuses_a_destination_that_resolves_through_a_symlink
+require "the containment decision reads the whole block, not just its first line" \
+  containment_refuses_a_block_whose_second_line_escapes
 require "the destination the block can reach is inside the harness scratch root" \
   everything_the_block_can_reach_is_inside_the_scratch_root
 require "the README's manual-copy block names nothing outside a redirected home" \
