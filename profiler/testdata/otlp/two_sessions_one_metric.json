@@ -1,0 +1,71 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "claude-code" } }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "com.anthropic.claude_code",
+            "version": "2.1.221"
+          },
+          "metrics": [
+            {
+              "name": "claude_code.token.usage",
+              "unit": "tokens",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      { "key": "session.id", "value": { "stringValue": "33333333-3333-4333-8333-333333333333" } },
+                      { "key": "type", "value": { "stringValue": "input" } },
+                      { "key": "model", "value": { "stringValue": "claude-sonnet-5" } }
+                    ],
+                    "startTimeUnixNano": "1789432593304000000",
+                    "timeUnixNano": "1789432598304000000",
+                    "asDouble": 90000
+                  },
+                  {
+                    "attributes": [
+                      { "key": "session.id", "value": { "stringValue": "22222222-2222-4222-8222-222222222222" } },
+                      { "key": "type", "value": { "stringValue": "input" } },
+                      { "key": "model", "value": { "stringValue": "claude-sonnet-5" } }
+                    ],
+                    "startTimeUnixNano": "1789332594304000000",
+                    "timeUnixNano": "1789332606304000000",
+                    "asDouble": 5000
+                  },
+                  {
+                    "attributes": [
+                      { "key": "session.id", "value": { "stringValue": "33333333-3333-4333-8333-333333333333" } },
+                      { "key": "type", "value": { "stringValue": "output" } },
+                      { "key": "model", "value": { "stringValue": "claude-sonnet-5" } }
+                    ],
+                    "startTimeUnixNano": "1789432593304000000",
+                    "timeUnixNano": "1789432598304000000",
+                    "asDouble": 4300
+                  },
+                  {
+                    "attributes": [
+                      { "key": "session.id", "value": { "stringValue": "22222222-2222-4222-8222-222222222222" } },
+                      { "key": "type", "value": { "stringValue": "output" } },
+                      { "key": "model", "value": { "stringValue": "claude-sonnet-5" } }
+                    ],
+                    "startTimeUnixNano": "1789332594304000000",
+                    "timeUnixNano": "1789332606304000000",
+                    "asDouble": 700
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
