@@ -92,17 +92,33 @@ output="$target_skill/REWRITE-DRAFT.md"
 script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 skill_audit_root="$(dirname "$script_dir")/../skill-audit"
 
+# What the draft says it was built from.
+#
+# A machine-local mktemp path was the one thing it could not be. It names a
+# file that is gone by the time anyone reads the draft — or worse, one that is
+# still there, since nothing removed it — and it never meant anything outside
+# the process that wrote it. So the two cases state what they actually are: a
+# report the caller named is named, and checks the drafter ran itself are
+# described as checks the drafter ran itself.
 if [[ -z "$audit_report" ]]; then
+  provenance="structural checks run by this script: skill-audit's check-frontmatter.sh and check-structure.sh"
   echo "No audit report provided; running structural checks..." >&2
   audit_report="$(mktemp)"
+  # The report is this script's scratch and not an artifact, so it does not
+  # outlive the run. The trap goes on with the file rather than after the
+  # checks, so no exit path between the two — including an errexit abort — can
+  # leave it behind.
+  trap 'rm -f "$audit_report"' EXIT
   "$skill_audit_root/scripts/check-frontmatter.sh" "$target_skill" > "$audit_report" 2>&1 || true
   "$skill_audit_root/scripts/check-structure.sh" "$target_skill" >> "$audit_report" 2>&1 || true
+else
+  provenance="audit report $audit_report"
 fi
 
 cat > "$output" <<EOF
 # Rewrite draft: $skill_name
 
-Generated from audit report: $audit_report
+Generated from: $provenance
 
 ## Current state
 
