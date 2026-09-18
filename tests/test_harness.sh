@@ -15,8 +15,8 @@
 #   an assertion's verdict is a function of repository state, and a suite that
 #   does not reach its summary says so.
 #
-# The suite list is a glob, so a fifth suite added tomorrow is covered the day
-# it lands. Both halves are read out of the source text by
+# The suite list is a glob, so a suite added tomorrow is covered the day it
+# lands. Both halves are read out of the source text by
 # tests/lib/audit-suites.sh: a verdict that cannot depend on the repository, and
 # a private copy of the harness — including a private EXIT trap — that a repair
 # to the shared one would never reach. Neither is answerable at runtime, and
@@ -95,7 +95,7 @@ done
 # The denominator. An empty or shrunken glob would make every per-suite check
 # below vacuously true, which is the failure this file exists to refuse.
 assert "tests/ still holds every suite this check is written against" \
-  test "$suite_count" -ge 5
+  test "$suite_count" -ge 6
 echo "  suites examined:$suites"
 
 for suite in $suites; do

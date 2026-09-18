@@ -31,6 +31,8 @@ jobs:
         run: tests/test_harness.sh
       - name: Run skill layout tests
         run: tests/test_skill.sh
+      - name: Run documented install-route tests
+        run: tests/test_install.sh
       - name: Run end-to-end walk tests
         run: tests/test_walk.sh
       - name: Run skill-rewrite drafter and documentation tests
