@@ -144,6 +144,40 @@ require "the README's list of tests to run is extractable" \
 echo "  suites examined:$suites"
 echo "  suites the workflow runs: $(workflow_suites | tr '\n' ' ')"
 
+# --- Control: the denominator the precondition above refuses -----------------
+#
+# A workflow naming no suites is the state that precondition exists to refuse,
+# and it can only refuse a count it is handed. The derivation has to survive
+# producing zero for that to happen: the same question as anywhere else in this
+# file, which is whether the machinery can report the thing it is watching for.
+#
+# Both halves are asserted, because "it did not die" and "it said zero" are
+# different claims and only the pair of them gets the count as far as the
+# precondition.
+empty_workflow="$fixtures/names-no-suites.yml"
+cat > "$empty_workflow" <<'EOF'
+name: ci
+jobs:
+  test:
+    steps:
+      - run: echo this workflow runs no suites
+EOF
+
+# <workflow file> — the count the precondition above reads, over another
+# workflow. A subshell, so the override cannot leak into the checks below.
+derived_count_over() {
+  ( WORKFLOW="$1"; workflow_suites | wc -l | tr -d '[:space:]' )
+}
+
+a_workflow_naming_no_suites_derives_a_denominator_of_zero() {
+  local count
+  count="$(derived_count_over "$empty_workflow")" || return 1
+  [ "$count" = 0 ]
+}
+
+assert "a workflow naming no suites derives a denominator of zero to refuse" \
+  a_workflow_naming_no_suites_derives_a_denominator_of_zero
+
 for suite in $suites; do
   assert "$suite is on the shared harness" grep -q 'lib/harness\.sh' "$suite"
   assert "$suite reaches its verdict through harness_summary" \
