@@ -285,4 +285,85 @@ assert "the drafter resolves skill-audit from its own location, not from the cal
 assert "a draft run from an unrelated cwd carries the audit, not a diagnostic about it" \
   grep -q 'frontmatter OK' "$elsewhere_target/REWRITE-DRAFT.md"
 
+# --- the report the drafter makes for itself ----------------------------------
+#
+# With no `-a` the drafter runs the checks into a temp file. Two things are then
+# true of that file and neither should be: it outlives the run, and its path —
+# a machine-local name under whatever TMPDIR happened to be set — is written
+# into the draft as the draft's stated provenance. A reader who follows that
+# line finds nothing, and a reader who keeps the draft has a provenance that
+# never meant anything outside the process that wrote it.
+#
+# The run is watched through a recording `mktemp` rather than through a
+# directory, because the question is "did the drafter remove the file it made"
+# and the answer has to hold wherever mktemp puts it. TMPDIR does not answer
+# it: BSD mktemp ignores TMPDIR for a template-less call, so a TMPDIR-pointed
+# check is an assertion that cannot fail on macOS — the one shape
+# tests/test_harness.sh exists to refuse.
+#
+# The stub is a plain file in a directory of its own, prepended to PATH. It is
+# not written into a masked-path symlink farm: a write through a symlink named
+# for a real binary goes to the real binary.
+mktemp_log="$work/mktemp-handed-out"
+mktemp_stub_path() {
+  local dir="$work/stub-mktemp"
+  if [ ! -d "$dir" ]; then
+    mkdir -p "$dir"
+    {
+      echo '#!/usr/bin/env bash'
+      printf 'p="$(%s "$@")"\n' "$(command -v mktemp)"
+      printf 'printf "%%s\\n" "$p" >> %s\n' "$mktemp_log"
+      echo 'printf "%s\n" "$p"'
+    } > "$dir/mktemp"
+    chmod +x "$dir/mktemp"
+  fi
+  echo "$dir:$PATH"
+}
+
+draft_run_watching_mktemp() {
+  : > "$mktemp_log"
+  code=0
+  output="$(PATH="$(mktemp_stub_path)" "$DRAFTER" "$@" 2>"$drafted/stderr")" || code=$?
+}
+
+# The paths mktemp handed out during the run that are still there afterwards.
+left_behind() {
+  local p
+  while read -r p; do
+    [ -n "$p" ] || continue
+    [ -e "$p" ] && echo "$p"
+  done < "$mktemp_log"
+  return 0
+}
+
+# The control for the watcher itself: a stub that recorded nothing would make
+# "nothing was left behind" true of every run, including a leaking one.
+assert "the mktemp watcher records the paths a run was handed" \
+  test -n "$(draft_run_watching_mktemp -t "$(target_from tests/fixtures/f01/valid-full watcher)" >/dev/null 2>&1; cat "$mktemp_log")"
+
+provenance_of() {
+  { grep -m1 -E '^Generated from' "$1/REWRITE-DRAFT.md" || true; }
+}
+
+own_report_target="$(target_from tests/fixtures/f01/valid-full own-report)"
+draft_run_watching_mktemp -t "$own_report_target"
+assert "a run with no -a still writes its draft" test "$code" -eq 0
+assert "a run with no -a leaves no temp file behind" test -z "$(left_behind)"
+assert "a run with no -a states a provenance" test -n "$(provenance_of "$own_report_target")"
+assert "a run with no -a does not name a temp path as the draft's provenance" \
+  test -z "$(provenance_of "$own_report_target" | grep -F -f "$mktemp_log" || true)"
+assert "a run with no -a names the checks the draft was built from" \
+  test -n "$(provenance_of "$own_report_target" | grep -F 'check-structure.sh' || true)"
+
+# The control: when the caller did name a report, that path is the provenance
+# and saying so is right. The assertion above must not be satisfiable by
+# dropping the provenance line altogether.
+named_report_target="$(target_from tests/fixtures/f01/valid-full named-report)"
+named_report="$work/named-audit.md"
+printf 'frontmatter OK\n' > "$named_report"
+draft_run_watching_mktemp -t "$named_report_target" -a "$named_report"
+assert "a run with -a names the report the caller gave as the draft's provenance" \
+  test -n "$(provenance_of "$named_report_target" | grep -F "$named_report" || true)"
+assert "a run with -a leaves no temp file behind either" test -z "$(left_behind)"
+
 harness_summary
