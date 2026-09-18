@@ -213,6 +213,10 @@ tool_answers() {
     awk)  [[ "$(awk 'BEGIN { print 1 + 1 }' 2>/dev/null)" == 2 ]] ;;
     sed)  [[ "$(sed 's/a/b/' <<< a 2>/dev/null)" == b ]] ;;
     tr)   [[ "$(tr a b <<< a 2>/dev/null)" == b ]] ;;
+    cat)  [[ "$(cat <<< a 2>/dev/null)" == a ]] ;;
+    # `-u` asks for a name without creating anything, so the probe has no file
+    # to clean up and cannot itself become the leak it is asked about.
+    mktemp) [[ -n "$(mktemp -u 2>/dev/null)" ]] ;;
     wc)   [[ "$(wc -l <<< $'a\nb' 2>/dev/null)" =~ ^[[:space:]]*2[[:space:]]*$ ]] ;;
     grep) grep -q a <<< a >/dev/null 2>&1 && ! grep -q b <<< a >/dev/null 2>&1 ;;
     *)    return 0 ;;

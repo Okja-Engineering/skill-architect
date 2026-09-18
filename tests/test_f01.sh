@@ -1120,13 +1120,58 @@ working_tool_path() {
 guard_probed_tools="$(sed -n '/^tool_answers() {/,/^}$/p' skills/skill-audit/scripts/verdict-guard.sh \
   | sed -n 's/^[[:space:]]*\([a-z][a-z]*\))[[:space:]].*/\1/p' | sort -u)"
 echo "  tools the guard probes: $(printf '%s' "$guard_probed_tools" | tr '\n' ' ')"
-assert_value "the guard probes the tools these scripts compute with" \
-  "$([[ "$(printf '%s\n' "$guard_probed_tools" | tr '\n' ' ')" == "awk grep jq sed tr wc " ]] && echo true || echo false)"
 
 # tools_required_by <script> — the tools the script states as preconditions.
+#
+# The line start is not anchored, because a precondition stated after a `&&` or
+# inside an `if` is the same precondition. Comment lines are excluded, because
+# these files discuss require_tool in prose and `require_tool asks each of them`
+# is not a dependency on a tool called `asks`. `[^#]*` cannot cross a `#`, so a
+# line whose first non-space character is one contributes nothing.
 tools_required_by() {
-  { grep -ohE 'require_tool[[:space:]]+[a-z][a-z-]*' "$1" || true; } | awk '{print $2}' | sort -u
+  { grep -hE '^[[:space:]]*[^#]*require_tool[[:space:]]+[a-z][a-z-]*' "$1" || true; } \
+    | sed -E 's/.*require_tool[[:space:]]+([a-z][a-z-]*).*/\1/' | sort -u
 }
+
+# Every tool any script requires is either probed here or is one of the two
+# audit sources, whose answers are proven where they are read — by
+# json_document_conforms in check-frontmatter.sh, and by
+# quality_report_conforms in check-quality.sh and audit-report.sh. There is no
+# cheap question with a known answer to put to either, and the read is a
+# stronger check than a probe would be.
+#
+# Written as coverage rather than as a list of names to match: a fixed list is
+# the defect one level up, and would have to be edited by whoever adds a tool —
+# which is the person least likely to notice it needs editing. This way, adding
+# `require_tool foo` without a probe or a stated exemption fails here.
+GUARD_PROBE_EXEMPT="skill-validator skillscore"
+unprobed_tools=""
+required_tool_count=0
+for tscript in skills/skill-audit/scripts/*.sh skills/skill-rewrite/scripts/*.sh; do
+  # verdict-guard.sh defines require_tool; it does not call it. Its
+  # verdict_guard_ready name list mentions it beside the next primitive, which
+  # reads as a dependency on a tool with that name. The question here is which
+  # tools a *caller* requires.
+  case "$tscript" in *verdict-guard.sh) continue ;; esac
+  for ttool in $(tools_required_by "$tscript"); do
+    required_tool_count=$((required_tool_count + 1))
+    case "
+$guard_probed_tools
+" in *"
+$ttool
+"*) continue ;; esac
+    case " $GUARD_PROBE_EXEMPT " in *" $ttool "*) continue ;; esac
+    unprobed_tools="$unprobed_tools $ttool($(basename "$tscript"))"
+  done
+done
+echo "  tool preconditions walked: $required_tool_count"
+assert_value "the tool preconditions were enumerated, not read as an empty set" \
+  "$([[ "$required_tool_count" -ge 15 ]] && echo true || echo false)"
+assert_value "every tool a script requires is probed, or is a source proven where it is read" \
+  "$([[ -z "$unprobed_tools" ]] && echo true || echo false)"
+if [[ -n "$unprobed_tools" ]]; then
+  echo "  required with neither a probe nor a stated exemption:$unprobed_tools"
+fi
 
 broken_cases=0
 for bscript in "$SCRIPTS_DIR"/check-structure.sh "$SCRIPTS_DIR"/check-paths.sh \

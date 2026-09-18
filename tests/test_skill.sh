@@ -122,4 +122,145 @@ assert "skill-rewrite draft-rewrite.sh is executable" \
 assert "skill-rewrite draft-rewrite.sh produces REWRITE-DRAFT.md" \
   quietly draft_rewrite_produces_draft
 
+# --- draft-rewrite.sh does not report success over an audit that did not run ---
+#
+# It ran both audit checks with `2>&1 || true`, which is two defects in one
+# line. The status was discarded, so a check that reached no verdict was
+# indistinguishable from one reporting a failing skill, and a draft was written
+# and exited 0 either way. And merging stderr into the capture put the checks'
+# own diagnostics into the draft's "Current state" section as findings about the
+# skill: with skill-validator absent, a clean skill's draft opened with "ERROR:
+# skill-validator exited with unexpected status 127" as its current state.
+#
+# A stub here is one directory holding one file, prepended to the real PATH.
+# Nothing is mirrored, replaced or uninstalled.
+
+DRAFT=skills/skill-rewrite/scripts/draft-rewrite.sh
+
+# draft_target — a fresh copy of a real skill to draft over. Each case gets its
+# own, so a draft one case wrote cannot satisfy the next.
+draft_target() {
+  local name="$1"
+  local dir="$harness_scratch/draft-$name"
+  rm -rf "$dir"
+  cp -R skills/skill-rewrite "$dir"
+  rm -f "$dir/REWRITE-DRAFT.md"
+  printf '%s' "$dir"
+}
+
+# draft_stub_path <name> <tool> <exit> — a PATH whose <tool> is useless.
+draft_stub_path() {
+  local dir="$harness_scratch/draft-stub-$1-$3"
+  if [ ! -d "$dir" ]; then
+    mkdir -p "$dir"
+    printf '#!/usr/bin/env bash\nexit %s\n' "$3" > "$dir/$2"
+    chmod +x "$dir/$2"
+  fi
+  printf '%s:%s' "$dir" "$PATH"
+}
+
+# draft_refused <name> <tool> <exit> — the audit cannot answer, so no draft is
+# written and the status says so. Run as a captured command: the expected
+# diagnostics are noise on a passing run.
+draft_refused() {
+  local name="$1" tool="$2" tool_exit="$3"
+  local target status=0 out
+  target="$(draft_target "$name")"
+  out="$(PATH="$(draft_stub_path "$name" "$tool" "$tool_exit")" "$DRAFT" -t "$target" 2>&1)" || status=$?
+  if [ "$status" -ne 3 ]; then
+    printf 'expected exit 3, got %s:\n%s\n' "$status" "$out" >&2
+    return 1
+  fi
+  if [ -f "$target/REWRITE-DRAFT.md" ]; then
+    printf 'a draft was written over an audit that reached no verdict:\n' >&2
+    cat "$target/REWRITE-DRAFT.md" >&2
+    return 1
+  fi
+  return 0
+}
+
+assert "draft-rewrite, the spec source cannot run: exits 3 and writes no draft" \
+  draft_refused spec-127 skill-validator 127
+assert "draft-rewrite, the spec source answers with a status nobody can read: exits 3 and writes no draft" \
+  draft_refused spec-42 skill-validator 42
+assert "draft-rewrite, jq is present and useless: exits 3 and writes no draft" \
+  draft_refused jq-silent jq 0
+assert "draft-rewrite, grep is present and useless: exits 3 and writes no draft" \
+  draft_refused grep-err grep 2
+
+# draft_state_is_findings_only — the control side of the same invariant. With a
+# healthy toolchain a draft is written, and nothing on its "Current state" is a
+# diagnostic about the tooling. The checks' own stderr must not be in there.
+draft_state_is_findings_only() {
+  local target
+  target="$(draft_target healthy)"
+  "$DRAFT" -t "$target" >/dev/null 2>&1 || return 1
+  [ -f "$target/REWRITE-DRAFT.md" ] || return 1
+  if grep -q 'ERROR:' "$target/REWRITE-DRAFT.md"; then
+    printf 'the draft carries a tooling diagnostic as the skill state:\n' >&2
+    grep -n 'ERROR:' "$target/REWRITE-DRAFT.md" >&2
+    return 1
+  fi
+  return 0
+}
+
+assert "draft-rewrite, a healthy toolchain: the draft states findings, not diagnostics" \
+  quietly draft_state_is_findings_only
+
+# The guard is a dependency it cannot announce itself, so its absence must read
+# as "no draft", like every other unmet precondition.
+draft_without_guard() {
+  # Not named draft-<something>: draft_target owns that prefix, and a tree
+  # sharing a name with a target had the target's `rm -rf` delete it.
+  local tree="$harness_scratch/skills-without-guard"
+  local target status=0
+  rm -rf "$tree"
+  cp -R skills "$tree"
+  rm -f "$tree/skill-audit/scripts/verdict-guard.sh"
+  target="$(draft_target no-guard)"
+  "$tree/skill-rewrite/scripts/draft-rewrite.sh" -t "$target" >/dev/null 2>&1 || status=$?
+  [ "$status" -eq 3 ] || return 1
+  [ ! -f "$target/REWRITE-DRAFT.md" ]
+}
+
+assert "draft-rewrite, verdict-guard.sh absent: exits 3 and writes no draft" \
+  draft_without_guard
+
+# It leaves no temporary audit behind, on the path that writes a draft or on the
+# path that refuses to. The refusing path is new, and a new exit path that
+# leaked a file each time would be this change's own doing.
+draft_leaves_no_temp() {
+  local target before after
+  before="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' 2>/dev/null | wc -l | tr -d '[:space:]')"
+  target="$(draft_target leak-ok)"
+  "$DRAFT" -t "$target" >/dev/null 2>&1 || return 1
+  target="$(draft_target leak-refused)"
+  PATH="$(draft_stub_path leak-refused skill-validator 127)" "$DRAFT" -t "$target" >/dev/null 2>&1 || true
+  after="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' 2>/dev/null | wc -l | tr -d '[:space:]')"
+  if [ "$before" != "$after" ]; then
+    printf 'temporary files before=%s after=%s\n' "$before" "$after" >&2
+    return 1
+  fi
+  return 0
+}
+
+assert "draft-rewrite leaves no temporary audit behind, on either path" \
+  quietly draft_leaves_no_temp
+
+# The templates it offers are decided by what the *body* holds. A skill whose
+# section headings sit at column 0 inside its YAML frontmatter has none of them
+# in its body, and used to be handed a draft with no templates at all.
+draft_reads_the_body() {
+  local target="$harness_scratch/draft-bleed"
+  rm -rf "$target"
+  mkdir -p "$target"
+  cp tests/fixtures/f01/frontmatter-bleed/SKILL.md "$target/SKILL.md"
+  "$DRAFT" -t "$target" >/dev/null 2>&1 || return 1
+  grep -q '^### When to use' "$target/REWRITE-DRAFT.md" \
+    && grep -q '^### Examples' "$target/REWRITE-DRAFT.md"
+}
+
+assert "draft-rewrite, headings only in frontmatter: offers the templates the body lacks" \
+  quietly draft_reads_the_body
+
 harness_summary
