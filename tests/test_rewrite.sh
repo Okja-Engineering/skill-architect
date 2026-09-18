@@ -861,12 +861,50 @@ fi
 # time.
 assert "the draft does not carry the target's frontmatter, so the document must not promise it" \
   test -z "$(grep -m1 -F 'name: all-sections' "$no_templates_target/REWRITE-DRAFT.md" || true)"
-assert "the drafter writes no Deterministic actions template" \
-  test -z "$(grep -E '^#{3,4} Deterministic' "$all_templates_target/REWRITE-DRAFT.md" || true)"
-assert "the drafter writes no Orchestration template" \
-  test -z "$(grep -E '^#{3,4} Orchestration' "$all_templates_target/REWRITE-DRAFT.md" || true)"
-assert "the drafter writes no Constraints template" \
-  test -z "$(grep -E '^#{3,4} Constraints' "$all_templates_target/REWRITE-DRAFT.md" || true)"
+
+# The list of what the reader is left to write themselves, against the draft
+# itself. Three named sections were asserted one by one and the document listed
+# the same three — and the answer is four: the draft's own `Proposed structure`
+# requires six sections, the drafter templates two of them, and `AI judgment`
+# fell out of the sentence that tells the reader which ones are theirs.
+#
+# So it is a comparison over the set rather than three assertions over three
+# literals, and the set is computed: a section the drafter learns to write
+# leaves the two sides unequal, whichever side is edited first. The target that
+# holds none of the probed headings is the one read, because it draws every
+# template there is.
+#
+# The percentages are dropped from the required names: `Deterministic actions
+# (60%)` is a heading the spec writes with its ratio and a sentence names
+# without it, and the ratio is not what either side is claiming here.
+required_sections_of() {
+  { grep -oE '^ +- `#{2,4} [^`]+`' "$1/REWRITE-DRAFT.md" || true; } \
+    | sed -e 's|.*`#* ||' -e 's|`$||' -e 's| ([0-9]*%)$||' | sort -u
+}
+templated_sections_of() {
+  headings_of "$1" | sed -e 's|^#* ||' | sort -u
+}
+untemplated_required_sections() {
+  comm -23 \
+    <(required_sections_of "$all_templates_target") \
+    <(templated_sections_of "$all_templates_target")
+}
+sections_the_document_leaves_to_the_reader() {
+  tr '\n' ' ' < "$SKILL" \
+    | { grep -oE 'writes no template for [^.]*' || true; } \
+    | { grep -oE '`[^`]+`' || true; } | tr -d '`' | sort -u
+}
+
+assert "the draft requires sections the drafter writes no template for, so the comparison has two sides" \
+  test -n "$(untemplated_required_sections)"
+assert "the SKILL.md names the sections the reader is left to write" \
+  test -n "$(sections_the_document_leaves_to_the_reader)"
+assert "the SKILL.md names every required section the drafter writes no template for, and none it does write" \
+  test "$(untemplated_required_sections)" = "$(sections_the_document_leaves_to_the_reader)"
+if [ "$(untemplated_required_sections)" != "$(sections_the_document_leaves_to_the_reader)" ]; then
+  echo "  untemplated: $(untemplated_required_sections | tr '\n' ' ')"
+  echo "  documented : $(sections_the_document_leaves_to_the_reader | tr '\n' ' ')"
+fi
 
 # And the checklist. Byte-identical for a target that audits clean and one that
 # fails, which is the whole of the claim that it maps each failed dimension to
