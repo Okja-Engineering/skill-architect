@@ -43,6 +43,18 @@ if [[ ! -f "$target_skill/SKILL.md" ]]; then
   exit 1
 fi
 
+# A report named with -a is the caller saying what the draft is to be built
+# from, so it is validated here with the other inputs rather than tested again
+# at the point of use. Folding the two questions into one condition there —
+# "was a report given, and is it readable" — made a typo indistinguishable from
+# no report at all: the drafter audited afresh, drafted over that instead, and
+# reported that no report had been provided.
+if [[ -n "$audit_report" && ! -f "$audit_report" ]]; then
+  echo "Audit report not found: $audit_report" >&2
+  echo "Omit -a to have the structural checks run instead." >&2
+  exit 1
+fi
+
 skill_name="$(basename "$target_skill")"
 output="$target_skill/REWRITE-DRAFT.md"
 
@@ -50,7 +62,7 @@ output="$target_skill/REWRITE-DRAFT.md"
 script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 skill_audit_root="$(dirname "$script_dir")/../skill-audit"
 
-if [[ -z "$audit_report" || ! -f "$audit_report" ]]; then
+if [[ -z "$audit_report" ]]; then
   echo "No audit report provided; running structural checks..." >&2
   audit_report="$(mktemp)"
   "$skill_audit_root/scripts/check-frontmatter.sh" "$target_skill" > "$audit_report" 2>&1 || true
