@@ -682,9 +682,34 @@ cp -R skills/skill-audit "`id`/skill-audit"' || return 1
 # A block with nothing to resolve is not a block that may run. Waving one
 # through is how "the destination is contained" becomes true of a block that has
 # no destination and does whatever it likes.
+#
+# The verdict is not enough to measure that, and this control used to ask only
+# for the verdict. A block with no destination hands the expansion an empty
+# text, and the expansion refuses an empty text on its own account — so taking
+# the refusal in `containment_verdict` out left the suite 43/0 and the control
+# printing PASS with the mechanism it is named for gone. That is the same shape
+# as the rest of this cluster: a control whose name claims one fence and whose
+# evidence is another.
+#
+# So what is required is the named cause and not only the refusal. The two
+# refusals are about different things and both are worth having: one says this
+# *block* names no destination, which is a fact about the document, and the
+# other says this *text* cannot be expanded, which is a fact about a string.
+# Pinning to the first is what makes removing it visible, and a decision that
+# fails closed while naming the wrong cause is the failure mode this suite
+# already refuses elsewhere.
 containment_refuses_a_block_that_assigns_no_destination() {
-  containment_refuses 'mkdir -p skill-audit
+  local block why
+  block='mkdir -p skill-audit
 cp -R skills/skill-audit skill-audit'
+  containment_refuses "$block" || return 1
+  why="$(containment_verdict "$(containment_probe_dir)" "$block" 2>&1 >/dev/null)" || :
+  case "$why" in
+    *"assigns no destination"*) return 0 ;;
+  esac
+  printf 'the block was refused, but not as a block that assigns no destination:\n  %s\n' \
+    "$why" >&2
+  return 1
 }
 
 # --- The resolved verdict, measured on its own --------------------------------
