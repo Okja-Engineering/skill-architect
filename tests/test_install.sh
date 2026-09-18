@@ -195,10 +195,50 @@ manifest_dir_holds_only_manifests() {
   return 0
 }
 
+# The four manifests are maintained by hand and nothing compared them, so they
+# drifted: three spelled the skills path `./skills/` and one spelled it
+# `skills`. Both worked, which is why it survived — the cost of that kind of
+# drift is not a broken install, it is a later "fix them all" that misses one.
+# Comparing them is the only thing that stops it recurring.
+manifests_agree_on_the_skills_path() {
+  local dir value first=""
+  for dir in $(plugin_manifest_dirs); do
+    value="$(manifest_skills_value "$dir/plugin.json")" || return 1
+    if [ -z "$first" ]; then
+      first="$value"
+    elif [ "$value" != "$first" ]; then
+      return 1
+    fi
+  done
+  [ -n "$first" ]
+}
+
+# `claude plugin validate --strict` fails on missing metadata, and author was
+# missing from all four. Claude Code is not installed in CI, so the requirement
+# is asserted against the manifests directly — a check that skipped itself when
+# the CLI was absent would report nothing in the one place it has to report.
+manifests_carry_author_attribution() {
+  local dir
+  for dir in $(plugin_manifest_dirs); do
+    python3 - "$dir/plugin.json" <<'PY' || return 1
+import json, sys
+a = json.load(open(sys.argv[1])).get("author")
+assert isinstance(a, dict), "author must be an object"
+assert a.get("name"), "author.name must be non-empty"
+assert a.get("url"), "author.url must be non-empty"
+PY
+  done
+  return 0
+}
+
 assert "every native route resolves its skills from the repository root" \
   skills_resolve_from_the_repository_root
 assert "no manifest directory is mistakable for the plugin root" \
   manifest_dir_holds_only_manifests
+assert "the four plugin manifests agree on how the skills path is spelled" \
+  manifests_agree_on_the_skills_path
+assert "every plugin manifest carries author attribution" \
+  quietly manifests_carry_author_attribution
 
 assert "the README documents a runnable manual-copy block" \
   documented_block_is_extractable
