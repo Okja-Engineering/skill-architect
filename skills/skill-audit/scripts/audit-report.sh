@@ -139,21 +139,16 @@ else
 fi
 
 # --- Source 2: skillscore (7-dimension quality scoring) ---
-# Read two levels in, at `.overallScore.percentage` and `.overallScore.
-# letterGrade`, so the claim reaches two levels in: proving the top level and
-# then indexing `.overallScore` would be the same defect one level down. It
-# reaches no further than the read does — a source carrying no `overallScore` at
-# all is read, and leaves the score null, because null is what the read yields.
+# The claim is the guard's quality_report_conforms, which is also what
+# check-quality.sh proves before it emits the same report. Two private copies of
+# one shape is one shape proven two ways, and the first of them to drift is the
+# one nobody is reading when it does.
 quality_json="null"
 quality_error=""
 if command -v skillscore &>/dev/null; then
   quality_status=0
   quality_raw="$(skillscore "$skill_dir" --json)" || quality_status=$?
-  if json_document_conforms "$quality_raw" '
-       if type != "object" then false
-       elif (.overallScore | type) == "null" then true
-       else (.overallScore | type) == "object"
-       end'; then
+  if quality_report_conforms "$quality_raw"; then
     quality_json="$quality_raw"
   else
     quality_error="$(source_failure skillscore "$quality_status" "$quality_raw")"

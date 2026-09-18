@@ -369,6 +369,27 @@ payload_is_conforming() {
     end'
 }
 
+# quality_report_conforms <text>
+#
+# Succeed when <text> is one skillscore report as far as this skill reads it: an
+# object whose `overallScore` is an object, or absent. The score and the letter
+# grade are read out of it two levels in, so the claim reaches two levels in —
+# proving the top level and then indexing `overallScore` would be the same defect
+# one level down. It reaches no further than the read does: a report carrying no
+# `overallScore` at all is read, and leaves the score null, because null is what
+# the read yields.
+#
+# Named here because two scripts read that report — check-quality.sh produces it
+# and audit-report.sh composes it — and a shape proven twice is a shape proven
+# two ways, which is the defect the body primitive below exists to close.
+quality_report_conforms() {
+  json_document_conforms "$1" '
+    if type != "object" then false
+    elif (.overallScore | type) == "null" then true
+    else (.overallScore | type) == "object"
+    end'
+}
+
 # skill_section <frontmatter|body> <skill-md>
 #
 # Echo one of the two halves of a SKILL.md. The shared reading skill_frontmatter
@@ -447,7 +468,7 @@ verdict_guard_ready() {
   local g
   for g in json_string cannot_compute tool_answers require_tool text_matches \
            text_extract json_document_conforms payload_is_conforming \
-           skill_section skill_frontmatter skill_body; do
+           quality_report_conforms skill_section skill_frontmatter skill_body; do
     declare -F "$g" >/dev/null 2>&1 || return 1
   done
   return 0

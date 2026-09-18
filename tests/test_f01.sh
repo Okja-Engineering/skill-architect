@@ -1180,6 +1180,105 @@ echo "  present-but-broken cases driven: $broken_cases"
 assert_value "the present-but-broken cross product was enumerated, not read as empty" \
   "$([[ "$broken_cases" -ge 30 ]] && echo true || echo false)"
 
+# --- check-quality.sh, inside the guard with its four siblings -----------------
+#
+# It was the one script in the skill that sat outside the guard, and that is why
+# nothing here reached it. It sourced nothing, so a verdict-guard.sh that was
+# missing or malformed changed nothing about how it behaved while its four
+# siblings all refused to answer. It never checked that the directory it was
+# handed held a SKILL.md, so it relayed skillscore's exit 1 for "there is no
+# skill here" — a status its own contract does not enumerate. And it passed
+# skillscore's status straight through, so skillscore exiting 9 made it exit 9,
+# and skillscore exiting 0 having printed nothing made it exit 0 having printed
+# nothing: a report generator reporting success over no report.
+#
+# It also emitted no rule literal, so the rule-ID census contributed the empty
+# set for this file and passed vacuously over it — the reason a script with no
+# guard could sit here through two releases with every suite green.
+
+QUALITY_GUARD_MODES="missing malformed empty half"
+for qmode in $QUALITY_GUARD_MODES; do
+  qdir="$(guard_broken_tree "$qmode")"
+  run_present "$qdir/check-quality.sh" tests/fixtures/f01/valid-full
+  assert_value "quality, guard $qmode: exits 3, like its four siblings" \
+    "$([[ $code -eq 3 ]] && echo true || echo false)"
+  assert_value "quality, guard $qmode: stdout carries no report" \
+    "$([[ -z "$output" ]] && echo true || echo false)"
+  assert_value "quality, guard $qmode: says on stderr that it could not load the guard" \
+    "$(echo "$errout" | grep -q 'verdict-guard.sh' && echo true || echo false)"
+done
+
+# Absence: the one case the old script did handle, kept so the rewrite cannot
+# lose it.
+run_masked skillscore "$CHECK_QUALITY" tests/fixtures/f01/valid-full
+assert_value "quality, skillscore masked: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "quality, skillscore masked: names the missing tool" \
+  "$(echo "$errout" | grep -q 'skillscore' && echo true || echo false)"
+assert_value "quality, skillscore masked: stdout carries no report" \
+  "$([[ -z "$output" ]] && echo true || echo false)"
+
+# A target with no SKILL.md is not a skill this script scored badly.
+quality_empty_dir="$mask_root/quality-no-skill"
+mkdir -p "$quality_empty_dir"
+run_present "$CHECK_QUALITY" "$quality_empty_dir"
+assert_value "quality, a directory with no SKILL.md: exits 3, not the scorer's own status" \
+  "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "quality, a directory with no SKILL.md: says what it could not find" \
+  "$(echo "$errout" | grep -q 'SKILL.md' && echo true || echo false)"
+
+# Usage.
+run_present "$CHECK_QUALITY"
+assert_value "quality, no argument: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+
+# Every way the scorer can fail to answer. Each of these used to become this
+# script's own exit status or its own empty report.
+quality_liar_cases=0
+for qcase in "9|boom|the scorer exits 9" \
+             "1||the scorer exits 1 saying nothing" \
+             "0||the scorer exits 0 saying nothing" \
+             "0|not a report at all|the scorer exits 0 with text that is not JSON" \
+             "0|7|the scorer exits 0 with a document that is not an object" \
+             "0|{\"overallScore\": 80}|the scorer exits 0 with a score that is not an object" \
+             "0|{\"overallScore\": {}}{\"overallScore\": {}}|the scorer answers with two documents"; do
+  qexit="${qcase%%|*}"; qrest="${qcase#*|}"
+  qsaid="${qrest%%|*}"; qwhy="${qrest#*|}"
+  quality_liar_cases=$((quality_liar_cases + 1))
+  qstub="$mask_root/quality-stub-$quality_liar_cases"
+  if [[ ! -d "$qstub" ]]; then
+    mkdir -p "$qstub"
+    printf '%s' "$qsaid" > "$qstub/said"
+    printf '#!/usr/bin/env bash\ncat "$(dirname "$0")/said"\nexit %s\n' "$qexit" > "$qstub/skillscore"
+    chmod +x "$qstub/skillscore"
+  fi
+  run_on_path "$qstub:$PATH" "$CHECK_QUALITY" tests/fixtures/f01/valid-full
+  assert_value "quality, $qwhy: exits 3, not the scorer's own status" \
+    "$([[ $code -eq 3 ]] && echo true || echo false)"
+  assert_value "quality, $qwhy: stdout carries no report" \
+    "$([[ -z "$output" ]] && echo true || echo false)"
+  assert_value "quality, $qwhy: names the scorer on stderr" \
+    "$(echo "$errout" | grep -q 'skillscore' && echo true || echo false)"
+done
+
+echo "  quality-source failure cases driven: $quality_liar_cases"
+assert_value "the quality-source failure cases were enumerated, not read as empty" \
+  "$([[ "$quality_liar_cases" -eq 7 ]] && echo true || echo false)"
+
+# The controls. A readable report is still relayed unchanged, and the shape the
+# guard proves is the shape audit-report.sh reads out of the same source — so a
+# report with no overallScore at all is read rather than refused.
+run_present "$CHECK_QUALITY" tests/fixtures/f01/valid-full
+assert_value "quality, a real scorer: exits 0" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "quality, a real scorer: stdout is one readable report" \
+  "$(printf '%s' "$output" | jq -se 'length == 1 and (.[0].overallScore | type) == "object"' >/dev/null 2>&1 && echo true || echo false)"
+
+qstub_ok="$mask_root/quality-stub-noscore"
+mkdir -p "$qstub_ok"
+printf '#!/usr/bin/env bash\nprintf %s\n' "'{\"skillName\": \"x\"}\\n'" > "$qstub_ok/skillscore"
+chmod +x "$qstub_ok/skillscore"
+run_on_path "$qstub_ok:$PATH" "$CHECK_QUALITY" tests/fixtures/f01/valid-full
+assert_value "quality, a report carrying no overallScore: read, not refused (exit 0)" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+
 # PL003 — the line-count rule. No fixture was ever long enough to raise it.
 big_skill="$mask_root/over-the-line-limit"
 mkdir -p "$big_skill"
