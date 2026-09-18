@@ -212,4 +212,77 @@ assert "a -a report that is there is what the draft is built from" \
 assert "a -a report that is there is not shadowed by a fresh audit" \
   test ! -s "$drafted/stderr"
 
+# --- the exit contract --------------------------------------------------------
+#
+# Every status the script can exit with, against every status its own header
+# registers. This is the shape tests/test_f01.sh uses for the rule-ID registry,
+# and for the same reason: a header that restates the code is a header free to
+# drift from it, and the four skill-audit scripts each carry an `Exit codes:`
+# line a reader reaches for before reaching for the skill's documentation.
+# draft-rewrite.sh carried none, so there was nothing for a caller to wire to
+# and nothing to hold the script to.
+#
+# Read from the source rather than from a run, because the point is the whole
+# set: a behavioural sweep can only report the statuses the sweep happened to
+# provoke.
+statuses_emitted() {
+  { grep -hoE '(^|[^[:alnum:]_])exit[[:space:]]+[0-9]+' "$DRAFTER" || true; } \
+    | grep -oE '[0-9]+' | sort -u
+}
+
+statuses_registered() {
+  { grep -m1 -E '^# Exit codes:' "$DRAFTER" || true; } \
+    | { grep -oE '[0-9]+=' || true; } | tr -d '=' | sort -u
+}
+
+assert "the drafter's header registers a status at all" \
+  test -n "$(statuses_registered)"
+assert "the drafter's header registers every status it can exit with, and no status it cannot" \
+  test "$(statuses_emitted)" = "$(statuses_registered)"
+if [ "$(statuses_emitted)" != "$(statuses_registered)" ]; then
+  echo "  emitted   : $(statuses_emitted | tr '\n' ' ')"
+  echo "  registered: $(statuses_registered | tr '\n' ' ')"
+fi
+
+# And the statuses a caller actually meets, so the registry above is a registry
+# of something the script does rather than of something it says.
+draft_run -h
+assert "--help exits 0" test "$code" -eq 0
+draft_run
+assert "no target exits 1" test "$code" -eq 1
+draft_run --nonsense
+assert "an unknown option exits 1" test "$code" -eq 1
+draft_run -t "$work/no-such-directory"
+assert "a target directory that is not there exits 1" test "$code" -eq 1
+
+# A flag whose value is missing is a usage error like any other. Reading `$2`
+# when there is no `$2` makes it an unbound-variable abort instead: the caller
+# gets a line of bash internals naming a position in the parser rather than the
+# option they mistyped.
+for flag in -t --target -a --audit; do
+  draft_run "$flag"
+  assert "$flag with no value exits 1 rather than aborting on an unbound variable" \
+    test "$code" -eq 1
+  assert "$flag with no value names the option rather than a shell positional" \
+    test -z "$(grep -F 'unbound variable' "$drafted/stderr" || true)"
+  assert "$flag with no value says which option is missing a value" \
+    grep -qF -- "$flag" "$drafted/stderr"
+done
+
+# --- where the drafter finds skill-audit --------------------------------------
+#
+# The drafter borrows skill-audit's check scripts, and it resolves them from its
+# own location so that the caller's working directory is not part of the answer.
+# Asserted from a directory that is not the repository, by absolute path,
+# because a resolution that silently collapses to the cwd passes every test run
+# from the repository root.
+elsewhere_target="$(target_from tests/fixtures/f01/valid-full elsewhere)"
+drafts_from_any_cwd() {
+  ( cd / && quietly "$harness_repo_root/$DRAFTER" -t "$elsewhere_target" )
+}
+assert "the drafter resolves skill-audit from its own location, not from the caller's cwd" \
+  drafts_from_any_cwd
+assert "a draft run from an unrelated cwd carries the audit, not a diagnostic about it" \
+  grep -q 'frontmatter OK' "$elsewhere_target/REWRITE-DRAFT.md"
+
 harness_summary
