@@ -65,12 +65,32 @@ target_skill="<target-skill-dir>"
 "$skill_root/scripts/draft-rewrite.sh" -t "$target_skill" -a "<audit-report-path>"
 ```
 
-This creates a `REWRITE-DRAFT.md` next to the target skill's `SKILL.md` with:
+This writes a `REWRITE-DRAFT.md` next to the target skill's `SKILL.md`, and names it on stdout. The draft is a skeleton to work from, not a rewritten skill: the drafter reads the target's `SKILL.md` only to ask which of three headings it already has, and never writes to it.
 
-- Preserved frontmatter (with corrected `name` if mismatched).
-- A proposed structure following the Agent Skills spec and ICM principles.
-- Templates for missing sections: `When to use`, `Deterministic actions`, `Orchestration`, `Examples`, `Constraints`.
-- A checklist mapping each failed/weak audit dimension to a concrete fix.
+#### The sections the drafter writes
+
+```text
+## Current state
+## Proposed structure
+## Missing section templates
+### When to use
+### Examples
+#### Example 1: <scenario>
+### Validation checklist
+## Action items
+## Notes
+```
+
+Above them, a `# Rewrite draft: <target>` title. What each holds:
+
+- `Current state` — the Stage 1 check output, verbatim, or the contents of the report given with `-a`.
+- `Proposed structure` — the spec and ICM section list. Fixed text, the same for every target.
+- `Missing section templates` — a blank template for each of `When to use`, `Examples` and `Validation checklist` that the target has no heading for. A target that already has all three gets the heading and nothing under it.
+- `Action items` and `Notes` — fixed text, the same for every target.
+
+**What the drafter does not do**, and what Stage 3 is therefore for. It does not copy or correct the target's frontmatter. It writes no template for `Deterministic actions`, `Orchestration` or `Constraints`. `Action items` is a five-item review checklist, not a mapping of the audit's findings: it is the same text for a skill that audits clean and one that fails, and the drafter never reads the evaluation matrix. Scoring the dimensions and turning them into fixes is Stage 1 and Stage 3 work, done by the reader.
+
+`tests/test_rewrite.sh` compares the list above against the headings a run actually writes, so neither side can change without the other.
 
 ### Stage 3: Produce rewrite plan
 
