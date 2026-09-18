@@ -1193,6 +1193,51 @@ ADVERSE_SCRIPTS="$SCRIPTS_DIR/check-structure.sh $SCRIPTS_DIR/check-paths.sh
 $SCRIPTS_DIR/check-frontmatter.sh $SCRIPTS_DIR/check-quality.sh
 $SCRIPTS_DIR/audit-report.sh skills/skill-rewrite/scripts/draft-rewrite.sh"
 
+# --- What a script can be made to exit with, against what it says ---------------
+#
+# The exit-table derivation below this compares each script's header against
+# SKILL.md. That is one half of the question, and it is the half that needs a
+# doc: it loops the audit scripts only, because skill-audit's SKILL.md is the
+# only doc with a table. So `draft-rewrite.sh` states an exit contract that
+# nothing anywhere compares against — which is why F1 and F6 went unseen. Both
+# are statuses outside its stated set, and no case could have failed.
+#
+# The other half needs no doc at all: a script's own `# Exit codes:` header
+# against the statuses it can actually be made to emit. That is what closes the
+# class rather than the two instances, it covers both skills, and it is asserted
+# here over every adverse condition this suite drives.
+#
+# exit_line_of <script>     — the script's own statement of its exit contract.
+# stated_exit_codes <script> — the numbers in it.
+exit_line_of() {
+  sed -n 's/^# Exit codes:[[:space:]]*//p' "$1" | head -1
+}
+
+stated_exit_codes() {
+  exit_line_of "$1" | grep -oE '(^|[^0-9])[0-9]+=' | grep -oE '[0-9]+' | sort -u
+}
+
+# states_exit <script> <code> — true when <code> is in that script's set.
+states_exit() {
+  local wanted="$2"
+  local c
+  for c in $(stated_exit_codes "$1"); do
+    [[ "$c" == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
+# The helper is read against a script whose contract is known, so a parse that
+# silently produced the empty set would not pass as "every status conformed".
+assert_value "the exit contract of audit-report.sh parses to the set its header states" \
+  "$([[ "$(stated_exit_codes "$SCRIPTS_DIR/audit-report.sh" | tr '\n' ' ')" == "0 3 " ]] && echo true || echo false)"
+assert_value "the exit contract of draft-rewrite.sh parses to the set its header states" \
+  "$([[ "$(stated_exit_codes skills/skill-rewrite/scripts/draft-rewrite.sh | tr '\n' ' ')" == "0 1 3 " ]] && echo true || echo false)"
+assert_value "a status outside a stated set is refused, so the check can fail" \
+  "$(states_exit "$SCRIPTS_DIR/audit-report.sh" 2 && echo false || echo true)"
+assert_value "a status inside a stated set is accepted, so the check is not refusing everything" \
+  "$(states_exit "$SCRIPTS_DIR/audit-report.sh" 3 && echo true || echo false)"
+
 # adverse_args_of <basename> — the invocation that reaches a verdict, with
 # `@target` standing for the skill directory. A runnable script with no entry
 # fails the coverage assertion below instead of being quietly skipped.
@@ -1261,6 +1306,8 @@ $btool
       run_on_path "$(broken_tool_path "$btool" "$bmode")" "$bscript" ${bargs//@target/$btarget}
       assert_value "$bname, $btool present but $bmode: exits 3, not a status meaning a verdict" \
         "$([[ $code -eq 3 ]] && echo true || echo false)"
+      assert_value "$bname, $btool present but $bmode: exits inside the set its own header states" \
+        "$(states_exit "$bscript" "$code" && echo true || echo false)"
       assert_value "$bname, $btool present but $bmode: never reports passed true" \
         "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
       assert_value "$bname, $btool present but $bmode: the diagnostic names $btool, not another component" \
@@ -1498,6 +1545,124 @@ assert_value "drafter, a writable TMPDIR: wrote the draft" \
 assert_value "drafter, a writable TMPDIR: left no temporary audit behind in it" \
   "$([[ -z "$(ls -A "$mktemp_ok_tmp")" ]] && echo true || echo false)"
 
+# --- The externals no require_tool covers -------------------------------------
+#
+# The same root as F1 and F2, in the three places the guard structurally cannot
+# reach. An external invoked outside require_tool's coverage leaks its own
+# status as the script's exit status under errexit, with no diagnostic and no
+# verdict — because it runs before the precondition is stated, or because it was
+# reasoned off the list on a premise that covers only its exit-0 failures.
+#
+# `date` was reasoned off: the comment says a clock that failed leaves a visibly
+# empty timestamp beside findings that are all still true. That is correct for
+# the exit-0 rows and says nothing about a nonzero exit, which is the row that
+# exists. `dirname` and `cat` cannot be routed through the guard at all —
+# `dirname` runs before the guard is loaded and `cat` before the arguments are
+# parsed — so each needs the explicit refusal the guard load-check three lines
+# below the first one already uses.
+
+# One directory, one file, prepended to the real PATH. Nothing is mirrored,
+# replaced or uninstalled.
+unguarded_stub_path() {
+  local tool="$1"
+  local status="$2"
+  local dir="$mask_root/unguarded-$tool-$status"
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir"
+    printf '#!/usr/bin/env bash\nexit %s\n' "$status" > "$dir/$tool"
+    chmod +x "$dir/$tool"
+  fi
+  echo "$dir:$PATH"
+}
+
+# F4 — `date` in audit-report.sh. Its status was unread, so a nonzero clock
+# became this script's own exit: 2, which is outside the {0, 3} its header
+# states, with zero bytes of report and not one word on stderr.
+date_cases=0
+for dstatus in 1 2 127; do
+  date_cases=$((date_cases + 1))
+  run_on_path "$(unguarded_stub_path date "$dstatus")" \
+    "$SCRIPTS_DIR/audit-report.sh" tests/fixtures/f01/valid-full
+  assert_value "audit-report, date exits $dstatus: exits inside the set its own header states" \
+    "$(states_exit "$SCRIPTS_DIR/audit-report.sh" "$code" && echo true || echo false)"
+  assert_value "audit-report, date exits $dstatus: says which tool could not answer" \
+    "$(echo "$errout" | grep -q 'date' && echo true || echo false)"
+  assert_value "audit-report, date exits $dstatus: does not exit 0 without a report" \
+    "$([[ $code -eq 0 && -z "$output" ]] && echo false || echo true)"
+done
+echo "  unguarded date cases driven: $date_cases"
+assert_value "the unguarded date cases were enumerated, not read as empty" \
+  "$([[ "$date_cases" -eq 3 ]] && echo true || echo false)"
+
+# The control: the real clock, and the report carries a timestamp.
+run_on_path "$(working_tool_path date)" "$SCRIPTS_DIR/audit-report.sh" tests/fixtures/f01/valid-full
+assert_value "audit-report, the real date: reaches its report (exit 0)" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "audit-report, the real date: the report carries the timestamp it read" \
+  "$(echo "$output" | jq -e '.timestamp | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T")' >/dev/null 2>&1 && echo true || echo false)"
+
+# F5 — `dirname` in the `script_dir=` block of all six scripts. It runs before
+# the guard is loaded, so a broken one left every script exiting 1 with bash's
+# own `cd:` message and nothing else. For check-paths.sh that 1 is "path
+# failure" and for check-frontmatter.sh "spec failure" — a fabricated verdict;
+# for audit-report.sh and check-quality.sh it is outside the stated set
+# entirely, and check-quality.sh's block is new in this diff.
+dirname_cases=0
+for dscript in $ADVERSE_SCRIPTS; do
+  dname="$(basename "$dscript")"
+  dargs="$(adverse_args_of "$dname")"
+  dtarget="$(adverse_target)"
+  dirname_cases=$((dirname_cases + 1))
+  run_on_path "$(unguarded_stub_path dirname 1)" "$dscript" ${dargs//@target/$dtarget}
+  assert_value "$dname, dirname exits 1: exits inside the set its own header states" \
+    "$(states_exit "$dscript" "$code" && echo true || echo false)"
+  assert_value "$dname, dirname exits 1: says it could not resolve its own directory" \
+    "$(echo "$errout" | grep -q 'ERROR:' && echo true || echo false)"
+  assert_value "$dname, dirname exits 1: reports no verdict on stdout" \
+    "$(echo "$output" | grep -qE '"passed":[[:space:]]*true|frontmatter OK|Rewrite draft written' && echo false || echo true)"
+done
+echo "  unguarded dirname cases driven: $dirname_cases"
+assert_value "the unguarded dirname cases were enumerated, not read as empty" \
+  "$([[ "$dirname_cases" -eq 6 ]] && echo true || echo false)"
+
+# F6 — `usage()` in draft-rewrite.sh is a heredoc, and it runs on the
+# argument-parsing paths, before `require_tool cat`. A broken `cat` made `-h`
+# exit 2 and the no-argument and unknown-option paths exit 2 as well, where the
+# contract says 0 and 1. Nothing was printed on either channel.
+usage_cases=0
+for ucase in "0|-h|an explicitly requested help" \
+             "1||no argument at all" \
+             "1|--no-such-option|an unknown option"; do
+  uwant="${ucase%%|*}"; urest="${ucase#*|}"
+  uarg="${urest%%|*}"; uwhy="${urest#*|}"
+  usage_cases=$((usage_cases + 1))
+  if [[ -n "$uarg" ]]; then
+    run_on_path "$(unguarded_stub_path cat 2)" "$DRAFT_ABS" "$uarg"
+  else
+    run_on_path "$(unguarded_stub_path cat 2)" "$DRAFT_ABS"
+  fi
+  assert_value "drafter with a broken cat, $uwhy: exits $uwant, the status its contract states" \
+    "$([[ $code -eq "$uwant" ]] && echo true || echo false)"
+  assert_value "drafter with a broken cat, $uwhy: still prints the usage it was asked for" \
+    "$([[ -n "$output$errout" ]] && echo true || echo false)"
+done
+echo "  usage-path cases driven: $usage_cases"
+assert_value "the usage-path cases were enumerated, not read as empty" \
+  "$([[ "$usage_cases" -eq 3 ]] && echo true || echo false)"
+
+# The control: the same three paths on a healthy toolchain behave the same way,
+# so the cases above pin the usage paths rather than the broken cat.
+for ucase in "0|-h" "1|" "1|--no-such-option"; do
+  uwant="${ucase%%|*}"; uarg="${ucase#*|}"
+  if [[ -n "$uarg" ]]; then
+    run_present "$DRAFT_ABS" "$uarg"
+  else
+    run_present "$DRAFT_ABS"
+  fi
+  assert_value "drafter with a real cat, '${uarg:-no argument}': exits $uwant as well" \
+    "$([[ $code -eq "$uwant" ]] && echo true || echo false)"
+done
+
 # --- check-quality.sh, inside the guard with its four siblings -----------------
 #
 # It was the one script in the skill that sat outside the guard, and that is why
@@ -1629,10 +1794,10 @@ assert_value "structure --json, SKILL.md over the line limit: the message names 
 # the two are compared here — the same shape as the rule-ID census, for the same
 # reason. Both directions: every script has a row, and every row names a script.
 
-# exit_line_of <script> — the script's own statement of its exit contract.
-exit_line_of() {
-  sed -n 's/^# Exit codes:[[:space:]]*//p' "$1" | head -1
-}
+# exit_line_of and stated_exit_codes are defined above, beside the adverse
+# sweep that compares observed statuses against them. One definition serves both
+# halves of the derivation: what the doc says a script exits with, and what the
+# script can be made to exit with.
 
 # doc_exit_row_of <basename> — what SKILL.md says that script exits with.
 doc_exit_row_of() {
