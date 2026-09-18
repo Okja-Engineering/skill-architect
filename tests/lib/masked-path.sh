@@ -29,7 +29,16 @@ masked_path() {
     # A PATH entry may be relative, and the farm is not the cwd it is relative
     # to. Resolving it here is what keeps the links below pointing at the binary
     # they name.
-    abs_d="$(cd "$d" && pwd -P)" || continue
+    #
+    # `CDPATH=` and `--` are what make the resolution the caller's environment's
+    # to decide and not CDPATH's. With CDPATH exported, `cd bin` searches it
+    # first, lands in some other `bin`, and *echoes the directory it chose* —
+    # which puts a second line into this value, so every `ln` below names a path
+    # that does not exist, the farm comes up empty, and the run the caller built
+    # it for dies at exit 127 having tested nothing. That vacuous 127 is the
+    # outcome this file exists to prevent; CDPATH is another door into it. `--`
+    # keeps an entry beginning with a dash from being read as an option.
+    abs_d="$(CDPATH= cd -P -- "$d" && pwd -P)" || continue
     for f in "$d"/*; do
       b="${f##*/}"
       [[ "$b" == "$hide" ]] && continue

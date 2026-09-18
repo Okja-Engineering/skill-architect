@@ -1,67 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/harness.sh"
+harness_init
 
-cd "$(dirname "$0")/.."
-
-pass=0
-fail=0
-summary_printed=false
-tmp_skill=""
-
-# Every check in this suite runs through `assert`, which takes a *command* and
-# runs it. An earlier shape took a value, so a caller wrote the real check as a
-# bare `[[ ]]` on the preceding line and passed the literal `true` — and bash
-# 3.2 does not apply `errexit` to `[[ ]]`, so on the bash this project supports
-# a failing check printed PASS. Taking a command removes that shape: there is no
-# value to hand in, and a check that fails is counted and reported.
-assert() {
-  local label="$1"
-  shift
-  if "$@"; then
-    echo "PASS: $label"
-    pass=$((pass + 1))
-  else
-    echo "FAIL: $label"
-    fail=$((fail + 1))
-  fi
-}
-
-# Run a command silently while it succeeds, and surface everything it said when
-# it fails. A passing check should add no noise; a failing one must say why.
-quietly() {
-  local output
-  local status=0
-  output="$("$@" 2>&1)" || status=$?
-  if [[ $status -ne 0 ]]; then
-    printf '%s\n' "$output" >&2
-  fi
-  return $status
-}
-
-# A suite that dies before its summary has reported nothing, whatever its exit
-# status says. Both failure modes were real here: bash 3.2 ran past a failed
-# check and bash 5 aborted on it, and neither printed a verdict. This makes an
-# abort loud and never silently successful.
-cleanup() {
-  local code=$?
-  if [[ -n "$tmp_skill" ]]; then
-    rm -rf "$tmp_skill"
-  fi
-  if [[ "$summary_printed" != true ]]; then
-    echo
-    echo "FAIL: suite aborted before reaching its summary (exit $code)"
-    if [[ $code -eq 0 ]]; then
-      code=1
-    fi
-  fi
-  exit "$code"
-}
-trap cleanup EXIT
-
-# The scratch directory belongs to the shell that installed the trap. A helper
-# that made its own could be running inside a command substitution, where the
-# assignment never escapes and the trap has nothing to clean up.
-tmp_skill="$(mktemp -d)"
+# The scratch directory belongs to the shell that installed the trap, which is
+# the harness. A helper that made its own could be running inside a command
+# substitution, where the assignment never escapes and the trap has nothing to
+# clean up.
+tmp_skill="$harness_scratch/skill"
+mkdir -p "$tmp_skill"
 
 manifest_is_valid() {
   python3 - "$1" <<'PY'
@@ -175,9 +122,4 @@ assert "skill-rewrite draft-rewrite.sh is executable" \
 assert "skill-rewrite draft-rewrite.sh produces REWRITE-DRAFT.md" \
   quietly draft_rewrite_produces_draft
 
-echo
-echo "$pass passed, $fail failed"
-summary_printed=true
-if [[ "$fail" -gt 0 ]]; then
-  exit 1
-fi
+harness_summary
