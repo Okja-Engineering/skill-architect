@@ -171,4 +171,45 @@ assert "the block runner reports a block naming a script that is not there" \
 assert "the block runner fails such a block rather than passing an empty render" \
   block_runner_refuses_absent_script
 
+# --- the report the caller named ----------------------------------------------
+#
+# `-a <path>` is the caller stating what the draft is to be built from. A path
+# that is not there is a typo, and the two answers available to the drafter are
+# to use the report it was given and to say it could not. Quietly auditing
+# afresh instead is neither: it substitutes a different basis for the one the
+# caller named, writes a draft over it, and then says "No audit report
+# provided" — which is not what happened, and leaves the caller reading a draft
+# built from something they did not ask for.
+drafted="$work/run"
+mkdir -p "$drafted"
+draft_run() {
+  code=0
+  output="$("$DRAFTER" "$@" 2>"$drafted/stderr")" || code=$?
+  errout="$(cat "$drafted/stderr")"
+}
+
+absent_report_target="$(target_from tests/fixtures/f01/valid-full absent-report)"
+draft_run -t "$absent_report_target" -a "$work/no-such-report.md"
+assert "a -a report that is not there is refused rather than replaced" \
+  test "$code" -ne 0
+assert "a -a report that is not there is named in the diagnostic" \
+  grep -q "no-such-report.md" "$drafted/stderr"
+assert "a -a report that is not there leaves no draft behind" \
+  test ! -f "$absent_report_target/REWRITE-DRAFT.md"
+assert "a refused -a report does not claim that no report was provided" \
+  test -z "$(grep -F 'No audit report provided' "$drafted/stderr" || true)"
+
+# The control: the same call with a report that is there must succeed and must
+# build the draft from that report, or every assertion above would pass on a
+# drafter that refuses every `-a`.
+present_report_target="$(target_from tests/fixtures/f01/valid-full present-report)"
+present_report="$work/present-audit.md"
+printf 'POLICY FAIL [PL999]: a finding only this report carries\n' > "$present_report"
+draft_run -t "$present_report_target" -a "$present_report"
+assert "a -a report that is there is accepted" test "$code" -eq 0
+assert "a -a report that is there is what the draft is built from" \
+  grep -q "PL999" "$present_report_target/REWRITE-DRAFT.md"
+assert "a -a report that is there is not shadowed by a fresh audit" \
+  test ! -s "$drafted/stderr"
+
 harness_summary
