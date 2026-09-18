@@ -10,13 +10,25 @@
 #
 # Source this from a check script, checking the load on both sides:
 #
-#   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+#   script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 #   verdict_guard="$script_dir/verdict-guard.sh"
 #   bash -n "$verdict_guard" 2>/dev/null \
 #     || { echo "ERROR: cannot load $verdict_guard: ..." >&2; exit 3; }
 #   source "$verdict_guard"
 #   { declare -F verdict_guard_ready >/dev/null && verdict_guard_ready; } \
 #     || { echo "ERROR: $verdict_guard did not load its guards: ..." >&2; exit 3; }
+#
+# `CDPATH=` and `--` in that first line are load-bearing. A script invoked as
+# `skills/skill-audit/scripts/check-paths.sh` has a relative dirname, and `cd`
+# consults CDPATH for anything that does not begin with `/`, `./` or `../`: with
+# CDPATH exported, the caller's own environment decides which
+# `skills/skill-audit/scripts` this script thinks it lives in, and `cd` echoes
+# the one it picked, which puts a second line in the value. The guard below is
+# then looked for somewhere else, the load check refuses it, and every call exits
+# 3 having computed nothing. It fails safe, which is why it went unnoticed: the
+# whole suite reported 58 labelled failures rather than a wrong verdict. But an
+# absolute path is not the caller's to redirect, so it is spelled that way here
+# and in every script that copies this block.
 #
 # What the caller confirms afterwards is verdict_guard_ready, not a list of the
 # guards it happens to use. "The guard loaded" is not one proposition: a file
