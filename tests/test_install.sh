@@ -216,30 +216,180 @@ installed_skill_dirs() {
   find "$1" -name SKILL.md | sed 's|/SKILL\.md$||' | sort
 }
 
-installed_skill_names() {
-  installed_skill_dirs "$1" | sed 's|^.*/||' | sort
+# The destination root, read back from where the block actually installed. Named
+# from the repository's own skill list, so it is discovered and not spelled.
+installed_destination_root() {
+  local home="$1" first
+  first="$(repository_skill_names | head -1)"
+  [ -n "$first" ] || return 1
+  find "$home" -type d -name "$first" | head -1 | sed "s|/$first\$||"
 }
 
-# What is installed is what is in the repository: the same set of skills, one
-# manifest each however many times the command has run, and byte-identical
-# contents. `diff -r` catches the nested copy, a file the update failed to
-# refresh, and a file deleted upstream that the update left behind — three
-# symptoms of the one root, which is a command that merges into the destination
-# instead of replacing it. The manifest count is the part that catches nesting:
-# a nested copy adds a SKILL.md without adding a name.
-installed_tree_is_the_repository_tree() {
-  local home="$1" dir count expected
-  count="$(installed_skill_dirs "$home" | wc -l | tr -d '[:space:]')"
-  expected="$(repository_skill_names | wc -l | tr -d '[:space:]')"
-  [ "$count" = "$expected" ] || return 1
-  [ "$(installed_skill_names "$home")" = "$(repository_skill_names | sort)" ] || return 1
-  while read -r dir; do
-    [ -n "$dir" ] || continue
-    diff -r "$harness_repo_root/skills/${dir##*/}" "$dir" >/dev/null || return 1
-  done <<INSTALLED
-$(installed_skill_dirs "$home")
-INSTALLED
+# What is installed is what is in the repository: every shipped skill present,
+# one manifest each however many times the command has run, and byte-identical
+# contents. `diff -r` catches a file the update failed to refresh and a file
+# deleted upstream that the update left behind; the manifest count catches the
+# nested copy, which adds a SKILL.md inside a skill that is otherwise right.
+every_repository_skill_is_installed_intact() {
+  local dest="$1" name
+  [ -n "$dest" ] || return 1
+  while read -r name; do
+    [ -n "$name" ] || continue
+    [ -d "$dest/$name" ] || return 1
+    [ "$(find "$dest/$name" -name SKILL.md | wc -l | tr -d '[:space:]')" = 1 ] || return 1
+    diff -r "$harness_repo_root/skills/$name" "$dest/$name" >/dev/null || return 1
+  done <<SKILL_NAMES
+$(repository_skill_names)
+SKILL_NAMES
   return 0
+}
+
+installed_tree_is_the_repository_tree() {
+  local home="$1" dest
+  dest="$(installed_destination_root "$home")" || return 1
+  every_repository_skill_is_installed_intact "$dest" || return 1
+  # And nothing else anywhere under the home: a nested copy, a staging directory
+  # an interrupted run left behind, and a second install somewhere else all show
+  # up as a manifest the repository does not account for.
+  [ "$(find "$home" -name SKILL.md | wc -l | tr -d '[:space:]')" \
+    = "$(repository_skill_names | wc -l | tr -d '[:space:]')" ] || return 1
+  return 0
+}
+
+# --- Never worse than it started ----------------------------------------------
+#
+# The second invariant, and the one the chosen command broke. Converging is not
+# enough: no failure of any step may leave the destination worse than it was,
+# because the documented command is the *update* path and it is run over a
+# working install.
+
+# The failure a reader actually hits: the block run from a directory that is not
+# a checkout, so its source is not there. `rm -rf dst && cp -R src dst` guards
+# the copy against a failed remove and leaves the install *empty* when the copy
+# is what fails.
+documented_update_survives_a_failing_step() {
+  local dir dest before after
+  dir="$(staged_run_dir failing-step)" || return 1
+  stage_the_repository_skills "$dir" || return 1
+  run_documented_block "$dir" || return 1
+  installed_tree_is_the_repository_tree "$dir/home" || return 1
+
+  dest="$(installed_destination_root "$dir/home")" || return 1
+  [ -n "$dest" ] || return 1
+  before="$(cd "$dest" && find . | sort)" || return 1
+
+  # The same block, from a directory with no skills tree in it. Its exit status
+  # is not what is asserted — the destination is.
+  rm -rf "$dir/cwd/skills"
+  run_documented_block "$dir" >/dev/null 2>&1 || true
+
+  after="$(cd "$dest" && find . | sort)" || return 1
+  [ "$before" = "$after" ] || return 1
+  every_repository_skill_is_installed_intact "$dest" || return 1
+  return 0
+}
+
+# A run that fails part-way must also leave the *next* run able to converge. A
+# staged form that does not clear its own staging directory passes the check
+# above and then nests the next update inside what it left behind — which is the
+# nesting defect this cluster exists to fix, arriving by another route.
+#
+# The interruption is a read-only installed skill directory rather than a signal
+# or a stubbed tool: it stops whichever step replaces the install, on every
+# command form, with no timing to get right and nothing installed or faked.
+#
+# What is asserted after the interruption is recovery, not survival, and the
+# distinction is deliberate. A `rm -rf` on a directory it cannot finish removing
+# deletes what it can reach and leaves the rest, so *no* remove-then-replace
+# form — and that is every dependency-free form — keeps an install intact
+# through this one. Measured: the installed skill loses the contents of every
+# writable subdirectory. Demanding survival here would be demanding a
+# rename-swap with an `.old` directory and six steps in a README block, to
+# protect against a permissions state the reader would have had to create.
+# Recovery is the property that is both reachable and the one that matters: the
+# documented command, run again, converges.
+an_interrupted_update_leaves_the_next_one_able_to_converge() {
+  local dir dest first
+  dir="$(staged_run_dir interrupted)" || return 1
+  stage_the_repository_skills "$dir" || return 1
+  run_documented_block "$dir" || return 1
+  dest="$(installed_destination_root "$dir/home")" || return 1
+  first="$(repository_skill_names | head -1)"
+  [ -n "$first" ] || return 1
+
+  chmod 500 "$dest/$first" || return 1
+  run_documented_block "$dir" >/dev/null 2>&1 || true
+  chmod -R 700 "$dest/$first" || return 1
+
+  # The documented command, run again, converges on the repository instead of
+  # merging into whatever the interrupted run left behind.
+  run_documented_block "$dir" || return 1
+  installed_tree_is_the_repository_tree "$dir/home" || return 1
+  return 0
+}
+
+# The README claims it in prose — "nothing else under the skills directory is
+# touched" — and the reader whose other skills live there is the one who pays if
+# it is wrong. This is also what catches the adaptation hazard: a destination
+# substituted one level too high turns the update into `rm -rf` on the directory
+# holding every skill the reader has.
+documented_update_leaves_the_other_skills_alone() {
+  local dir dest
+  dir="$(staged_run_dir siblings)" || return 1
+  stage_the_repository_skills "$dir" || return 1
+  run_documented_block "$dir" || return 1
+  dest="$(installed_destination_root "$dir/home")" || return 1
+  [ -n "$dest" ] || return 1
+
+  mkdir -p "$dest/someone-elses-skill" || return 1
+  echo "not ours" > "$dest/someone-elses-skill/SKILL.md"
+  run_documented_block "$dir" || return 1
+  run_documented_block "$dir" || return 1
+
+  [ "$(cat "$dest/someone-elses-skill/SKILL.md" 2>/dev/null)" = "not ours" ] || return 1
+  every_repository_skill_is_installed_intact "$dest" || return 1
+  return 0
+}
+
+# --- One destination, spelled once, in the words the README's own list uses ----
+#
+# The other half of the same blocker. The command embedded the skills directory
+# *and* the skill name at every destructive step, while the list of paths a
+# reader takes the destination from gives skills directories. A reader adapting
+# one into the other produces `rm -rf` on the directory holding all their
+# skills. Neither the form of the command nor a warning fixes that: the two
+# places have to agree, and there has to be exactly one of them.
+
+# The one thing the block asks the reader to change: its first assignment. Read
+# as "the first assignment" rather than by variable name, so the block stays
+# free to call it something else.
+documented_destination() {
+  documented_manual_copy_block \
+    | sed -n 's/^[A-Za-z_][A-Za-z0-9_]*=\([^ 	#]*\).*$/\1/p' \
+    | head -1
+}
+
+# The same path as the README's own list of where each agent reads skills from
+# gives it. Claude Code is the row the command is written against.
+readme_listed_destination() {
+  sed -n 's/^- \*\*Claude Code\*\* — `\([^`]*\)`.*$/\1/p' README.md | head -1
+}
+
+the_list_and_the_block_agree_on_the_destination() {
+  local from_block from_list
+  from_block="$(documented_destination)"
+  from_list="$(readme_listed_destination)"
+  [ -n "$from_block" ] || return 1
+  [ -n "$from_list" ] || return 1
+  [ "${from_block%/}" = "${from_list%/}" ]
+}
+
+the_destination_has_exactly_one_substitution_point() {
+  local dest count
+  dest="$(documented_destination)"
+  [ -n "$dest" ] || return 1
+  count="$(documented_manual_copy_block | grep -oF "$dest" | wc -l | tr -d '[:space:]')"
+  [ "$count" = 1 ]
 }
 
 documented_install_is_an_update_that_converges() {
@@ -424,5 +574,15 @@ assert "every plugin manifest carries author attribution" \
 
 assert "the documented manual copy installs every shipped skill and converges on re-run" \
   documented_install_is_an_update_that_converges
+assert "a failing step leaves the previous install exactly as it was" \
+  documented_update_survives_a_failing_step
+assert "an interrupted update leaves the next one able to converge" \
+  an_interrupted_update_leaves_the_next_one_able_to_converge
+assert "the documented update leaves the reader's other skills alone" \
+  documented_update_leaves_the_other_skills_alone
+assert "the destination is spelled in exactly one place in the block" \
+  the_destination_has_exactly_one_substitution_point
+assert "the block's destination is the path the README's own list gives" \
+  the_list_and_the_block_agree_on_the_destination
 
 harness_summary
