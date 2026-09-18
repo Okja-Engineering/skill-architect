@@ -21,8 +21,18 @@
 # misshapen rather than the one way this file happened to check for. "It parsed"
 # is not that proof: a number parses, and then indexing it raises inside the
 # merge below and there is no report at all, which is the one outcome this file
-# exists to prevent. The shape claimed differs per source, because what is read
-# out of each of them differs.
+# exists to prevent. Nor is "it is an object": the spec source's claim stopped
+# at the top level while three fields were read one level in, so an object
+# carrying none of them was read as a source that had answered, and a `passed`
+# that was the string "yes" became a verdict of true. The shape claimed differs
+# per source, because what is read out of each of them differs.
+# And every source's status is read against its payload, all three of them
+# alike. A status and a payload are one run's two statements, so a source whose
+# two statements contradict each other is a source that has told us nothing and
+# there is no half of it to pick. The policy source did this from the start; the
+# other two captured a status and never compared it, which published a spec
+# verdict from a source that exited 1 saying it had failed nothing, and a
+# quality score from a source whose nonzero status meant it produced no report.
 # Rule IDs reach the report by relay, from the policy source, with two
 # exceptions this file raises itself: PL001 for a missing license, which it
 # checks inline and adds to the findings array, and DEP002 on the one source it
@@ -117,8 +127,27 @@ source_failure() {
 }
 
 # --- Source 1: skill-validator (spec + structure + content + contamination) ---
-# Read as `.passed`, `.errors` and `.warnings` of one document, so one document
-# that is an object is the whole of what has to hold before any of it is read.
+# Read as `.passed`, `.errors` and `.warnings` of one document, so those three
+# fields are what has to hold before any of it is read — not merely that the
+# document is an object.
+#
+# The claim used to stop at `type == "object"` while the read went a level
+# further in, which is the defect this file's header warns about, one level
+# down. An object carrying none of the three passed it, and the merge then read
+# `.passed` out of it and got null: `{"foo": 1}` produced a failing verdict with
+# `spec_error: null` — the G3-04 defect arriving again through a source that
+# parsed. `{"passed": "yes"}` was worse, because jq reads a non-empty string as
+# truthy, so `summary.passed` came out true: a verdict read off a string, and
+# the final conformance check below still held, since `summary.passed` was
+# indeed a boolean.
+#
+# `.errors` is required to be a number rather than allowed to be absent because
+# the status agreement below compares it, and a comparison against null decides
+# nothing. `.warnings` is only reported, never compared, so it may be absent and
+# null is what the read yields — the claim reaches as far as the read and no
+# further, per source. check-frontmatter.sh reads the same tool and claims only
+# `.errors`, because `.errors` is the whole of what it reads; the two claims
+# differ because the reads differ, and that is the rule rather than a drift.
 #
 # Its stdout is captured on its own. Merged with stderr, the payload this script
 # asks for became unreadable the moment the source said anything at all on the
@@ -129,10 +158,36 @@ spec_error=""
 if command -v skill-validator &>/dev/null; then
   spec_status=0
   spec_raw="$(skill-validator check -o json "$skill_dir")" || spec_status=$?
-  if json_document_conforms "$spec_raw" 'type == "object"'; then
-    spec_json="$spec_raw"
-  else
+  if ! json_document_conforms "$spec_raw" '
+        if type != "object" then false
+        elif (.passed | type) != "boolean" then false
+        elif (.errors | type) != "number" then false
+        else ((.warnings | type) == "number" or (.warnings | type) == "null")
+        end'; then
     spec_error="$(source_failure skill-validator "$spec_status" "$spec_raw")"
+  else
+    # And the status against the payload. They are the source's two statements
+    # about one run, and a source contradicting itself has told us nothing —
+    # so there is no half to pick, exactly as for the policy source below.
+    # Captured all along and never read: a conforming payload at exit 1 was
+    # published as `passed: true` with the contradiction unmentioned.
+    #
+    # skill-validator's documented statuses are the set check-frontmatter.sh
+    # enumerates over the same tool: 0 clean, 1 errors, 2 warnings only, 3
+    # usage error. 0 and 2 assert no spec error, 1 asserts at least one, and 3
+    # or anything outside the set is not a verdict at all.
+    spec_errors_said="$(jq -r '.errors' <<< "$spec_raw")"
+    case $spec_status in
+      0|2)
+        [[ "$spec_errors_said" -eq 0 ]] \
+          || spec_error="skill-validator exited $spec_status but its payload reports $spec_errors_said spec errors; the two contradict each other" ;;
+      1)
+        [[ "$spec_errors_said" -gt 0 ]] \
+          || spec_error="skill-validator exited 1 but its payload reports no spec error; the two contradict each other" ;;
+      *)
+        spec_error="$(source_failure skill-validator "$spec_status" "$spec_raw")" ;;
+    esac
+    [[ -n "$spec_error" ]] || spec_json="$spec_raw"
   fi
 else
   spec_error="skill-validator not found. Install with: brew install agent-ecosystem/tap/skill-validator"
@@ -143,15 +198,26 @@ fi
 # check-quality.sh proves before it emits the same report. Two private copies of
 # one shape is one shape proven two ways, and the first of them to drift is the
 # one nobody is reading when it does.
+# Its status is read against its payload for the same reason, and the contract
+# is the one check-quality.sh states over the same tool: skillscore exits 0 when
+# it produced a report and nonzero when it did not. So a nonzero status is a
+# source with no report to read, whatever arrived on its stdout — and this was
+# the sharper of the two unread statuses, because check-quality.sh already
+# refused what this file published. A conforming report at exit 7 gave
+# `quality_score: 99` here and exit 3 there: one source, two readers, two
+# answers, which is the drift the guard's shared predicates exist to prevent,
+# arriving through the status rather than through the shape.
 quality_json="null"
 quality_error=""
 if command -v skillscore &>/dev/null; then
   quality_status=0
   quality_raw="$(skillscore "$skill_dir" --json)" || quality_status=$?
-  if quality_report_conforms "$quality_raw"; then
-    quality_json="$quality_raw"
-  else
+  if ! quality_report_conforms "$quality_raw"; then
     quality_error="$(source_failure skillscore "$quality_status" "$quality_raw")"
+  elif [[ $quality_status -ne 0 ]]; then
+    quality_error="$(source_failure skillscore "$quality_status" "$quality_raw")"
+  else
+    quality_json="$quality_raw"
   fi
 else
   quality_error="skillscore not found. Install with: npm install -g skillscore"
