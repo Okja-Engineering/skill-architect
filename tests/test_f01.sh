@@ -1133,25 +1133,20 @@ probe_calls_of() {
 #   silent     exit 0, no output           (the jq fault, verbatim)
 #   erroring   exit 2                      (the grep fault, verbatim)
 #   wrong      exit 0, a confident lie
-#   probe-only answers require_tool's probe and refuses everything after it
 #
-# The fourth mode is the one that was missing, and its absence is why a whole
-# class of defect sat under a green suite. The first three all fail the probe,
-# so `require_tool` stopped every script before a single call site ran: the
+# All three fail the probe, and that is the whole of what was wrong with them:
+# `require_tool` stopped every script before a single call site ran, so the
 # cross product proved the *precondition* twenty times over and never once
 # reached the code the precondition is a precondition for. Twenty-four calls
 # read a tool's output without reading its status, and no case here could fail.
-#
-# A tool that answers one question and not the next is not a contrived shape.
-# It is a wrapper that handles the flags it knows, a build with one codec
-# missing, a binary that works until a resource runs out — and it is inside the
-# threat model this project already states, which is "present and broken"
-# rather than "absent". So the stub answers exactly the questions the guard's
-# probe asks, by count, and exits 5 on the one after.
+# What is missing is a tool that answers and then stops, which is not a
+# contrived shape: a wrapper that handles the flags it knows, a build with one
+# codec missing, a binary that works until a resource runs out. It is inside
+# the threat model this project already states, which is "present and broken"
+# rather than "absent". answering_tool_path below is that tool.
 #
 # Nothing is mirrored, replaced or uninstalled: one directory, one real file,
-# prepended to the real PATH. The counter is reset on every call, so each case
-# starts with the tool able to answer again.
+# prepended to the real PATH.
 broken_tool_path() {
   local tool="$1"
   local mode="$2"
@@ -1162,25 +1157,68 @@ broken_tool_path() {
       silent)   printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/$tool" ;;
       erroring) printf '#!/usr/bin/env bash\nexit 2\n' > "$dir/$tool" ;;
       wrong)    printf '#!/usr/bin/env bash\nprintf %s\nexit 0\n' "'not-an-answer\\n'" > "$dir/$tool" ;;
-      probe-only)
-        # Every read here is a shell builtin. `cat` is one of the tools this
-        # stub stands in for, and a stub that shelled out to `cat` to read its
-        # own counter would call itself.
-        printf '%s\n' \
-          '#!/usr/bin/env bash' \
-          "asked=\"$dir/.asked\"" \
-          'n=0' \
-          '[[ -f "$asked" ]] && read -r n < "$asked"' \
-          'n=$((n + 1))' \
-          'printf %s "$n" > "$asked"' \
-          "if (( n <= $(probe_calls_of "$tool") )); then exec $(command -v "$tool") \"\$@\"; fi" \
-          'exit 5' > "$dir/$tool"
-        ;;
     esac
     chmod +x "$dir/$tool"
   fi
+  echo "$dir:$PATH"
+}
+
+# answering_tool_path <tool> <n> — a PATH whose <tool> answers its first <n>
+# questions and refuses every one after them.
+#
+# One of these per call a clean run makes is what turns "the first call site is
+# guarded" into "every call site is guarded". A stub that refuses everything
+# after the probe only ever reaches the *first* unguarded call, because the
+# script stops there — so it proves one site per script and tool and says
+# nothing about the ones behind it. Measured on this branch: it proved the
+# guard on check-paths.sh's body read and left the code-block read three calls
+# later unexamined, and that read named the SKILL.md over a file that was
+# perfectly readable with awk nowhere in the sentence.
+#
+# So the refusal walks the run. `n` runs from the number of questions the probe
+# asks up to one short of the number a clean run asks in total, which is a
+# derived denominator: every call a clean run makes is driven as the call that
+# fails, and adding a call site to a script adds a case here the day it lands.
+#
+# Every read in the stub is a shell builtin. `cat` is one of the tools this
+# stands in for, and a stub that shelled out to `cat` to read its own counter
+# would call itself.
+answering_tool_path() {
+  local tool="$1"
+  local answers="$2"
+  local dir="$mask_root/answers-$tool-$answers"
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir"
+    printf '%s\n' \
+      '#!/usr/bin/env bash' \
+      "asked=\"$dir/.asked\"" \
+      'n=0' \
+      '[[ -f "$asked" ]] && read -r n < "$asked"' \
+      'n=$((n + 1))' \
+      'printf %s "$n" > "$asked"' \
+      "if (( n <= $answers )); then exec $(command -v "$tool") \"\$@\"; fi" \
+      'exit 5' > "$dir/$tool"
+    chmod +x "$dir/$tool"
+  fi
+  # The counter is reset on every call, so each case starts with the tool able
+  # to answer again.
   rm -f "$dir/.asked"
   echo "$dir:$PATH"
+}
+
+# calls_in_a_clean_run <script> <args> <tool> — how many questions a run that
+# reaches its verdict puts to <tool>. The denominator of the walk above.
+calls_in_a_clean_run() {
+  local script="$1"
+  local args="$2"
+  local tool="$3"
+  local dir="$mask_root/counting-$tool"
+  local cpath ctarget asked
+  cpath="$(counting_tool_path "$tool")"
+  ctarget="$(adverse_target)"
+  PATH="$cpath" "$script" ${args//@target/$ctarget} >/dev/null 2>&1 || true
+  asked="$(wc -c < "$dir/.asked")"
+  printf '%s' "${asked//[[:space:]]/}"
 }
 
 # working_tool_path <tool> — the control. A stub that forwards to the real tool
@@ -1391,11 +1429,61 @@ adverse_target() {
 
 # The break modes, named once so the count below and the loop cannot disagree
 # about how many there are.
-BROKEN_MODES="silent erroring wrong probe-only"
+# assert_refused <script> <name> <tool> <why> <json> <target>
+#
+# What a script owes its caller when a tool it computes with will not answer,
+# whichever way it will not answer and at whichever call. One statement of it,
+# because it is one statement: the three fixed modes and the walk across every
+# call position are the same contract driven from different places, and two
+# copies of it is one copy that drifts.
+assert_refused() {
+  local rscript="$1"
+  local rname="$2"
+  local rtool="$3"
+  local rwhy="$4"
+  local rjson="$5"
+  local rtarget="$6"
+
+  assert_value "$rname, $rtool $rwhy: exits 3, not a status meaning a verdict" \
+    "$([[ $code -eq 3 ]] && echo true || echo false)"
+  assert_value "$rname, $rtool $rwhy: exits inside the set its own header states" \
+    "$(states_exit "$rscript" "$code" && echo true || echo false)"
+  assert_value "$rname, $rtool $rwhy: never reports passed true" \
+    "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+  assert_value "$rname, $rtool $rwhy: the diagnostic names $rtool, not another component" \
+    "$(echo "$errout" | grep -q -- "$rtool" && echo true || echo false)"
+  # A script that produces a document must not have produced one. The drafter
+  # is the case that matters: a tool it could not use left it writing a draft
+  # anyway, at exit 0, and the draft is what a reader then treats as the
+  # audit's findings. Driven at every call position, this is also what says the
+  # draft is not left half-written when the tool stops in the middle of it.
+  if [[ "$rname" == draft-rewrite.sh ]]; then
+    assert_value "$rname, $rtool $rwhy: no draft was written" \
+      "$([[ ! -e "$rtarget/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+  fi
+  if [[ -n "$rjson" ]]; then
+    assert_value "$rname, $rtool $rwhy: the payload carries DEP002" \
+      "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP002")' >/dev/null 2>&1 && echo true || echo false)"
+    # stdout is the payload channel, so it carries the payload and nothing
+    # else. A broken tool does not honour `-q`: a grep stub that printed a word
+    # and exited 0 put that word on this channel ahead of the payload, so the
+    # guard that caught the fault corrupted the report of it.
+    assert_value "$rname, $rtool $rwhy: stdout carries exactly the payload and nothing else" \
+      "$(printf '%s' "$output" | jq -se 'length == 1' >/dev/null 2>&1 && echo true || echo false)"
+  else
+    assert_value "$rname, $rtool $rwhy: stdout carries no verdict at all" \
+      "$([[ -z "$output" ]] && echo true || echo false)"
+  fi
+}
+
+# The three modes that fail the probe, named once so the count below and the
+# loop cannot disagree about how many there are.
+BROKEN_MODES="silent erroring wrong"
 broken_modes_n=0
 for bmode in $BROKEN_MODES; do broken_modes_n=$((broken_modes_n + 1)); done
 
 broken_cases=0
+answering_cases=0
 for bscript in $ADVERSE_SCRIPTS; do
   bname="$(basename "$bscript")"
   # A script with no invocation is reported by the coverage assertion above; it
@@ -1420,45 +1508,42 @@ $btool
       broken_cases=$((broken_cases + 1))
       btarget="$(adverse_target)"
       run_on_path "$(broken_tool_path "$btool" "$bmode")" "$bscript" ${bargs//@target/$btarget}
-      assert_value "$bname, $btool present but $bmode: exits 3, not a status meaning a verdict" \
-        "$([[ $code -eq 3 ]] && echo true || echo false)"
-      assert_value "$bname, $btool present but $bmode: exits inside the set its own header states" \
-        "$(states_exit "$bscript" "$code" && echo true || echo false)"
-      assert_value "$bname, $btool present but $bmode: never reports passed true" \
-        "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
-      assert_value "$bname, $btool present but $bmode: the diagnostic names $btool, not another component" \
-        "$(echo "$errout" | grep -q -- "$btool" && echo true || echo false)"
-      # A script that produces a document must not have produced one. The
-      # drafter is the case that matters: a tool it could not use left it
-      # writing a draft anyway, at exit 0, and the draft is what a reader then
-      # treats as the audit's findings.
-      if [[ "$bname" == draft-rewrite.sh ]]; then
-        assert_value "$bname, $btool present but $bmode: no draft was written" \
-          "$([[ ! -f "$btarget/REWRITE-DRAFT.md" ]] && echo true || echo false)"
-      fi
-      if [[ -n "$bjson" ]]; then
-        assert_value "$bname, $btool present but $bmode: the payload carries DEP002" \
-          "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP002")' >/dev/null 2>&1 && echo true || echo false)"
-        # stdout is the payload channel, so it carries the payload and nothing
-        # else. A broken tool does not honour `-q`: a grep stub that printed a
-        # word and exited 0 put that word on this channel ahead of the payload,
-        # so the guard that caught the fault corrupted the report of it.
-        assert_value "$bname, $btool present but $bmode: stdout carries exactly the payload and nothing else" \
-          "$(printf '%s' "$output" | jq -se 'length == 1' >/dev/null 2>&1 && echo true || echo false)"
-      else
-        assert_value "$bname, $btool present but $bmode: stdout carries no verdict at all" \
-          "$([[ -z "$output" ]] && echo true || echo false)"
-      fi
+      assert_refused "$bscript" "$bname" "$btool" "present but $bmode" "$bjson" "$btarget"
+    done
+    # And the walk: every question a clean run puts to this tool, driven as the
+    # question it refuses. The first of them is require_tool's probe answered
+    # and the first real call refused; the last is every call answered but the
+    # final one. A call site added to this script joins the walk the day it
+    # lands, because the bound is measured rather than written down.
+    bprobe="$(probe_calls_of "$btool")"
+    bcalls="$(calls_in_a_clean_run "$bscript" "$bargs" "$btool")"
+    assert_value "$bname asks $btool a countable number of questions, and more than the probe does" \
+      "$([[ "$bcalls" -gt "$bprobe" ]] && echo true || echo false)"
+    bn="$bprobe"
+    while [[ "$bn" -lt "$bcalls" ]]; do
+      broken_cases=$((broken_cases + 1))
+      answering_cases=$((answering_cases + 1))
+      btarget="$(adverse_target)"
+      run_on_path "$(answering_tool_path "$btool" "$bn")" "$bscript" ${bargs//@target/$btarget}
+      assert_refused "$bscript" "$bname" "$btool" "answering only its first $bn of $bcalls questions" "$bjson" "$btarget"
+      bn=$((bn + 1))
     done
     # The control, per tool: forwarded to the real thing, the verdict is reached.
     btarget="$(adverse_target)"
     run_on_path "$(working_tool_path "$btool")" "$bscript" ${bargs//@target/$btarget}
     assert_value "$bname, $btool forwarded to the real tool: reaches its verdict (exit 0)" \
       "$([[ $code -eq 0 ]] && echo true || echo false)"
+    # And the control on the walk's own bound: a stub that answers every
+    # question a clean run asks must reach the verdict too, or the cases above
+    # would be passing because the stub mechanism breaks the script.
+    btarget="$(adverse_target)"
+    run_on_path "$(answering_tool_path "$btool" "$bcalls")" "$bscript" ${bargs//@target/$btarget}
+    assert_value "$bname, $btool answering all $bcalls of its questions: reaches its verdict (exit 0)" \
+      "$([[ $code -eq 0 ]] && echo true || echo false)"
   done
 done
 
-echo "  present-but-broken cases driven: $broken_cases ($adverse_scripts_seen runnable scripts, $broken_modes_n break modes)"
+echo "  present-but-broken cases driven: $broken_cases ($adverse_scripts_seen runnable scripts, $broken_modes_n probe-failing modes, $answering_cases refusal positions)"
 echo "  probe calls per tool: $(for pt in $guard_probed_tools; do printf '%s=%s ' "$pt" "$(probe_calls_of "$pt")"; done)"
 # The probe-only stub is built around this number, so a measurement that came
 # back as zero would build a stub that refuses its own probe — every case would
@@ -1490,7 +1575,7 @@ assert_value "every probed tool is asked at least one question by require_tool, 
 # list against the scripts' in both directions, the probed tools against the
 # required ones, the doc's rows against the headers — so the floor there is
 # only refusing an empty read. Nothing else counts these cases.
-BROKEN_CASES_EXPECTED=72
+BROKEN_CASES_EXPECTED=173
 assert_value "the present-but-broken cross product ran every one of its $BROKEN_CASES_EXPECTED cases" \
   "$([[ "$broken_cases" -eq "$BROKEN_CASES_EXPECTED" ]] && echo true || echo false)"
 if [[ "$broken_cases" -ne "$BROKEN_CASES_EXPECTED" ]]; then
