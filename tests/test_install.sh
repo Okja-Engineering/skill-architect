@@ -1048,14 +1048,24 @@ suite_function_body() {
 # construct the sweep never thought of would be caught by this and not by that.
 # Neither is sufficient alone, which is why both are here.
 the_destination_expansion_uses_no_shell() {
-  local body offender found
-  found=""
+  local body
   body="$(suite_function_body expanded_destination)"
   if [ -z "$body" ]; then
     printf 'expanded_destination was not found in %s, so this control measured nothing\n' \
       "$suite_source" >&2
     return 1
   fi
+  body_reaches_no_interpreter "$body"
+}
+
+# <body text> — the check itself, taken as a function of a body so that it can
+# be measured on bodies other than the one it is pointed at. While it could
+# only read its own subject it was unfalsifiable: it printed PASS, and whether
+# it would print FAIL for a body that did reach a shell was nobody's evidence.
+body_reaches_no_interpreter() {
+  local body offender found
+  body="$1"
+  found=""
   for offender in 'eval' '$(' '`' 'suite_bash' 'bash' 'sh -c' 'env ' 'source ' 'system(' 'getline'; do
     case "$body" in
       *"$offender"*)
@@ -1066,6 +1076,95 @@ the_destination_expansion_uses_no_shell() {
     esac
   done
   [ -z "$found" ]
+}
+
+# <injected awk statement> — a body in the shape of `expanded_destination`'s,
+# carrying one statement inside the awk program.
+a_body_whose_awk_says() {
+  printf '  DESTINATION_TEXT="$2" DESTINATION_HOME="$1/home" awk %s\n' "'"
+  printf '    BEGIN {\n'
+  printf '      text = ENVIRON["DESTINATION_TEXT"]\n'
+  printf '      %s\n' "$1"
+  printf '      print text\n'
+  printf '    }\n'
+  printf "  %s </dev/null\n" "'"
+}
+
+# <injected shell line> — the same, carrying one line in the shell layer
+# outside the awk program.
+a_body_whose_shell_says() {
+  printf '  %s\n' "$1"
+  printf '  DESTINATION_TEXT="$2" DESTINATION_HOME="$1/home" awk %s\n' "'"
+  printf '    BEGIN { print ENVIRON["DESTINATION_TEXT"] }\n'
+  printf "  %s </dev/null\n" "'"
+}
+
+# The control for the check, and the reason this round exists. The check used
+# to be a substring denylist of ten interpreter spellings, and it was described
+# in this file as the one control that "does not depend on anyone having
+# thought of the construct" — which was false twice over. It is a scan for
+# spellings, so every spelling nobody wrote down is missed; and it reads one of
+# the nine functions the document's text flows through, so every placement
+# outside that one function is missed.
+#
+# These are the spellings it missed, each of which reaches an interpreter, and
+# each is required to be refused. `system ("x")` with a space before the paren
+# is executed by the BSD awk this platform ships; an output pipe reaches a
+# shell whatever the command string is spelled as, including one composed at
+# run time from the environment, which is how a live shell was shipped at 43
+# passed, 0 failed with both shell-detection controls green.
+the_interpreter_check_refuses_every_escape_it_can_see() {
+  local spelling
+  while IFS= read -r spelling; do
+    [ -n "$spelling" ] || continue
+    if body_reaches_no_interpreter "$(a_body_whose_awk_says "$spelling")" 2>/dev/null; then
+      printf 'the interpreter check accepted an awk body that reaches an interpreter:\n  %s\n' \
+        "$spelling" >&2
+      return 1
+    fi
+  done <<'AWK_ESCAPES'
+system("touch " text)
+system ("touch " text)
+system	("touch " text)
+print "touch " text | "/bin/sh"
+print "touch " text | "sh"
+print "touch " text | "/bin/zsh"
+print "touch " text | "/usr/bin/perl -e $x"
+cmd = "/bin/sh"; print "touch " text | cmd
+print "touch " text | ENVIRON["PWD"] "/mysh"
+print "touch " text |& "/bin/sh"
+"id" | getline text
+printf "%s", text > "/etc/codex/skills"
+AWK_ESCAPES
+
+  while IFS= read -r spelling; do
+    [ -n "$spelling" ] || continue
+    if body_reaches_no_interpreter "$(a_body_whose_shell_says "$spelling")" 2>/dev/null; then
+      printf 'the interpreter check accepted a shell layer that reaches an interpreter:\n  %s\n' \
+        "$spelling" >&2
+      return 1
+    fi
+  done <<'SHELL_ESCAPES'
+eval "printf %s $2"
+x=$(id)
+x=`id`
+/bin/sh -c "$2"
+python3 -c "import os; os.system('id')"
+id >&2
+. ./helper.sh
+SHELL_ESCAPES
+  return 0
+}
+
+# The other direction, because a check that refuses every body proves nothing
+# about the one it is for: the body this suite actually ships has to pass, and
+# a body doing the same legitimate things a different way has to pass too.
+the_interpreter_check_accepts_a_body_that_only_substitutes() {
+  body_reaches_no_interpreter "$(suite_function_body expanded_destination)" || return 1
+  body_reaches_no_interpreter "$(a_body_whose_awk_says \
+    'if (length(text) == 0 || substr(text, 1, 1) == "~") printf "%s\n", "no" > "/dev/stderr"')" \
+    || return 1
+  return 0
 }
 
 # The precondition the whole containment argument rests on, and it is now a
@@ -1536,6 +1635,10 @@ require "the containment decision refuses a destination that runs a command, and
   quietly containment_refuses_a_destination_that_runs_a_command
 require "the destination expansion reaches no shell" \
   quietly the_destination_expansion_uses_no_shell
+require "the check for that refuses every escape spelling it is handed" \
+  quietly the_interpreter_check_refuses_every_escape_it_can_see
+require "the check for that accepts a body that only substitutes" \
+  quietly the_interpreter_check_accepts_a_body_that_only_substitutes
 
 require "the README's manual-copy block names nothing outside a redirected home" \
   quietly block_names_nothing_outside_a_redirected_home
