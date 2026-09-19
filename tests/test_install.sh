@@ -1033,20 +1033,24 @@ suite_function_body() {
   ' "$suite_source"
 }
 
-# The one control here that does not depend on anyone having thought of the
-# construct. Four rounds of this defect were four constructs, and a fifth would
-# be a fifth construct: the sweep above can only refuse the spellings written
-# into it, which is the same completeness claim, one level up. What cannot be
-# enumerated away is the shell itself, so this reads the expansion's own source
-# text and requires that it reaches no interpreter — no `eval`, no command
-# substitution in either spelling, no `bash`, no `sh`, no `env`, and none of
-# awk's own two ways out, `system()` and a command into `getline`.
+# The structural half: this reads `expanded_destination`'s own source text and
+# requires that the body cannot reach an interpreter. The sweep above can only
+# refuse the spellings written into it, and this does not depend on the
+# spelling of the *destination* at all.
 #
-# Its boundary, stated rather than implied: it asks the one function that turns
-# the raw text into a value. A recurrence that moved the evaluation into a
-# different function would be caught by the sweep above and not by this, and a
-# construct the sweep never thought of would be caught by this and not by that.
-# Neither is sufficient alone, which is why both are here.
+# It used to be described here as "the one control that does not depend on
+# anyone having thought of the construct", and that was false in both of its
+# dimensions. It was a substring denylist, so it depended on the spelling
+# exactly as much as the sweep did — ten of eleven alternate interpreter
+# spellings went past it. And it reads one function, so it depends on the
+# placement too. It is inverted now, which closes the spelling dimension; the
+# placement dimension is stated below and stays open.
+#
+# Its boundary, measured rather than asserted: the check has controls of its
+# own, directly below, that hand it bodies which do reach an interpreter and
+# require refusal, and bodies which do not and require acceptance. A check that
+# can only read its own subject cannot be measured, and that is how a false
+# description of it survived a gate.
 the_destination_expansion_uses_no_shell() {
   local body
   body="$(suite_function_body expanded_destination)"
@@ -1062,20 +1066,172 @@ the_destination_expansion_uses_no_shell() {
 # be measured on bodies other than the one it is pointed at. While it could
 # only read its own subject it was unfalsifiable: it printed PASS, and whether
 # it would print FAIL for a body that did reach a shell was nobody's evidence.
+#
+# Inverted, the way the expansion itself was inverted, and for the same reason.
+# What stood here was a substring denylist of ten interpreter spellings, and it
+# missed ten of the eleven alternate spellings tried against it — including
+# `system ("x")` with a space before the paren, which the BSD awk this platform
+# ships executes, and an output pipe, which reaches a shell whatever the
+# command string is spelled as and even when it is composed at run time.
+#
+# So this does not ask what the body must not contain. It asks whether the body
+# is the one shape this check can account for, and refuses everything else:
+#
+#   - exactly one command, an `awk`, with a single-quoted program and nothing
+#     before or after it but literal assignments;
+#   - that program reads from /dev/null, so no text reaches its stdin either;
+#   - inside the program, every call is one of the string and control builtins
+#     named below — a call this check cannot account for is refused whether or
+#     not anyone has heard of it;
+#   - no `|` in any position other than as half of a `||`, because the other
+#     end of a pipe is a command however it is spelled;
+#   - the only redirection target is "/dev/stderr".
+#
+# The cost is the same cost the expansion pays and it is the same trade: a
+# legitimate rewrite of `expanded_destination` outside that shape is refused
+# too, and the refusal names what it could not account for, so widening this is
+# a deliberate edit.
+#
+# Its remaining boundary, and this is a real one: it is about *a body*, and the
+# control below points it at one function of the nine the document's text flows
+# through. A recurrence that put an interpreter in a different function is not
+# in its reach. That is a placement claim, not a spelling claim, and it is the
+# half that stays open.
 body_reaches_no_interpreter() {
-  local body offender found
-  body="$1"
-  found=""
-  for offender in 'eval' '$(' '`' 'suite_bash' 'bash' 'sh -c' 'env ' 'source ' 'system(' 'getline'; do
-    case "$body" in
-      *"$offender"*)
-        printf 'the destination expansion names %s, so the destination text can reach a shell again:\n%s\n' \
-          "$offender" "$body" >&2
-        found=yes
-        ;;
-    esac
-  done
-  [ -z "$found" ]
+  INTERPRETER_CHECK_BODY="$1" awk '
+    function fail(why) {
+      printf "the body may reach an interpreter: %s\n", why > "/dev/stderr"
+      bad = 1
+    }
+
+    function trimmed(s) {
+      sub(/^[[:blank:]]+/, "", s)
+      sub(/[[:blank:]]+$/, "", s)
+      return s
+    }
+
+    # <line> — the line with double-quoted literals and any comment removed, so
+    # that a construct is judged on the code it is and not on a string that
+    # merely mentions one. A single quote cannot open a literal here: the whole
+    # program is inside a single-quoted shell word.
+    function without_literals(s,   out, i, c, inq) {
+      out = ""
+      inq = 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (inq) {
+          if (c == bs) { i++; continue }
+          if (c == dq) { inq = 0 }
+          continue
+        }
+        if (c == dq) { inq = 1; continue }
+        if (c == "#") return out
+        out = out c
+      }
+      return out
+    }
+
+    # Asked of the raw line, because the target is a literal and the point is
+    # which file it names.
+    function redirection_target_is_stderr(s,   t, k, rest) {
+      t = s
+      while ((k = index(t, ">")) > 0) {
+        rest = substr(t, k + 1)
+        sub(/^[[:blank:]>]+/, "", rest)
+        if (substr(rest, 1, 1) == dq) {
+          if (match(rest, /^"[^"]*"/) == 0) return 0
+          if (substr(rest, 1, RLENGTH) != dq "/dev/stderr" dq) return 0
+        }
+        t = substr(t, k + 1)
+      }
+      return 1
+    }
+
+    # The name of the first call this check cannot account for, or "". The
+    # blanks are why: `system ("x")` is a call, and a scan for "system(" is not
+    # a scan for calls.
+    function first_unaccounted_call(s,   t, tok) {
+      t = s
+      while (match(t, /[A-Za-z_][A-Za-z0-9_]*[[:blank:]]*\(/)) {
+        tok = substr(t, RSTART, RLENGTH)
+        sub(/[[:blank:]]*\($/, "", tok)
+        if (!(tok in allowed)) return tok
+        t = substr(t, RSTART + RLENGTH)
+      }
+      return ""
+    }
+
+    # `||` is logical or. Every other `|` is a pipe, and `|&` is one too.
+    function has_a_pipe(s,   i) {
+      for (i = 1; i <= length(s); i++) {
+        if (substr(s, i, 2) == "||") { i++; continue }
+        if (substr(s, i, 1) == "|") return 1
+      }
+      return 0
+    }
+
+    BEGIN {
+      dq = sprintf("%c", 34)
+      sq = sprintf("%c", 39)
+      bs = sprintf("%c", 92)
+      split("refuse print printf exit length substr index match split sub gsub sprintf toupper tolower if while for do else return", a, " ")
+      for (k in a) allowed[a[k]] = 1
+
+      n = split(ENVIRON["INTERPRETER_CHECK_BODY"], line, "\n")
+
+      opened = 0
+      closed = 0
+      for (i = 1; i <= n; i++) {
+        if (opened == 0) {
+          if (length(line[i]) >= 5 && substr(line[i], length(line[i]) - 4) == "awk " sq) opened = i
+        } else if (closed == 0) {
+          if (substr(trimmed(line[i]), 1, 1) == sq) closed = i
+        }
+      }
+      if (opened == 0 || closed == 0) {
+        fail("it is not one awk program in a quoted word, which is the only shape this check can account for")
+        exit 1
+      }
+
+      for (i = 1; i < opened; i++) {
+        if (trimmed(line[i]) != "") fail("a command runs before the awk program: " trimmed(line[i]))
+      }
+      for (i = closed + 1; i <= n; i++) {
+        if (trimmed(line[i]) != "") fail("a command runs after the awk program: " trimmed(line[i]))
+      }
+
+      # The command word is awk, and everything in front of it is a literal
+      # assignment: no substitution, no second command, no other interpreter.
+      pre = trimmed(substr(line[opened], 1, length(line[opened]) - 5))
+      m = split(pre, word, /[[:blank:]]+/)
+      for (i = 1; i <= m; i++) {
+        if (word[i] == "") continue
+        if (word[i] !~ /^[A-Za-z_][A-Za-z0-9_]*="[^"]*"$/) {
+          fail("the awk command is preceded by something other than a literal assignment: " word[i])
+        } else if (index(word[i], sq) > 0 || index(word[i], "`") > 0 || index(word[i], "$(") > 0) {
+          fail("an assignment in front of the awk command substitutes: " word[i])
+        }
+      }
+
+      post = trimmed(substr(trimmed(line[closed]), 2))
+      if (post != "</dev/null") {
+        fail("the awk program does not read from /dev/null: [" post "]")
+      }
+
+      for (i = opened + 1; i < closed; i++) {
+        code = without_literals(line[i])
+        tok = first_unaccounted_call(code)
+        if (tok != "") fail("the awk program calls " tok "(), which this check cannot account for")
+        if (has_a_pipe(code)) fail("the awk program routes through a pipe, and the other end of a pipe is a command: " trimmed(line[i]))
+        if (index(code, "`") > 0) fail("the awk program names a backtick")
+        if (index(code, "$(") > 0) fail("the awk program names a command substitution")
+        if (index(code, sq) > 0) fail("the awk program closes its own quoted word")
+        if (!redirection_target_is_stderr(line[i])) fail("the awk program redirects somewhere other than /dev/stderr: " trimmed(line[i]))
+      }
+
+      exit (bad != 0)
+    }
+  ' </dev/null
 }
 
 # <injected awk statement> — a body in the shape of `expanded_destination`'s,
