@@ -21,11 +21,19 @@ CHECK_PATHS="skills/skill-audit/scripts/check-paths.sh"
 CHECK_QUALITY="skills/skill-audit/scripts/check-quality.sh"
 
 # Helper: run a command and capture output + exit code.
+# The suite's own runner for the cases that want both channels merged. It is
+# not run_on_path with a different PATH — that one keeps stdout and stderr
+# apart so a payload can be parsed — but the status it sees is the same kind of
+# fact, so it is recorded the same way. Without this, every case driven through
+# here was invisible to the exit-status witness at the end of this file, and
+# `check-frontmatter.sh`'s exit 2 was stated by its header, driven three times
+# in this suite, and witnessed nowhere.
 run() {
   local cmd="$1"
   shift
   code=0
   output=$("$cmd" "$@" 2>&1) || code=$?
+  witness_exit "$cmd" "$code"
 }
 
 # Helper: run skill-validator validate structure and capture output + exit code.
