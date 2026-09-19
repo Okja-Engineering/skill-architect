@@ -2524,8 +2524,10 @@ assert_value "every script in this skill other than the guard loads it" \
   "$([[ -z "$guard_nonloaders" ]] && echo true || echo false)"
 assert_value "SKILL.md names verdict-guard.sh, the file every one of them refuses to run without" \
   "$(grep -qF 'verdict-guard.sh' skills/skill-audit/SKILL.md && echo true || echo false)"
-guard_doc_word="$(sed -n 's/^All \([a-z][a-z]*\) of the scripts above load .*verdict-guard\.sh.*/\1/p' \
-  skills/skill-audit/SKILL.md | head -1)"
+# Emphasis markers are stripped first: the count is a claim, and whether the
+# document sets it in bold is not part of it.
+guard_doc_word="$(tr -d '*' < skills/skill-audit/SKILL.md \
+  | sed -n 's/^All \([a-z][a-z]*\) of the scripts above load .*verdict-guard\.sh.*/\1/p' | head -1)"
 assert_value "SKILL.md's count of the scripts that load the guard is the number that do ($guard_loader_n)" \
   "$([[ -n "$guard_doc_word" && "$guard_doc_word" == "$(english_count "$guard_loader_n")" ]] && echo true || echo false)"
 if [[ "$guard_doc_word" != "$(english_count "$guard_loader_n")" ]]; then
