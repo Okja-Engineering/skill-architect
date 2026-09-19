@@ -43,13 +43,16 @@ Read these in order:
 Resolve `skill_root` to the directory containing this `SKILL.md` and run the bundled scripts:
 
 ```bash
-command -v skill-validator >/dev/null 2>&1 || { echo "skill-validator not found. Install with: brew install agent-ecosystem/tap/skill-validator" >&2; exit 1; }
-command -v skillscore >/dev/null 2>&1 || { echo "skillscore not found. Install with: npm install -g skillscore" >&2; exit 1; }
+for tool in awk dirname grep jq skill-validator skillscore wc; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "required tool not found: $tool" >&2; exit 3; }
+done
 
 "$skill_root/scripts/check-frontmatter.sh" "$target_skill"
 "$skill_root/scripts/check-structure.sh" "$target_skill"
 "$skill_root/scripts/check-quality.sh" "$target_skill"
 ```
+
+The preflight names every tool the three commands below it refuse to run without, and it exits **3** because 3 is the status they exit with: a missing dependency is an execution error, rule ID `DEP001`, and **1** in the exit table below is a spec or path failure — a verdict about the audited skill that a preflight has not computed. Neither the list nor the status is written down twice. `tests/test_f01.sh` masks each of those tools in turn, runs the three commands, and requires the preflight to refuse exactly when one of them refuses and with the status it refused with — so a tool that becomes a precondition without reaching this list fails that suite rather than reaching a reader. `skill-validator` and `skillscore` are installed with the commands in the list below.
 
 The checks use established tools, each for what it does best:
 
