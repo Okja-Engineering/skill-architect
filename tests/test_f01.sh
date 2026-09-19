@@ -2314,4 +2314,51 @@ printf '%s\n' '#!/usr/bin/env bash' 'awk '\''$0 == "---" { next }'\'' "$1"' > "$
 assert_value "the private-frontmatter-scan check fires on a script that has one" \
   "$([[ -n "$(grep -lE '\^---\$|== "---"' "$scanner_control" || true)" ]] && echo true || echo false)"
 
+# --- What a script's header says, against what the script was seen to do -------
+#
+# The derivation above compares SKILL.md's table against each script's own
+# `# Exit codes:` header, and the adverse sweep compares every status it drove
+# against that header. Neither asks the question the other side of: whether
+# every status the header states is one the script can actually be made to
+# emit. Both sides moving together is uncaught — add a status a script can
+# never emit, or drop one it emits on every failure, and the suite stays fully
+# green. G4-01's original symptom was a stated code untrue of the script, so
+# the mechanism installed to close it does not detect its own shape.
+#
+# The witness is every run this suite made through the shared harness, which is
+# every run of a script it made at all. Both directions: a stated status nothing
+# produced is a claim about nothing, and a produced status nothing stated is a
+# script outside its own contract.
+exit_witness_unwitnessed=""
+exit_witness_unstated=""
+exit_witness_scripts=0
+for wscript in "$SCRIPTS_DIR"/*.sh skills/skill-rewrite/scripts/*.sh; do
+  wname="$(basename "$wscript")"
+  [[ -n "$(exit_line_of "$wscript")" ]] || continue
+  exit_witness_scripts=$((exit_witness_scripts + 1))
+  wseen="$(printf '%s\n' $exit_witness | sed -n "s/^$wname://p" | sort -u | tr '\n' ' ')"
+  echo "  $wname stated [$(stated_exit_codes "$wscript" | tr '\n' ' ')] seen [$wseen]"
+  for wcode in $(stated_exit_codes "$wscript"); do
+    case " $wseen " in
+      *" $wcode "*) ;;
+      *) exit_witness_unwitnessed="$exit_witness_unwitnessed $wname:$wcode" ;;
+    esac
+  done
+  for wcode in $wseen; do
+    states_exit "$wscript" "$wcode" || exit_witness_unstated="$exit_witness_unstated $wname:$wcode"
+  done
+done
+assert_value "the exit-status witness was collected, not read as an empty set" \
+  "$([[ "$exit_witness_scripts" -ge 6 && -n "$exit_witness" ]] && echo true || echo false)"
+assert_value "every status a script's header states is one this suite made it emit" \
+  "$([[ -z "$exit_witness_unwitnessed" ]] && echo true || echo false)"
+if [[ -n "$exit_witness_unwitnessed" ]]; then
+  echo "  stated but never emitted here:$exit_witness_unwitnessed"
+fi
+assert_value "every status this suite made a script emit is one its header states" \
+  "$([[ -z "$exit_witness_unstated" ]] && echo true || echo false)"
+if [[ -n "$exit_witness_unstated" ]]; then
+  echo "  emitted but not stated:$exit_witness_unstated"
+fi
+
 harness_summary

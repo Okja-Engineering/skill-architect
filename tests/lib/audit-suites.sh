@@ -91,7 +91,7 @@ BEGIN {
 
   # Everything the shared harness provides. A suite that defines one of these
   # has its own copy of it.
-  n = split("assert assert_value quietly harness_init harness_exit harness_summary harness_ready", list, " ")
+  n = split("assert assert_value quietly witness_exit harness_init harness_exit harness_summary harness_ready", list, " ")
   for (i = 1; i <= n; i++) harness_name[list[i]] = 1
 
   n = split("; && || | & then else do { (", list, " ")
