@@ -1389,6 +1389,12 @@ adverse_target() {
   echo "$root/valid-full"
 }
 
+# The break modes, named once so the count below and the loop cannot disagree
+# about how many there are.
+BROKEN_MODES="silent erroring wrong probe-only"
+broken_modes_n=0
+for bmode in $BROKEN_MODES; do broken_modes_n=$((broken_modes_n + 1)); done
+
 broken_cases=0
 for bscript in $ADVERSE_SCRIPTS; do
   bname="$(basename "$bscript")"
@@ -1410,7 +1416,7 @@ $btool
     esac
     bjson=""
     case "$bargs" in *--json*) bjson="--json" ;; esac
-    for bmode in silent erroring wrong probe-only; do
+    for bmode in $BROKEN_MODES; do
       broken_cases=$((broken_cases + 1))
       btarget="$(adverse_target)"
       run_on_path "$(broken_tool_path "$btool" "$bmode")" "$bscript" ${bargs//@target/$btarget}
@@ -1452,7 +1458,7 @@ $btool
   done
 done
 
-echo "  present-but-broken cases driven: $broken_cases"
+echo "  present-but-broken cases driven: $broken_cases ($adverse_scripts_seen runnable scripts, $broken_modes_n break modes)"
 echo "  probe calls per tool: $(for pt in $guard_probed_tools; do printf '%s=%s ' "$pt" "$(probe_calls_of "$pt")"; done)"
 # The probe-only stub is built around this number, so a measurement that came
 # back as zero would build a stub that refuses its own probe — every case would
@@ -1463,8 +1469,33 @@ for pt in $guard_probed_tools; do
 done
 assert_value "every probed tool is asked at least one question by require_tool, so the probe-only stub has a probe to answer" \
   "$([[ "$probe_call_floor" -eq 1 ]] && echo true || echo false)"
-assert_value "the present-but-broken cross product was enumerated, not read as empty" \
-  "$([[ "$broken_cases" -ge 45 ]] && echo true || echo false)"
+# The denominator, and it is an equality on purpose. `-ge 45` was written when
+# the product was 60, and a floor is not a denominator: the whole reason for
+# counting is that the product can shrink without anything else here noticing,
+# and 45 let it lose a quarter of itself and still say it had been enumerated.
+# Measured — `require_tool grep` deleted from one script, which is one pair and
+# four cases:
+#
+#   present-but-broken cases driven: 68
+#   PASS: the present-but-broken cross product was enumerated, not read as empty
+#   1232 passed, 0 failed
+#
+# Twenty-one assertions gone and the suite fully green. An exact count is a
+# number someone has to change deliberately, in the commit that changed the
+# product, which is the only moment anyone can say whether the change was
+# meant.
+#
+# The other floors in this file are not this shape and are left as they are:
+# each sits beside an exact comparison that does the real work — the readme's
+# list against the scripts' in both directions, the probed tools against the
+# required ones, the doc's rows against the headers — so the floor there is
+# only refusing an empty read. Nothing else counts these cases.
+BROKEN_CASES_EXPECTED=72
+assert_value "the present-but-broken cross product ran every one of its $BROKEN_CASES_EXPECTED cases" \
+  "$([[ "$broken_cases" -eq "$BROKEN_CASES_EXPECTED" ]] && echo true || echo false)"
+if [[ "$broken_cases" -ne "$BROKEN_CASES_EXPECTED" ]]; then
+  echo "  the cross product is $broken_cases cases, and this file says $BROKEN_CASES_EXPECTED"
+fi
 
 # --- What a probe that accepts any answer actually costs ------------------------
 #
