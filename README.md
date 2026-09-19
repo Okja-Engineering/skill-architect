@@ -262,17 +262,22 @@ The profile JSON is the integration point for future paired comparisons (F04). S
 
 ### Prerequisites
 
-The skills shell out to eight external tools, and every one of them is a hard
+The skills shell out to ten external tools, and every one of them is a hard
 precondition rather than a nice-to-have: a script that cannot get an answer from
 one of them exits 3 and says which, instead of reporting a verdict it did not
 compute.
 
-Required tools: `awk`, `cat`, `grep`, `jq`, `mktemp`, `skill-validator`, `skillscore`, `wc`.
+Required tools: `awk`, `cat`, `date`, `dirname`, `grep`, `jq`, `mktemp`, `skill-validator`, `skillscore`, `wc`.
 
 That list is compared against the scripts themselves by `tests/test_f01.sh`, in
-both directions, so it cannot fall behind what they actually require.
+both directions, so it cannot fall behind what they actually require. It is
+compared against two things, because the scripts say "required" in two ways:
+most tools through `require_tool`, and `date` and `dirname` through a refusal
+written where they are used. The suite drives each of those two broken and
+checks the script refuses, names it, and exits inside its own stated set — the
+sentence above is the criterion, and it is measured rather than asserted.
 
-Three of them you install. Five are POSIX utilities you already have, and they
+Three of them you install. Seven are POSIX utilities you already have, and they
 are named here anyway, because "you already have it" is not what these scripts
 require of them — see below.
 
@@ -291,6 +296,18 @@ nothing, a `grep` that answers with an error status, a `wc` that exits 127, a
 execution error rather than read as a verdict about your skill. A script that
 cannot get a straight answer from one of them exits 3 and names it, and the
 tool it names is the one that failed.
+
+`date` and `dirname` are required in the same sense and by a different
+mechanism, and the difference is worth a sentence because it is the reason they
+were missing from this list for a while. `dirname` runs in the first line of
+every script, before the guard that announces a missing tool has been loaded,
+so it cannot be announced by it; `date` has no constant answer to be asked for,
+since the whole point of asking the time is that the script does not know it,
+and `-r 0` on BSD is not `-d @0` on GNU. Each carries its own refusal at the
+point it is used instead: a `dirname` that gives no answer stops every script
+with `cannot resolve this script's own directory` and exit 3, and a `date` that
+exits nonzero stops `audit-report.sh` with `date could not answer what time it
+is` and exit 3 rather than a report with a blank timestamp.
 
 `sed` and `tr` were on this list and are not, because nothing shells out to
 them any more. Each did one thing the shell does itself — prefixing lines, and
