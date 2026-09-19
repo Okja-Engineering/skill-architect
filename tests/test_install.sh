@@ -28,9 +28,14 @@ harness_init
 # command that satisfies that passes — the test is pinned to the behaviour, not
 # to the particular command that happens to be documented today.
 #
-# Nothing here can touch a live config, and that is a property of how the block
-# is run rather than an assertion about its text. See the containment section
-# below: an earlier version of this suite rewrote the destination with `sed` and
+# What keeps this off a live config is how the block is *run* — a redirected
+# HOME, a scratch working directory, `env -i` — plus a proven bound on the one
+# thing a reader is asked to edit, the destination. It is not an assertion
+# about the block's text, and the section headed "What this suite bounds, and
+# what it does not" says exactly how far that reaches and where it stops. Read
+# it before adding a check here.
+#
+# An earlier version of this suite rewrote the destination with `sed` and
 # checked the rewrite with `grep`, which is a guard that holds only for the
 # spellings someone thought of — and it reported its verdict through `assert`,
 # which reports and returns, so the suite ran `rm -rf` against a live skills
@@ -595,10 +600,11 @@ block_with_destination() {
   printf 'rm -rf "$skills_dir/skill-audit" && cp -R "skills/skill-audit" "$skills_dir/skill-audit"\n'
 }
 
-# The control for the decision. A decision that cannot refuse is not a proof of
-# anything, so every escape containment has to exclude is handed to it and the
-# refusal is required — before anything is run, because this is what the
-# containment argument rests on.
+# The control for the decision. A decision that cannot refuse is not evidence
+# of anything, so every destination the fence has to exclude is handed to it
+# and the refusal is required — before anything is run, because this is what
+# the destination bound rests on. What it does not do, and what no control
+# here does, is show that a block the decision accepts is safe to run.
 containment_refuses() {
   if containment_verdict "$(containment_probe_dir)" "$1" >/dev/null 2>&1; then
     printf 'the containment decision accepted a block it must refuse:\n%s\n' "$1" >&2
@@ -1472,24 +1478,29 @@ the_interpreter_check_accepts_a_body_that_only_substitutes() {
   return 0
 }
 
-# The precondition the whole containment argument rests on, and it is now a
-# question about the block. What stood here compared the install scratch path
-# with the harness scratch path it had just been built from — true by
-# construction of the line that made it, never once looking at the block, while
-# carrying the name of the thing that mattered.
+# The precondition the destination fence rests on, and it is a question about
+# the block. What stood here compared the install scratch path with the harness
+# scratch path it had just been built from — true by construction of the line
+# that made it, never once looking at the block, while carrying the name of the
+# thing that mattered.
 #
 # It is the same decision the run sites take, on the README's own block, in a
 # probe run of the same shape and depth as the staged runs below, taken early so
 # that it halts the suite before anything is run. Deliberately the same
-# `containment_verdict` and not a second path to the resolved verdict: the
-# shape pass is what refuses a destination carrying a substitution, and going
-# straight to the resolution would hand the README's text to a shell that the
-# shape pass had not seen yet.
+# `containment_verdict` and not a second path to the resolved verdict, so that
+# what the precondition proves and what the run sites ask are one question.
+#
+# Its name is the narrow one on purpose. It says the block's *destination* is
+# expandable and lands inside the scratch root. It does not say the block is
+# contained, because the block is executed and nothing here bounds what an
+# executed block does — the label on the `require` below says both halves for
+# the same reason, since an unexpandable destination used to fail under a label
+# naming the resolution when nothing had been resolved.
 the_documented_block_is_contained() {
   containment_verdict "$(containment_probe_dir)" "$(documented_manual_copy_block)"
 }
 
-# --- Running the block, contained --------------------------------------------
+# --- Running the block, with its destination bounded --------------------------
 
 # A home the block installs into, and a working directory it runs from. The
 # working directory holds a copy of the repository's skills tree rather than the
@@ -1512,11 +1523,15 @@ run_documented_block() {
   local dir script block
   dir="$1"
   script="$dir/documented-block.sh"
-  # Containment, at the site of the run and for this run's environment. The
-  # block is not written out and not executed until its destination has been
-  # shown to resolve inside the harness scratch root, so a run that escapes is
-  # not a run that is reported — it is a run that does not happen. A run site
-  # added later inherits this instead of having to remember it.
+  # The destination bound, at the site of the run and for this run's
+  # environment. The block is not written out and not executed until the
+  # destination it will use has been shown to resolve inside the harness
+  # scratch root, so a *destination* that escapes is not one that is reported —
+  # it is a run that does not happen. A run site added later inherits this
+  # instead of having to remember it.
+  #
+  # Once past this line the block runs, and what it does then is the block's.
+  # This is a bound on where the documented install writes, not a sandbox.
   #
   # Read once, then judged and run: what is executed is the text that was
   # judged, and not a second reading of the document it came from.
@@ -1949,9 +1964,9 @@ require "the check for that refuses every escape spelling it is handed" \
 require "the check for that accepts a body that only substitutes" \
   quietly the_interpreter_check_accepts_a_body_that_only_substitutes
 
-require "the README's manual-copy block names nothing outside a redirected home" \
+require "the README's manual-copy block uses only path words the diagnostic can account for" \
   quietly the_blocks_path_words_are_accountable
-require "the destination the README's block resolves to is inside the harness scratch root" \
+require "the README's block names a destination this suite can expand, which resolves inside the harness scratch root" \
   quietly the_documented_block_is_contained
 require "the repository ships skills for the checks below to be about" \
   repository_ships_skills
