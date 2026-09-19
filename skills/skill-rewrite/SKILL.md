@@ -35,17 +35,17 @@ Inputs:
 
 Prerequisites:
 
-Required tools: `skill-validator`.
+Required tools: `awk`, `cat`, `grep`, `jq`, `mktemp`, `skill-validator`, `wc`.
 
-Stage 1 and `draft-rewrite.sh` both run `skill-audit`'s `check-frontmatter.sh`, which validates the spec with `skill-validator`. Install it with `brew install agent-ecosystem/tap/skill-validator`, because without it the two paths do not behave alike and only one of them protects you:
+Stage 1 and `draft-rewrite.sh` both run `skill-audit`'s `check-frontmatter.sh`, which validates the spec with `skill-validator`. Install it with `brew install agent-ecosystem/tap/skill-validator`, because without it neither path will draft for you:
 
-Without `skill-validator`: `check-frontmatter.sh` exits `3`; `draft-rewrite.sh` exits `0`.
+Without `skill-validator`: `check-frontmatter.sh` exits `3`; `draft-rewrite.sh` exits `3`.
 
-Stage 1 runs the check directly, so it exits 3 with `required tool not found: skill-validator` on stderr and reports no verdict rather than one it could not compute — that guard is what protects you. `draft-rewrite.sh` is not inside that guard yet: it discards the check's exit status and merges the check's stderr into the report, so it exits 0, writes `REWRITE-DRAFT.md` anyway, and presents `required tool not found: skill-validator` as the draft's own `Current state`. **That is an open defect in `draft-rewrite.sh`, not a contract to rely on.** Until it refuses, install `skill-validator` before Stage 2 and read the draft's `Current state` before working from it; a draft whose `Current state` names a missing tool is a draft built from nothing.
+Stage 1 runs the check directly, so it exits 3 with `required tool not found: skill-validator` on stderr and reports no verdict rather than one it could not compute. `draft-rewrite.sh` is inside that same guard now: it reads each check's exit status instead of discarding it, captures each check's stdout on its own instead of merging the check's stderr into it, and a check that reached no verdict stops the draft rather than becoming its content. So it exits 3 too, with `required tool not found: skill-validator` on stderr, and it writes no `REWRITE-DRAFT.md` — the partial one it had opened is removed on the way out, so there is no half-draft in your skill directory either. **What earlier releases warned about here — a drafter that exited 0 and presented `required tool not found: skill-validator` as the draft's own `Current state` — is closed, not something to work around.** A draft you are handed is a draft built from an audit that ran.
 
-Nothing on this skill's path needs `skillscore`, which scores quality this skill does not run, or `jq`, which `skill-audit`'s scripts require only in their `--json` modes; add them if you extend the stages to use them.
+The other six required tools refuse the same way, so this is the skill's behaviour and not one tool's special case. `awk`, `grep` and `cat` are what this skill computes with, and `mktemp` holds the audit when you do not hand it one with `-a`; `jq` and `wc` are preconditions of the two sibling checks. Mask any one of the seven and `draft-rewrite.sh` exits 3 naming that tool and leaves no draft. Nothing on this skill's path needs `skillscore`, which scores quality this skill does not run; add it if you extend the stages to use it.
 
-This skill is not self-contained. It bundles `draft-rewrite.sh` and runs no check of its own: every check it runs comes from `$audit_root/scripts/` — `check-frontmatter.sh` and `check-structure.sh`, which both load `verdict-guard.sh` and refuse to compute a verdict without it. A pruner who removes the guard as an unused file, or who installs this skill alone, gets a draft built from nothing. Install or prune the two skills together.
+This skill is not self-contained. It bundles `draft-rewrite.sh` and runs no check of its own: every check it runs comes from `$audit_root/scripts/` — `check-frontmatter.sh` and `check-structure.sh`, which both load `verdict-guard.sh` and refuse to compute a verdict without it. `draft-rewrite.sh` loads that guard too, which is how it refuses in the guard's own words rather than in the shell's; it sources the guard rather than running it, which is why the guard is not one of the checks named above. A pruner who removes the guard as an unused file, or who installs this skill alone, gets no draft at all. Install or prune the two skills together.
 
 ### Stage 1: Run audit if needed
 
@@ -90,7 +90,7 @@ This writes a `REWRITE-DRAFT.md` next to the target skill's `SKILL.md`, and name
 
 Above them, a `# Rewrite draft: <target>` title. What each holds:
 
-- `Current state` — the Stage 1 checks' output with their stdout and stderr merged into one stream, or the contents of the report given with `-a`. The merge is why a missing tool shows up here as the skill's own state; see Prerequisites.
+- `Current state` — the Stage 1 checks' stdout, captured one check at a time, or the contents of the report given with `-a`. Their stderr is not folded in: a check that could not compute a verdict stops the draft instead of appearing here as a finding about the skill, so nothing in this section is a diagnostic about the check itself; see Prerequisites.
 - `Proposed structure` — the spec and ICM section list. Fixed text, the same for every target.
 - `Missing section templates` — a blank template for each of `When to use`, `Examples` and `Validation checklist` the target has no heading for. The three probes read heading levels `##` to `######` and ignore case, and they are not all the same shape: `When to use` and `Example`/`Examples` must be the whole heading, while `Validation` is matched as a prefix, so a target's own `### Validation` section suppresses the `Validation checklist` template. A target that already has all three gets the heading and nothing under it.
 - `Action items` and `Notes` — fixed text, the same for every target.

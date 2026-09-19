@@ -191,9 +191,8 @@ output="$target_skill/REWRITE-DRAFT.md"
 # What the draft says it was built from.
 #
 # A machine-local mktemp path was the one thing it could not be. It names a
-# file that is gone by the time anyone reads the draft — or worse, one that is
-# still there, since nothing removed it — and it never meant anything outside
-# the process that wrote it. So the two cases state what they actually are: a
+# file the trap above has already removed by the time anyone reads the draft,
+# and it never meant anything outside the process that wrote it. So the two cases state what they actually are: a
 # report the caller named is named, and checks the drafter ran itself are
 # described as checks the drafter ran itself.
 if [[ -z "$audit_report" ]]; then
