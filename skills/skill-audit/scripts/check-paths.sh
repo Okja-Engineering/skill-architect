@@ -127,11 +127,20 @@ done <<< "$extracted"
 # became this script's own exit status — a 2 its contract does not enumerate,
 # with nothing on the payload channel, read by check-structure.sh as a child
 # that reached no verdict.
+#
+# The status is read, and the sentence names awk. It used to name the SKILL.md,
+# which is the same defect the shared section read had: with an awk that
+# answered its first two questions and failed this one, a file that was
+# perfectly readable was reported as the thing that could not be read, and awk
+# appeared nowhere. This is the one awk call in this skill that is not a section
+# read, so it is the one the shared primitive does not cover.
+code_awk_status=0
 code_body="$(awk '
   /^```/ { in_code = !in_code; next }
   in_code { print }
-' <<< "$body")" \
-  || cannot_compute DEP002 "could not read the code blocks of $skill_md; no verdict was computed" "$json_output"
+' <<< "$body")" || code_awk_status=$?
+[[ $code_awk_status -eq 0 ]] \
+  || cannot_compute DEP002 "awk could not read the code blocks of $skill_md (status $code_awk_status); no verdict was computed" "$json_output"
 
 text_extract "$json_output" '(\./|\$)\S*(scripts|references|assets)/\S+' "$code_body"
 while IFS= read -r path; do

@@ -163,13 +163,27 @@ if [[ "$line_count" -gt 500 ]]; then
 fi
 
 # --- Path checks ---
-# Keep the child's stdout clean of its diagnostics: in JSON mode stdout is a
-# payload we parse.
+# The child's stdout is captured; its stderr is not, in either mode.
+#
+# Text mode used to merge the two, and the merge lost the only sentence that
+# said what had gone wrong. A child that reaches no verdict exits 3, and this
+# script then refuses without printing the capture at all — so with a tool that
+# answered the probe and failed inside check-paths.sh, the child said which
+# tool it was, that sentence went into `$path_output`, and the caller was told
+# only `check-paths.sh exited with unexpected status 3`. Naming the wrong
+# component is the one thing a diagnostic must not do, and here it named a
+# sibling script over a tool.
+#
+# A diagnostic belongs on stderr in both modes, and nothing here has any reason
+# to hold one: JSON mode captures stdout because stdout is a payload it parses,
+# and text mode captures it because it relays the child's findings beside its
+# own. Neither is a reason to capture the other channel, so it passes straight
+# through to ours, which is where the rest of this family puts it.
 path_code=0
 if $json_output; then
   path_json="$("$script_dir/check-paths.sh" --json "$skill_dir")" || path_code=$?
 else
-  path_output="$("$script_dir/check-paths.sh" "$skill_dir" 2>&1)" || path_code=$?
+  path_output="$("$script_dir/check-paths.sh" "$skill_dir")" || path_code=$?
 fi
 
 # check-paths.sh exits 0=pass, 1=path failure. Any other status means it did not
