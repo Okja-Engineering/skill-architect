@@ -10,6 +10,31 @@ harness_init
 tmp_skill="$harness_scratch/skill"
 mkdir -p "$tmp_skill"
 
+# masked_path / run_on_path / run_masked / run_present live in the shared
+# harness. A masked PATH is a symlink farm of the real PATH minus one binary:
+# nothing is deleted, moved or uninstalled, and nothing is written into it.
+mask_root="$harness_scratch/mask"
+mkdir -p "$mask_root"
+source tests/lib/masked-path.sh
+
+# The shipped skills, derived from the tree rather than written down.
+#
+# This is the denominator every claim below is walked over, and it is the reason
+# the walk exists: a compatibility line and a claim-shape refusal were both
+# built for one of the two shipped skills and pinned to that skill's own
+# SKILL.md, so the identical sentence next door was un-held and went on being
+# false. A written-down pair reproduces that the day a third skill lands.
+shipped_skills() {
+  local d
+  for d in skills/*/; do
+    d="${d%/}"
+    [ -f "$d/SKILL.md" ] || continue
+    printf '%s\n' "${d##*/}"
+  done
+}
+shipped_skill_count="$({ shipped_skills | grep -c . || true; } | tr -d '[:space:]')"
+skill_md_of() { printf 'skills/%s/SKILL.md' "$1"; }
+
 manifest_is_valid() {
   python3 - "$1" <<'PY'
 import json, sys
@@ -77,8 +102,15 @@ assert ".claude-plugin/marketplace.json is valid and at 0.4.2" quietly marketpla
 assert "profiler AdapterVersion is 0.4.2" \
   grep -q 'AdapterVersion = "0.4.2"' profiler/types.go
 
+# The denominator itself, asserted before anything is walked over it. A glob
+# that matched nothing would make every per-skill check below vacuously true,
+# which is the shape tests/test_harness.sh refuses one level up.
+echo "  shipped skills: $(shipped_skills | tr '\n' ' ')"
+assert "the shipped skills were read from the tree, not matched as an empty set" \
+  test "${shipped_skill_count:-0}" -ge 2
+
 # Each skill has a valid SKILL.md with frontmatter and name matching directory.
-for skill in skill-audit skill-rewrite; do
+for skill in $(shipped_skills); do
   assert "skills/$skill directory exists" test -d "skills/$skill"
   assert "skills/$skill/SKILL.md exists" test -f "skills/$skill/SKILL.md"
   assert "skills/$skill frontmatter name matches directory" \
@@ -111,9 +143,9 @@ assert "skill-audit passes its own structure check" \
 #
 # `skill-validator check` exits 0 only on a clean pass; 1 means errors and 2
 # means warnings only. Asserting 0 pins both counts at zero.
-for skill in skills/skill-audit skills/skill-rewrite; do
-  assert "$skill validates with zero errors and zero warnings" \
-    quietly skill-validator check "$skill"
+for skill in $(shipped_skills); do
+  assert "skills/$skill validates with zero errors and zero warnings" \
+    quietly skill-validator check "skills/$skill"
 done
 
 # skill-rewrite carries its script and can draft a rewrite for itself.
@@ -272,5 +304,279 @@ draft_reads_the_body() {
 
 assert "draft-rewrite, headings only in frontmatter: offers the templates the body lacks" \
   quietly draft_reads_the_body
+
+# --- the compatibility each shipped skill actually has -------------------------
+#
+# A `compatibility:` line is a promise to whoever is deciding whether to install
+# the skill, and it is the one claim in the frontmatter nothing was checking.
+# Three ways to break it, so three checks, each decidable everywhere rather than
+# only on the machine the suite happens to run on.
+#
+# This lives here, walked over `shipped_skills`, rather than in one skill's own
+# suite pinned to one SKILL.md. That is not tidying: the machinery was built for
+# skill-rewrite and read a single `$SKILL`, skill-rewrite's line was corrected,
+# and skill-audit's identical line went on declaring POSIX shell with zsh and
+# `git` with nothing able to see it. Two siblings with identically bash-only
+# scripts declaring contradictory compatibility is what a mechanism hard-wired
+# to one of them produces.
+compatibility_line() {
+  { grep -m1 -E '^compatibility:' "$(skill_md_of "$1")" || true; }
+}
+
+# "POSIX shell" is read as a claim of `sh`, because that is what it means to
+# whoever is deciding whether to install: the word does not have to appear for
+# the claim to have been made, and check (3) below is where it is answered.
+claimed_interpreters_in() {
+  {
+    printf '%s\n' "$1" \
+      | { grep -oE '(^|[^a-z-])(sh|bash|zsh|ksh|dash|fish)([^a-z-]|$)' || true; } \
+      | { grep -oE '(sh|bash|zsh|ksh|dash|fish)' || true; }
+    if printf '%s\n' "$1" | grep -qi 'POSIX'; then echo sh; fi
+  } | sort -u
+}
+claimed_interpreters() { claimed_interpreters_in "$(compatibility_line "$1")"; }
+
+# The commands named on the line that are not interpreters: a compatibility
+# line that names a tool is stating a dependency on it.
+claimed_commands_in() {
+  local w out=""
+  for w in $(printf '%s\n' "$1" | tr -cs 'a-zA-Z0-9_-' ' '); do
+    case " $(claimed_interpreters_in "$1" | tr '\n' ' ') " in *" $w "*) continue ;; esac
+    if command -v "$w" >/dev/null 2>&1; then
+      out="$out$w
+"
+    fi
+  done
+  printf '%s' "$out" | sort -u
+}
+claimed_commands() { claimed_commands_in "$(compatibility_line "$1")"; }
+
+# A target the witness below can be run against: a copy of a fixture, keeping
+# the fixture's own basename, because a skill's directory name is part of what
+# check-frontmatter.sh judges and a copy under a slot name of the suite's
+# choosing would turn a clean fixture into a spec failure.
+witness_fixture_of() {
+  case "$1" in
+    skill-audit)   printf 'tests/fixtures/f01/valid-minimal' ;;
+    skill-rewrite) printf 'tests/fixtures/rewrite/all-sections' ;;
+    *) return 1 ;;
+  esac
+}
+witness_target() {
+  local skill="$1" slot="$2" fixture slotdir
+  fixture="$(witness_fixture_of "$skill")" || return 1
+  slotdir="$harness_scratch/witness/$skill/$slot"
+  rm -rf "$slotdir"
+  mkdir -p "$slotdir"
+  cp -R "$fixture" "$slotdir/${fixture##*/}" || return 1
+  printf '%s' "$slotdir/${fixture##*/}"
+}
+
+# skill_witness <skill> <interpreter> <slot>
+#
+# Run one of the skill's own bundled scripts under <interpreter> and succeed
+# only when it reached a verdict about the skill it was pointed at. Not merely
+# "exits 0": under zsh the drafter exits 0 having written a draft whose Current
+# state is two file-not-found lines, and an exit-status check would call that
+# compatibility. So each arm names the verdict it expects to see -- the audit
+# side the PL001 its fixture earns, the rewrite side the audit carried into the
+# draft.
+#
+# A skill with no arm here fails, which is what makes `shipped_skills` a real
+# denominator: a third skill cannot join the tree and be walked over vacuously.
+skill_witness() {
+  local skill="$1" interp="$2" slot="$3" target out=""
+  command -v "$interp" >/dev/null 2>&1 || return 1
+  target="$(witness_target "$skill" "$slot")" || return 1
+  case "$skill" in
+    skill-audit)
+      out="$("$interp" skills/skill-audit/scripts/check-frontmatter.sh "$target" 2>/dev/null)"
+      printf '%s' "$out" | grep -qF 'PL001'
+      ;;
+    skill-rewrite)
+      "$interp" skills/skill-rewrite/scripts/draft-rewrite.sh -t "$target" >/dev/null 2>&1 || return 1
+      [ -f "$target/REWRITE-DRAFT.md" ] || return 1
+      grep -qF 'frontmatter OK' "$target/REWRITE-DRAFT.md"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# tool_is_required <skill> <tool> — the skill cannot reach its verdict without
+# it. Asked by masking the tool, not by reading the scripts, because the
+# question the compatibility line raises is what a reader without that tool
+# gets.
+tool_is_required() {
+  local skill="$1" tool="$2" farm
+  farm="$(masked_path "$tool")"
+  ! ( PATH="$farm"; skill_witness "$skill" bash "without-$tool" )
+}
+
+# The interpreters the skill's own executable scripts name. Only executables:
+# `verdict-guard.sh` is sourced rather than run and carries no shebang, so a
+# census over every file would read it as a script naming no interpreter. Which
+# is itself a claim, so it is asserted rather than assumed.
+bundled_executables() {
+  local f out=""
+  for f in "skills/$1/scripts/"*; do
+    [ -f "$f" ] && [ -x "$f" ] || continue
+    out="$out$f
+"
+  done
+  printf '%s' "$out"
+}
+shebang_interpreters() {
+  local f
+  for f in $(bundled_executables "$1"); do
+    sed -n '1s|^#!.*[/ ]\([a-z]*sh\)[[:space:]]*$|\1|p' "$f"
+  done | sort -u
+}
+every_executable_names_an_interpreter() {
+  local f
+  for f in $(bundled_executables "$1"); do
+    [ -n "$(sed -n '1s|^#!.*[/ ]\([a-z]*sh\)[[:space:]]*$|\1|p' "$f")" ] || return 1
+  done
+  [ -n "$(bundled_executables "$1")" ]
+}
+
+# The version half of the claim, pinned where it can be pinned. CI runs one
+# Linux job with one bash, so "3.2+" is a claim no run verifies; what a run can
+# verify is that the scripts use nothing bash 3.2 lacks. Over every bundled
+# file, sourced ones included: a construct in the shared guard reaches bash 3.2
+# through the five scripts that load it.
+uses_only_bash_32() {
+  local f
+  for f in "skills/$1/scripts/"*; do
+    [ -f "$f" ] || continue
+    if grep -qE 'declare -A|mapfile|readarray|local -n|wait -n|globstar|\$\{[A-Za-z_][A-Za-z_0-9]*,,\}|\$\{[A-Za-z_][A-Za-z_0-9]*\^\^\}' "$f"; then
+      grep -nE 'declare -A|mapfile|readarray|local -n|wait -n|globstar|\$\{[A-Za-z_][A-Za-z_0-9]*,,\}|\$\{[A-Za-z_][A-Za-z_0-9]*\^\^\}' "$f" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
+for skill in $(shipped_skills); do
+  echo "  $skill compatibility: $(compatibility_line "$skill")"
+  echo "    claims interpreters: $(claimed_interpreters "$skill" | tr '\n' ' ')"
+  echo "    claims tools       : $(claimed_commands "$skill" | tr '\n' ' ')"
+  echo "    shebangs name      : $(shebang_interpreters "$skill" | tr '\n' ' ')"
+
+  assert "$skill's compatibility line names an interpreter at all" \
+    test -n "$(claimed_interpreters "$skill")"
+
+  # (1) Behavioural: every interpreter the line claims runs one of this skill's
+  # own scripts to a verdict.
+  for interp in $(claimed_interpreters "$skill"); do
+    assert "$skill works under $interp, which its compatibility line claims" \
+      skill_witness "$skill" "$interp" "under-$interp"
+  done
+
+  # (2) Every tool the line names is a tool the skill needs. `git` was on
+  # skill-audit's line and no script in either skill runs git.
+  for tool in $(claimed_commands "$skill"); do
+    assert "$skill's compatibility line names $tool, a tool it actually needs" \
+      tool_is_required "$skill" "$tool"
+  done
+
+  # (3) Declarative: the line claims the interpreter the bundled scripts'
+  # shebangs name, and no other family. This is what makes "POSIX shell"
+  # answerable -- a behavioural `sh` run cannot answer it, because /bin/sh is
+  # bash in sh mode on macOS and dash on Linux, so the same assertion passes
+  # here and fails there.
+  assert "$skill's executable scripts each name an interpreter in their shebang" \
+    every_executable_names_an_interpreter "$skill"
+  assert "$skill's compatibility line claims its scripts' interpreter and no other family" \
+    test "$(claimed_interpreters "$skill")" = "$(shebang_interpreters "$skill")"
+  if [ "$(claimed_interpreters "$skill")" != "$(shebang_interpreters "$skill")" ]; then
+    echo "  claimed: $(claimed_interpreters "$skill" | tr '\n' ' ')"
+    echo "  shebang: $(shebang_interpreters "$skill" | tr '\n' ' ')"
+  fi
+
+  assert "$skill's bundled scripts use no construct bash 3.2 does not have" \
+    quietly uses_only_bash_32 "$skill"
+done
+
+# The control for the command extractor, which reads nothing once both lines
+# are corrected. Without it, "every tool named is needed" would be true of a
+# line naming anything at all. The line is skill-audit's, as it stood.
+assert "the compatibility-line reader finds a tool named on such a line" \
+  test "$(claimed_commands_in 'compatibility: POSIX shell (bash 3.2+ or zsh), git.')" = "git"
+# And the interpreter reader, over the same line: three families, one of them
+# claimed by the words "POSIX shell" rather than named.
+assert "the compatibility-line reader finds every interpreter family such a line claims" \
+  test "$(claimed_interpreters_in 'compatibility: POSIX shell (bash 3.2+ or zsh), git.')" = "$(printf 'bash\nsh\nzsh')"
+# The control for the witness, which every check above rests on: a skill run
+# under an interpreter that cannot reach its verdict must fail, or "it works
+# under what it claims" is true of anything. zsh is the case in hand -- the
+# audit scripts resolve their own directory from `BASH_SOURCE[0]`, which zsh
+# leaves unset, so `script_dir` collapses and the shared guard is not found.
+witness_refuses_zsh() { ! skill_witness skill-audit zsh control-zsh; }
+if command -v zsh >/dev/null 2>&1; then
+  assert "the witness refuses skill-audit under zsh, the interpreter its line used to claim" \
+    witness_refuses_zsh
+fi
+
+# --- a claim about the rest of the repository, in either document --------------
+#
+# A claim about the rest of the repository is decidable against the rest of the
+# repository, and this one was not decided. skill-rewrite's document called
+# verdict-guard.sh a file "which no other file references by name"; a recursive
+# grep finds the name in twelve files, including four of skill-audit's own
+# scripts, the readme, two suites and the drafter. The assertion covering the
+# sentence only checked that the filename appeared *in the document*, so it
+# passed over the falsehood — a string where there should have been a claim.
+#
+# Walked over both documents for the same reason the compatibility line is:
+# skill-audit's document gained a sentence about verdict-guard.sh in this same
+# cluster, and a refusal that reads one file cannot see the other.
+#
+# Read as a claim and not as a phrase: a backticked filename with, in the same
+# sentence, a denial that anything else names it.
+unreferenced_claims_in() {
+  tr '\n' ' ' < "$1" \
+    | { grep -oE '`[A-Za-z0-9_.-]+\.(sh|md)`[^.]*(no other file|no other script|nothing else|referenced nowhere|unreferenced)[^.]*' || true; } \
+    | { grep -oE '^`[^`]+`' || true; } | tr -d '`' | sort -u
+}
+
+# Every file in the repository that names <1>, other than <2>. `.git` is not
+# part of the repository's text, and the leading `./` is dropped because not
+# every grep prints it.
+files_naming_other_than() {
+  { grep -rlF "$1" --exclude-dir=.git . || true; } \
+    | sed -e 's|^\./||' | { grep -vxF "$2" || true; } | sort -u
+}
+
+unreferenced_claims_hold_in() {
+  local doc="$1" f others bad=0
+  for f in $(unreferenced_claims_in "$doc"); do
+    others="$(files_naming_other_than "$f" "$doc")"
+    if [ -n "$others" ]; then
+      echo "  $doc says nothing else names $f; these files do: $(printf '%s' "$others" | tr '\n' ' ')" >&2
+      bad=$((bad + 1))
+    fi
+  done
+  [ "$bad" -eq 0 ]
+}
+
+for skill in $(shipped_skills); do
+  assert "no claim in $skill's SKILL.md that a file is named nowhere else survives a grep of the repository" \
+    unreferenced_claims_hold_in "$(skill_md_of "$skill")"
+done
+
+# The control, which is the sentence as it was written, in a document of its
+# own. Once the claim is gone the assertion above has nothing to decide, and a
+# reader that found no claim would look exactly the same — so the reader is
+# held to finding this one, and to refusing it.
+control_claim_doc="$harness_scratch/control-unreferenced.md"
+printf 'It borrows every check from `$audit_root/scripts/`, including `verdict-guard.sh`, which no other file references by name and which every one of those scripts refuses to compute a verdict without.\n' \
+  > "$control_claim_doc"
+assert "the claim reader finds the claim in the sentence this document carried" \
+  test "$(unreferenced_claims_in "$control_claim_doc")" = "verdict-guard.sh"
+control_claim_is_refused() {
+  ! unreferenced_claims_hold_in "$control_claim_doc" 2>/dev/null
+}
+assert "a document claiming verdict-guard.sh is named nowhere else is refused" \
+  control_claim_is_refused
 
 harness_summary
