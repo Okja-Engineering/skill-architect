@@ -1087,10 +1087,63 @@ assert_value "structure --json: relays the child's PATH finding at its own level
 # A stub here is one directory holding one file, prepended to the real PATH.
 # Nothing is mirrored, replaced or uninstalled.
 
+# counting_tool_path <tool> — a PATH whose <tool> forwards to the real one and
+# writes down how many times it was asked anything. Used only to find out how
+# many questions require_tool's probe puts to a tool, below.
+counting_tool_path() {
+  local tool="$1"
+  local dir="$mask_root/counting-$tool"
+  mkdir -p "$dir"
+  printf '#!/usr/bin/env bash\nprintf x >> "%s/.asked"\nexec %s "$@"\n' \
+    "$dir" "$(command -v "$tool")" > "$dir/$tool"
+  chmod +x "$dir/$tool"
+  : > "$dir/.asked"
+  echo "$dir:$PATH"
+}
+
+# probe_calls_of <tool> — how many times require_tool's probe invokes <tool>.
+#
+# Measured against the guard rather than written down here, because it is the
+# guard's number: `grep` is asked twice (a pattern that matches and one that
+# must not), every other probe once, and a probe rewritten tomorrow changes it
+# without changing this file. The probe-only stub below needs it to know which
+# invocation is the first one require_tool did *not* make.
+probe_calls_of() {
+  local tool="$1"
+  local dir="$mask_root/counting-$tool"
+  local cpath
+  cpath="$(counting_tool_path "$tool")"
+  PATH="$cpath" /usr/bin/env bash -c \
+    'source skills/skill-audit/scripts/verdict-guard.sh; require_tool "$1" false' \
+    _ "$tool" >/dev/null 2>&1 || true
+  local asked
+  asked="$(wc -c < "$dir/.asked")"
+  printf '%s' "${asked//[[:space:]]/}"
+}
+
 # broken_tool_path <tool> <mode> — a PATH whose <tool> is present and useless.
-#   silent   exit 0, no output           (the jq fault, verbatim)
-#   erroring exit 2                      (the grep fault, verbatim)
-#   wrong    exit 0, a confident lie
+#   silent     exit 0, no output           (the jq fault, verbatim)
+#   erroring   exit 2                      (the grep fault, verbatim)
+#   wrong      exit 0, a confident lie
+#   probe-only answers require_tool's probe and refuses everything after it
+#
+# The fourth mode is the one that was missing, and its absence is why a whole
+# class of defect sat under a green suite. The first three all fail the probe,
+# so `require_tool` stopped every script before a single call site ran: the
+# cross product proved the *precondition* twenty times over and never once
+# reached the code the precondition is a precondition for. Twenty-four calls
+# read a tool's output without reading its status, and no case here could fail.
+#
+# A tool that answers one question and not the next is not a contrived shape.
+# It is a wrapper that handles the flags it knows, a build with one codec
+# missing, a binary that works until a resource runs out — and it is inside the
+# threat model this project already states, which is "present and broken"
+# rather than "absent". So the stub answers exactly the questions the guard's
+# probe asks, by count, and exits 5 on the one after.
+#
+# Nothing is mirrored, replaced or uninstalled: one directory, one real file,
+# prepended to the real PATH. The counter is reset on every call, so each case
+# starts with the tool able to answer again.
 broken_tool_path() {
   local tool="$1"
   local mode="$2"
@@ -1101,9 +1154,24 @@ broken_tool_path() {
       silent)   printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/$tool" ;;
       erroring) printf '#!/usr/bin/env bash\nexit 2\n' > "$dir/$tool" ;;
       wrong)    printf '#!/usr/bin/env bash\nprintf %s\nexit 0\n' "'not-an-answer\\n'" > "$dir/$tool" ;;
+      probe-only)
+        # Every read here is a shell builtin. `cat` is one of the tools this
+        # stub stands in for, and a stub that shelled out to `cat` to read its
+        # own counter would call itself.
+        printf '%s\n' \
+          '#!/usr/bin/env bash' \
+          "asked=\"$dir/.asked\"" \
+          'n=0' \
+          '[[ -f "$asked" ]] && read -r n < "$asked"' \
+          'n=$((n + 1))' \
+          'printf %s "$n" > "$asked"' \
+          "if (( n <= $(probe_calls_of "$tool") )); then exec $(command -v "$tool") \"\$@\"; fi" \
+          'exit 5' > "$dir/$tool"
+        ;;
     esac
     chmod +x "$dir/$tool"
   fi
+  rm -f "$dir/.asked"
   echo "$dir:$PATH"
 }
 
@@ -1386,7 +1454,7 @@ $btool
     esac
     bjson=""
     case "$bargs" in *--json*) bjson="--json" ;; esac
-    for bmode in silent erroring wrong; do
+    for bmode in silent erroring wrong probe-only; do
       broken_cases=$((broken_cases + 1))
       btarget="$(adverse_target)"
       run_on_path "$(broken_tool_path "$btool" "$bmode")" "$bscript" ${bargs//@target/$btarget}
@@ -1429,6 +1497,16 @@ $btool
 done
 
 echo "  present-but-broken cases driven: $broken_cases"
+echo "  probe calls per tool: $(for pt in $guard_probed_tools; do printf '%s=%s ' "$pt" "$(probe_calls_of "$pt")"; done)"
+# The probe-only stub is built around this number, so a measurement that came
+# back as zero would build a stub that refuses its own probe — every case would
+# still exit 3, for the wrong reason, and the mode would be testing nothing.
+probe_call_floor=1
+for pt in $guard_probed_tools; do
+  [[ "$(probe_calls_of "$pt")" -ge 1 ]] || probe_call_floor=0
+done
+assert_value "every probed tool is asked at least one question by require_tool, so the probe-only stub has a probe to answer" \
+  "$([[ "$probe_call_floor" -eq 1 ]] && echo true || echo false)"
 assert_value "the present-but-broken cross product was enumerated, not read as empty" \
   "$([[ "$broken_cases" -ge 45 ]] && echo true || echo false)"
 
@@ -1549,6 +1627,55 @@ done
 echo "  mktemp temp-directory cases driven: $mktemp_env_cases"
 assert_value "the mktemp temp-directory cases were enumerated, not read as empty" \
   "$([[ "$mktemp_env_cases" -eq 2 ]] && echo true || echo false)"
+
+# --- "No draft was written" has to be true of the draft, not of the reads -------
+#
+# The drafter says "no draft was written" on every path that refuses to finish,
+# and the sentence was not true. Composing a draft is eight writes, and the
+# checks that could stop it all ran before the first of them — which is a fine
+# ordering and is not the same statement. `-a` naming a file that exists and
+# cannot be read passes the `-f` test, so no temp audit is made; the header is
+# written; `cat` then fails on the audit; errexit spends exit 1, which this
+# contract reserves for the caller's own mistake; and a six-line REWRITE-DRAFT.md
+# is left in the caller's skill directory with a raw `Permission denied` as the
+# only thing said about it.
+#
+# This is the whole shape of it with real tools and no stub at all, which is why
+# it is driven here as well as through the cross product above.
+draft_unreadable_audit="$mask_root/unreadable-audit.md"
+printf '%s\n' 'an audit nobody can read' > "$draft_unreadable_audit"
+chmod 000 "$draft_unreadable_audit"
+# Under a user that bypasses file permissions there is nothing here to test, and
+# a case that quietly tests nothing is what this suite exists to refuse. So the
+# premise is asserted rather than assumed.
+assert_value "the unreadable audit report is genuinely unreadable to this user" \
+  "$([[ ! -r "$draft_unreadable_audit" ]] && echo true || echo false)"
+
+unreadable_target="$(adverse_target)"
+code=0
+errout="$("$DRAFT_ABS" -t "$unreadable_target" -a "$draft_unreadable_audit" 2>&1 >/dev/null)" || code=$?
+assert_value "drafter, an audit report it cannot read: exits 3, not 1 — an unreadable source is not the caller's usage" \
+  "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "drafter, an audit report it cannot read: exits inside the set its own header states" \
+  "$(states_exit skills/skill-rewrite/scripts/draft-rewrite.sh "$code" && echo true || echo false)"
+assert_value "drafter, an audit report it cannot read: names cat as the thing that could not answer" \
+  "$(echo "$errout" | grep -q 'cat' && echo true || echo false)"
+assert_value "drafter, an audit report it cannot read: says no draft was written" \
+  "$(echo "$errout" | grep -q 'no draft was written' && echo true || echo false)"
+assert_value "drafter, an audit report it cannot read: leaves no draft behind, not even a partial one" \
+  "$([[ ! -e "$unreadable_target/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+chmod 600 "$draft_unreadable_audit"
+
+# The control, and it is what makes the case above a case: the same invocation
+# with the same audit report readable writes the draft and exits 0. Without it,
+# a drafter that refused every `-a` would pass every assertion above.
+readable_target="$(adverse_target)"
+code=0
+output="$("$DRAFT_ABS" -t "$readable_target" -a "$draft_unreadable_audit" 2>/dev/null)" || code=$?
+assert_value "drafter, the same audit report readable: writes the draft and exits 0" \
+  "$([[ $code -eq 0 && -f "$readable_target/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+assert_value "drafter, the same audit report readable: the draft carries what the audit said" \
+  "$(grep -q 'an audit nobody can read' "$readable_target/REWRITE-DRAFT.md" && echo true || echo false)"
 
 # --- The call site, which the probe cannot stand in for -------------------------
 #
