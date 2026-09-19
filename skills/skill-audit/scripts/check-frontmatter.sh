@@ -58,13 +58,14 @@ fi
 # Run skill-validator for spec validation (frontmatter, name, description).
 #
 # Every tool this script computes with, stated as a precondition here: awk reads
-# the frontmatter, grep answers the license rule, sed formats a spec failure,
-# and skill-validator is the spec source itself. Each is required to be present
-# *and* to answer a question with a known answer, because a tool that is on PATH
-# and does not work is the fault that reached a consumer.
+# the frontmatter, grep answers the license rule, jq reads what the spec source
+# said, and skill-validator is the spec source itself. Each is required to be
+# present *and* to answer a question with a known answer, because a tool that is
+# on PATH and does not work is the fault that reached a consumer — and each is
+# then read again where it is called, because a probe answers for the moment it
+# was asked and for nothing after it.
 require_tool awk false
 require_tool grep false
-require_tool sed false
 require_tool jq false
 require_tool skill-validator false
 
@@ -112,7 +113,9 @@ json_document_conforms "$output" '
   end' \
   || cannot_compute DEP002 "skill-validator did not produce a readable spec payload" false "$output"
 
-spec_errors="$(jq -r '.errors' <<< "$output")"
+jq_answer false "read the spec error count out of skill-validator's payload" \
+  "$output" -r '.errors'
+spec_errors="$answered"
 
 # 0 = clean pass and 2 = warnings only (e.g. orphan files) both assert no spec
 # error; 1 asserts at least one. Either statement failing to match the other is
@@ -125,7 +128,19 @@ case $code in
   1)
     [[ "$spec_errors" -gt 0 ]] \
       || cannot_compute DEP002 "skill-validator exited 1 but its payload reports no spec error" false "$output"
-    sed 's/^/SPEC FAIL: /' <<< "$output"
+    # Prefixing lines is the shell's own work, and it is done with the shell
+    # for the reason draft-rewrite.sh's usage() stopped using `cat`: a verdict
+    # this script has already computed must not be destroyable by a formatter.
+    # `sed` here was the last external whose status nothing read, and unread it
+    # was fatal in the worst possible place — a genuine spec failure became
+    # exit 5 with nothing on either channel, so the one exit that carries a
+    # finding about the skill was the one that could be silently deleted.
+    # Reading sed's status would have relabelled that loss as DEP002; not
+    # needing sed means there is nothing to lose. It was this script's only use
+    # of it, so the precondition goes with it.
+    while IFS= read -r spec_line; do
+      printf 'SPEC FAIL: %s\n' "$spec_line"
+    done <<< "$output"
     exit 1
     ;;
 esac
@@ -136,8 +151,8 @@ esac
 # correct answers to "where does the frontmatter end", and both are gone: two
 # correct private copies still leave a reader of these scripts four answers to
 # one question, and the two that were wrong were wrong in ways nothing caught.
-frontmatter="$(skill_frontmatter "$skill_md")" \
-  || cannot_compute DEP002 "could not read the frontmatter of $skill_md" false
+skill_frontmatter "$skill_md" false
+frontmatter="$section"
 
 if ! text_matches false false "^license:[[:space:]]" "$frontmatter"; then
   echo "POLICY FAIL [PL001]: missing license (house policy)"

@@ -66,16 +66,20 @@ fi
 
 # Every tool this script computes with, stated as a precondition here rather
 # than discovered at the call site that needed it. awk reads the body, grep
-# answers every policy rule, and wc and tr count the lines; jq is asked for only
-# in --json mode, where it is what builds the payload.
+# answers every policy rule, and wc counts the lines; jq is asked for only in
+# --json mode, where it is what builds the payload.
 #
 # They are preconditions and not just presence checks: a tool that is on PATH
 # and does not work is the fault that reached a consumer, not a tool that is
 # missing. require_tool asks each of them a question it knows the answer to.
+#
+# And asking once is not the same as asking where it matters. A precondition
+# says the tool answered at this line; every call below reads its own answer
+# too, because a tool that passes here and fails there would otherwise leak its
+# status as this script's, outside the set stated above.
 require_tool awk "$json_output"
 require_tool grep "$json_output"
 require_tool wc "$json_output"
-require_tool tr "$json_output"
 if $json_output; then
   require_tool jq true
 fi
@@ -96,8 +100,8 @@ findings=()
 # The body is read once, here, rather than per rule: four reads of one file are
 # four chances for the rules to disagree about what they are judging, and the
 # tool that does the reading has to be answered for once either way.
-body="$(skill_body "$skill_md")" \
-  || cannot_compute DEP002 "could not read the body of $skill_md" "$json_output"
+skill_body "$skill_md" "$json_output"
+body="$section"
 
 # Every rule below is an absence check, and an absence check is exactly where a
 # tool fault becomes a finding: `! grep -q` reads an errored grep as "not
@@ -132,15 +136,26 @@ fi
 # one a newline-terminated read of nothing would report.
 #
 # A count that is not a number is not a count. An empty or non-numeric result
-# reads as 0 inside `[[ -gt ]]`, so a wc or tr that failed would silently retire
-# PL003 rather than raise it, which is a verdict drawn from a source that said
-# nothing.
+# reads as 0 inside `[[ -gt ]]`, so a wc that failed would silently retire PL003
+# rather than raise it, which is a verdict drawn from a source that said nothing.
+#
+# wc's status is read on its own, and the sentence names wc. It used to be read
+# through a pipe into `tr -d`, which is two faults in one line: under `pipefail`
+# either tool's failure produced the same status, so the diagnostic could name
+# neither and named the SKILL.md instead — a source that was perfectly
+# readable, which sends the next reader to look at the wrong thing. And `tr`
+# was there to strip the spaces BSD wc pads its output with, which is
+# parameter expansion's work. Stripping it in the shell leaves one tool to
+# answer for, which is the one that did the counting.
 line_count=0
 if [[ -n "$body" ]]; then
-  line_count="$(wc -l <<< "$body" | tr -d '[:space:]')" \
-    || cannot_compute DEP002 "could not count the lines of $skill_md; no verdict was computed" "$json_output"
+  wc_status=0
+  line_count="$(wc -l <<< "$body")" || wc_status=$?
+  [[ $wc_status -eq 0 ]] \
+    || cannot_compute DEP002 "wc could not count the lines of $skill_md (status $wc_status); no verdict was computed" "$json_output"
+  line_count="${line_count//[[:space:]]/}"
   [[ "$line_count" =~ ^[0-9]+$ ]] \
-    || cannot_compute DEP002 "the line count of $skill_md came back as '$line_count', which is not a count" "$json_output"
+    || cannot_compute DEP002 "wc answered the line count of $skill_md with '$line_count', which is not a count" "$json_output"
 fi
 if [[ "$line_count" -gt 500 ]]; then
   findings+=("fail|PL003|SKILL.md body is $line_count lines (max 500)")
@@ -185,14 +200,18 @@ if $json_output; then
   # zero findings is the same silent pass as reading garbage as zero findings.
 
   # 1. Shape, proven before anything is read and whatever the verdict says.
-  payload_is_conforming "$path_json" \
+  payload_is_conforming "$path_json" true \
     || cannot_compute DEP002 "check-paths.sh --json did not produce a readable payload" true
 
   # 2. The child's own verdict, now safe to read, against its own findings. A
   #    payload claiming it passed while carrying a finding that says it failed
   #    contradicts itself, and neither half can be believed over the other.
-  child_passed=$(echo "$path_json" | jq -r 'if .passed then "true" else "false" end')
-  child_has_fail=$(echo "$path_json" | jq -r 'if any(.findings[]; .level == "fail") then "true" else "false" end')
+  jq_answer true "read check-paths.sh's own verdict out of its payload" "$path_json" \
+    -r 'if .passed then "true" else "false" end'
+  child_passed="$answered"
+  jq_answer true "read whether check-paths.sh's payload carries a failing finding" "$path_json" \
+    -r 'if any(.findings[]; .level == "fail") then "true" else "false" end'
+  child_has_fail="$answered"
   if [[ "$child_passed" == "true" && "$child_has_fail" == "true" ]]; then
     cannot_compute DEP002 "check-paths.sh --json payload claims it passed beside a finding that says it failed" true
   fi
@@ -201,15 +220,22 @@ if $json_output; then
   [[ "$child_passed" == "$path_passed" ]] \
     || cannot_compute DEP002 "check-paths.sh --json payload contradicts its exit status $path_code" true
 
-  # Merge path findings into our findings array. The read-back needs no guard of
-  # its own: every element has been shown to carry a string level, rule and
-  # message, so there is nothing here left to trip over.
-  path_findings=$(echo "$path_json" | jq -c '.findings[]')
+  # Merge path findings into our findings array. Every element has been shown to
+  # carry a string level, rule and message, so there is nothing in the *document*
+  # left to trip over — but that says nothing about the instrument, and these
+  # four reads used to be the place it said so: a jq that answered the
+  # precondition and failed here made this script exit 5 with no payload at all.
+  # The shape is proven; the tool is read.
+  jq_answer true "list check-paths.sh's findings" "$path_json" -c '.findings[]'
+  path_findings="$answered"
   if [[ -n "$path_findings" ]]; then
     while IFS= read -r pf; do
-      level=$(echo "$pf" | jq -r '.level')
-      rule=$(echo "$pf" | jq -r '.rule')
-      message=$(echo "$pf" | jq -r '.message')
+      jq_answer true "read a check-paths.sh finding's level" "$pf" -r '.level'
+      level="$answered"
+      jq_answer true "read a check-paths.sh finding's rule" "$pf" -r '.rule'
+      rule="$answered"
+      jq_answer true "read a check-paths.sh finding's message" "$pf" -r '.message'
+      message="$answered"
       findings+=("${level}|${rule}|${message}")
     done <<< "$path_findings"
   fi
@@ -238,12 +264,16 @@ if $json_output; then
     rest="${f#*|}"
     rule="${rest%%|*}"
     message="${rest#*|}"
-    json_findings=$(echo "$json_findings" | jq --arg level "$level" --arg rule "$rule" --arg msg "$message" \
-      '. + [{"level": $level, "rule": $rule, "message": $msg}]')
+    jq_answer true "add a $rule finding to the payload" "$json_findings" \
+      --arg level "$level" --arg rule "$rule" --arg msg "$message" \
+      '. + [{"level": $level, "rule": $rule, "message": $msg}]'
+    json_findings="$answered"
   done
-  payload="$(echo "$json_findings" | jq --argjson passed "$([[ $fail -eq 0 ]] && echo true || echo false)" \
-    '{findings: ., passed: $passed}')"
-  payload_is_conforming "$payload" \
+  jq_answer true "close the findings payload" "$json_findings" \
+    --argjson passed "$([[ $fail -eq 0 ]] && echo true || echo false)" \
+    '{findings: ., passed: $passed}'
+  payload="$answered"
+  payload_is_conforming "$payload" true \
     || cannot_compute DEP002 "the findings payload could not be built; no verdict was computed" true
   printf '%s\n' "$payload"
 else

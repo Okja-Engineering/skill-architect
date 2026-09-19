@@ -262,17 +262,17 @@ The profile JSON is the integration point for future paired comparisons (F04). S
 
 ### Prerequisites
 
-The skills shell out to ten external tools, and every one of them is a hard
+The skills shell out to eight external tools, and every one of them is a hard
 precondition rather than a nice-to-have: a script that cannot get an answer from
 one of them exits 3 and says which, instead of reporting a verdict it did not
 compute.
 
-Required tools: `awk`, `cat`, `grep`, `jq`, `mktemp`, `sed`, `skill-validator`, `skillscore`, `tr`, `wc`.
+Required tools: `awk`, `cat`, `grep`, `jq`, `mktemp`, `skill-validator`, `skillscore`, `wc`.
 
 That list is compared against the scripts themselves by `tests/test_f01.sh`, in
 both directions, so it cannot fall behind what they actually require.
 
-Three of them you install. Seven are POSIX utilities you already have, and they
+Three of them you install. Five are POSIX utilities you already have, and they
 are named here anyway, because "you already have it" is not what these scripts
 require of them — see below.
 
@@ -282,13 +282,21 @@ require of them — see below.
 | [`skillscore`](https://www.npmjs.com/package/skillscore) | `npm install -g skillscore` | `skill-audit` stops at the same stage with `skillscore not found` and exit 1. `check-quality.sh` exits 3. `audit-report.sh` emits `quality: null` with `quality_error`, and `quality_score` / `quality_grade` are `null`. |
 | `jq` | `brew install jq` (macOS) · `apt-get install jq` (Debian/Ubuntu) | **All five `skill-audit` scripts require jq**, not only the two `--json` modes. `audit-report.sh` composes its whole report with it, so without it there is no report to generate: it exits 3 with `required tool not found: jq` and writes nothing to stdout, rather than dying part-way through. `check-paths.sh --json` and `check-structure.sh --json` exit 3 with the same message and a `passed: false` payload carrying a `DEP001` finding, whatever the skill contains. `check-frontmatter.sh` and `check-quality.sh` need it too, and both are text-mode-only — `check-frontmatter.sh` has no `--json` mode at all. They read what `skill-validator` and `skillscore` answer, and proving a payload readable is done with jq, so a missing jq stops them at exit 3 on stderr with no rule ID. |
 
-`awk`, `cat`, `grep`, `mktemp`, `sed`, `tr` and `wc` are required in the same
-sense and by the same mechanism. Being on `PATH` is not enough: each is asked a
-question with a known answer before it is computed with, so a tool that is
-present and broken — a `jq` that runs and prints nothing, a `grep` that answers
-with an error status, a `wc` that exits 127 — is reported as an execution error
-rather than read as a verdict about your skill. A script that cannot get a
-straight answer from one of them exits 3 and names it.
+`awk`, `cat`, `grep`, `mktemp` and `wc` are required in the same sense and by
+the same mechanism. Being on `PATH` is not enough: each is asked a question with
+a known answer before it is computed with, **and its answer is read again at
+every call**, so a tool that is present and broken — a `jq` that runs and prints
+nothing, a `grep` that answers with an error status, a `wc` that exits 127, a
+`jq` that answers the first question and fails the next — is reported as an
+execution error rather than read as a verdict about your skill. A script that
+cannot get a straight answer from one of them exits 3 and names it, and the
+tool it names is the one that failed.
+
+`sed` and `tr` were on this list and are not, because nothing shells out to
+them any more. Each did one thing the shell does itself — prefixing lines, and
+stripping the spaces `wc` pads its count with — and each was a tool whose status
+nothing read. A dependency that buys nothing is cheaper to delete than to
+guard.
 
 `check-frontmatter.sh` and `check-quality.sh` now have hard tool requirements
 they did not have before, `jq` among them. That is a deliberate

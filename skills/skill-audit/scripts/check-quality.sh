@@ -89,7 +89,7 @@ quality_raw="$(skillscore "$skill_dir" --json)" || quality_status=$?
 # And a status is not a report. skillscore exiting 0 having printed nothing left
 # this script exiting 0 having printed nothing, which a consumer reads as a
 # skill with no quality to speak of rather than as a source it could not read.
-quality_report_conforms "$quality_raw" \
+quality_report_conforms "$quality_raw" false \
   || cannot_compute DEP002 "skillscore did not produce a readable quality report" false "$quality_raw"
 
 printf '%s\n' "$quality_raw"

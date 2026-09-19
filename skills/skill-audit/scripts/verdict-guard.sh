@@ -270,6 +270,16 @@ tool_answers() {
 # reported as two: DEP001 for a tool that is not there, DEP002 for one that is
 # there and did not answer — the same ID this file's callers use for every other
 # source they could not read, because that is what a broken instrument is.
+#
+# What it is not, and what this file's callers spent twenty-four call sites
+# assuming it was: a statement about the next call. It asks one question at one
+# moment. A tool that answers that question and fails the call two lines later
+# satisfies it exactly, and under `set -e` the failed call's own status is then
+# the script's last act — outside every contract these scripts state, with no
+# diagnostic and no verdict. Presence plus one probe is half the rule. The other
+# half is that every external's status is read *where it is called*, which is
+# what text_matches, text_extract, jq_answer and skill_read are for. A tool with
+# a probe here still needs its answer read there.
 require_tool() {
   local tool="$1"
   local emit_json="${2:-false}"
@@ -347,7 +357,50 @@ text_extract() {
   esac
 }
 
-# json_document_conforms <text> <claim>
+# jq_answer <emit_json> <what> <text> <jq-arg>...
+#
+# Set `answered` to what jq printed for <jq-arg>... with <text> on its stdin,
+# and reach no verdict at all when jq could not answer.
+#
+# This is text_matches' argument, one tool over. `! grep -q` cannot tell "did
+# not match" from "could not answer", and `x="$(jq …)"` cannot tell "answered"
+# from "could not answer" either: under errexit a failed command substitution is
+# the script's last act, so jq's own status becomes the script's exit status
+# with nothing on either channel. Sixteen call sites read jq's output and none
+# read its status, on the premise that `require_tool jq` had settled it — and it
+# had not, because a probe is a statement about one moment and a call site is a
+# different moment. A jq that answered `1 + 1` and failed the read two lines
+# later made check-paths.sh, in its payload mode, exit 5 with zero bytes on
+# both channels.
+#
+# (The name and the flag are kept off one line on purpose: test_f01.sh's rule
+# registry reads a sibling's name beside that flag as a relay of that sibling's
+# rule IDs, and this file relays nothing.)
+#
+# So the status is asked by name here, once, rather than at sixteen call sites
+# where it would be forgotten at one of them.
+#
+# It assigns rather than echoes, for the reason text_extract states: a caller
+# writing `x="$(jq_answer …)"` would run it in a subshell, where cannot_compute's
+# exit 3 kills only the subshell and the caller reads the empty result as a
+# computed answer.
+#
+# The sentence names jq. The tool that failed is the one a reader has to be told
+# about, and naming another component is the one thing a diagnostic must not do.
+jq_answer() {
+  local emit_json="$1"
+  local what="$2"
+  local text="$3"
+  shift 3
+  local status=0
+
+  answered="$(jq "$@" <<< "$text")" || status=$?
+  [[ $status -eq 0 ]] \
+    || cannot_compute DEP002 "jq could not $what (status $status); no verdict was computed" "$emit_json"
+  return 0
+}
+
+# json_document_conforms <text> <claim> [emit_json]
 #
 # Succeed when <text> is exactly one JSON document and <claim> — a jq expression
 # evaluated with that document as its input — answers true of it.
@@ -364,12 +417,41 @@ text_extract() {
 # level and then indexing a level down is the same defect one level in, and
 # proving more than is read makes a source unreadable for a field nobody wanted.
 #
-# `-s` is what makes "exactly one document" part of every claim, and it lives
-# here rather than in each caller's claim because it is the same sentence for
-# all of them: a stream of documents slurps to an array longer than one and is
-# refused, whichever position a conforming document holds in it, and no input at
-# all slurps to an empty array. What differs between callers is only the shape,
-# so only the shape is theirs to state.
+# "Exactly one document" is part of every claim, and it lives here rather than
+# in each caller's claim because it is the same sentence for all of them: a
+# stream of documents is refused, whichever position a conforming document holds
+# in it, and no input at all is refused too. What differs between callers is
+# only the shape, so only the shape is theirs to state. `fromjson` says exactly
+# that — it yields one value or it raises — which is why the text arrives as a
+# jq *string* argument rather than on stdin.
+#
+# It arrives that way because of what the status could not distinguish. Read
+# with `-se`, jq answers 0 for "the claim holds", 1 for "it does not", and 5 for
+# both "the text is not JSON at all" and "jq could not run". Those last two are
+# not the same answer and this function published them as one: a jq that
+# answered the probe and failed here made check-quality.sh say **skillscore did
+# not produce a readable quality report** over a report skillscore had produced
+# perfectly, and check-frontmatter.sh blame **skill-validator** the same way,
+# with the word jq nowhere in either. That is naming the wrong component, which
+# is the one thing a diagnostic must not do.
+#
+# So the question is put in a form where a working jq always *says* which of the
+# three happened, and the answer is compared to the question — the same repair
+# the mktemp probe needed. jq is asked to print a token; `fromjson` inside a
+# `try` turns "not one JSON document" into the same `no` as a claim that does
+# not hold, because to a caller they are the same fact; and anything that is not
+# one of the two tokens — no output, a stub's confident lie, a nonzero exit — is
+# jq failing to answer, which is DEP002 naming jq.
+#
+# `if . then` and not `if . == true then`, so a claim's answer is read exactly
+# as `-e` read it: false and null are "no" and everything else is "yes". `last`
+# for the same reason, since `-e` looked at the final output. Preserving both
+# keeps this change to the one thing it is for; which documents conform is not
+# in question here.
+#
+# jq's own channels are discarded. A claim that does not hold is an answer
+# rather than a diagnostic, so a working jq has nothing to say on stderr, and a
+# broken one's noise would land on a caller's payload channel.
 #
 # A claim is written total rather than short-circuiting — each `if` settles a
 # type before anything indexes through it — so a wrong type answers false where
@@ -383,10 +465,23 @@ text_extract() {
 # It answers with jq, so it is callable only where jq is already a proven
 # precondition. Every caller requires jq before reading any source.
 json_document_conforms() {
-  printf '%s' "$1" | jq -se "length == 1 and (.[0] | $2)" >/dev/null 2>&1
+  local text="$1"
+  local claim="$2"
+  local emit_json="${3:-false}"
+  local answer=""
+
+  answer="$(jq -nr --arg text "$text" "
+    \"CONFORMS:\" + ([ (\$text | fromjson) | ( $claim ) ]? // [false]
+      | last | if . then \"yes\" else \"no\" end)" 2>/dev/null)" || answer=""
+
+  case "$answer" in
+    CONFORMS:yes) return 0 ;;
+    CONFORMS:no)  return 1 ;;
+    *) cannot_compute DEP002 "jq could not answer whether the source is one JSON document of the shape this read needs; no verdict was computed" "$emit_json" ;;
+  esac
 }
 
-# payload_is_conforming <text>
+# payload_is_conforming <text> [emit_json]
 #
 # Succeed when <text> is one findings payload in the shape these scripts
 # document: an object with a boolean `passed` and an array `findings` whose
@@ -406,10 +501,10 @@ payload_is_conforming() {
            and (.rule | type) == "string"
            and (.message | type) == "string"
       end] | all
-    end'
+    end' "${2:-false}"
 }
 
-# quality_report_conforms <text>
+# quality_report_conforms <text> [emit_json]
 #
 # Succeed when <text> is one skillscore report as far as this skill reads it: an
 # object whose `overallScore` is an object, or absent. The score and the letter
@@ -427,7 +522,7 @@ quality_report_conforms() {
     if type != "object" then false
     elif (.overallScore | type) == "null" then true
     else (.overallScore | type) == "object"
-    end'
+    end' "${2:-false}"
 }
 
 # skill_section <frontmatter|body> <skill-md>
@@ -462,7 +557,8 @@ quality_report_conforms() {
 # It answers with awk, so it is callable only where awk is a proven
 # precondition, and it passes awk's status through: an unreadable file leaves
 # awk non-zero, and a caller that cannot read the source has no verdict to
-# report about it. Every caller checks.
+# report about it. Nothing calls it directly — skill_read below is where that
+# status is read and where the sentence about it is built.
 skill_section() {
   local want="$1"
   local file="$2"
@@ -480,18 +576,46 @@ skill_section() {
   ' "$file"
 }
 
-# skill_frontmatter <skill-md> — the YAML between the delimiters.
-# skill_body <skill-md>        — everything after the closing delimiter.
+# skill_read <frontmatter|body> <skill-md> <emit_json>
 #
-# Two names rather than one with an argument, because the argument would be the
-# same string at every call site and a caller that mistyped it would silently
-# get the other half.
+# Set `section` to one half of a SKILL.md, and reach no verdict at all when awk
+# could not read it.
+#
+# This is where awk's answer is read, for the same reason text_matches is where
+# grep's is. Every caller used to write `x="$(skill_frontmatter "$f")" ||
+# cannot_compute DEP002 "could not read the frontmatter of $f"`, which reads the
+# status correctly and then names the wrong thing: with an awk that answered the
+# probe and failed the read, four scripts blamed a SKILL.md that was perfectly
+# readable and never said awk. A reader told the source is bad goes and looks at
+# the source. So the sentence is built once, here, where what failed is known.
+#
+# It assigns rather than echoes for the reason text_extract states: inside
+# `$(…)` this function's exit 3 would kill only the subshell, and the caller
+# would read the empty result as a section that was genuinely empty.
+skill_read() {
+  local want="$1"
+  local file="$2"
+  local emit_json="${3:-false}"
+  local status=0
+
+  section="$(skill_section "$want" "$file")" || status=$?
+  [[ $status -eq 0 ]] \
+    || cannot_compute DEP002 "awk could not read the $want of $file (status $status); no verdict was computed" "$emit_json"
+  return 0
+}
+
+# skill_frontmatter <skill-md> <emit_json> — the YAML between the delimiters.
+# skill_body <skill-md> <emit_json>        — everything after the closing one.
+#
+# Both set `section`. Two names rather than one with an argument, because the
+# argument would be the same string at every call site and a caller that
+# mistyped it would silently get the other half.
 skill_frontmatter() {
-  skill_section frontmatter "$1"
+  skill_read frontmatter "$1" "${2:-false}"
 }
 
 skill_body() {
-  skill_section body "$1"
+  skill_read body "$1" "${2:-false}"
 }
 
 # verdict_guard_ready
@@ -507,9 +631,9 @@ skill_body() {
 verdict_guard_ready() {
   local g
   for g in json_string cannot_compute mktemp_answers tool_answers require_tool \
-           text_matches text_extract json_document_conforms \
+           text_matches text_extract jq_answer json_document_conforms \
            payload_is_conforming quality_report_conforms skill_section \
-           skill_frontmatter skill_body; do
+           skill_read skill_frontmatter skill_body; do
     declare -F "$g" >/dev/null 2>&1 || return 1
   done
   return 0

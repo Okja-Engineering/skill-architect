@@ -60,13 +60,26 @@ source "$verdict_guard"
 target_skill=""
 audit_report=""
 own_audit_report=""
+output=""
+draft_incomplete=false
 
 # The temporary audit this script writes when it was not handed one. It is
 # removed on every exit path rather than only the successful one: the checks
 # below can now stop the draft, and a new exit path that leaked a file each time
 # would be this change's own doing.
+#
+# The draft itself is the trap's too, from the moment it is opened until the
+# moment it is finished. "No draft was written" is what this script says on
+# every path that does not reach the end, and it was not true: composing the
+# draft is eight writes, any one of which can fail, and `-a` pointing at a file
+# that exists and cannot be read put a six-line stub in the caller's skill
+# directory at exit 1 — a status this contract spends on the caller's own
+# mistake. No amount of checking before the first byte fixes that, because the
+# writes come after it. So the sentence is made true the only way it can be:
+# an incomplete draft is not left behind.
 cleanup() {
   [[ -n "$own_audit_report" ]] && rm -f "$own_audit_report"
+  [[ "$draft_incomplete" == true ]] && rm -f "$output"
   return 0
 }
 trap cleanup EXIT
@@ -245,13 +258,51 @@ fi
 # a comment to a parser and a heading to a grep over the whole file, so a skill
 # whose body has no sections at all was handed a draft with no templates in it.
 #
-# Read before the draft file is opened. Everything that can stop this script
-# has to stop it before the first byte is written, or "no draft was written"
-# stops being true and the caller is left with half a document.
-target_body="$(skill_body "$target_skill/SKILL.md")" \
-  || cannot_compute DEP002 "could not read the body of $target_skill/SKILL.md; no draft was written" false
+# Read before the draft file is opened, with everything else this script reads.
+# That ordering is worth keeping and it was never the whole of the rule, which
+# is where the claim went wrong: composing the draft is itself eight writes, so
+# "everything that can stop this script stops it before the first byte" cannot
+# be made true by moving reads earlier. What can be made true, and is, is the
+# sentence those words were standing in for — "no draft was written" — and the
+# trap above is what makes it true, on every path including the ones that fail
+# in the middle of writing.
+skill_body "$target_skill/SKILL.md" false
+target_body="$section"
 
-cat > "$output" <<EOF
+# And the audit itself, which is the other thing the draft is composed from.
+# It used to be read with `cat "$audit_report" >> "$output"`, three writes into
+# the document — so `-a` naming a file that exists and cannot be read passed
+# the `-f` test above, opened the draft, wrote its header, and died inside cat
+# with errexit spending exit 1 and the caller left holding six lines. Read here
+# it is one more thing that stops this script before it starts writing, and
+# cat's status is read where cat is called, with the sentence naming cat.
+audit_status=0
+audit_text="$(cat -- "$audit_report")" || audit_status=$?
+[[ $audit_status -eq 0 ]] \
+  || cannot_compute DEP002 "cat could not read the audit report at $audit_report (status $audit_status); no draft was written" false
+
+# draft_append — append this function's stdin to the draft, reading cat's status
+# where cat is called.
+#
+# `require_tool cat` above says cat answered one question at one moment. It says
+# nothing about these seven writes, and unread their status was this script's:
+# under errexit a cat that failed on the third one exited this script with cat's
+# own status, having already written the first two. The status is read here once
+# rather than at seven call sites, where it would be forgotten at one of them.
+draft_append() {
+  local status=0
+  cat >> "$output" || status=$?
+  [[ $status -eq 0 ]] \
+    || cannot_compute DEP002 "cat could not write the draft to $output (status $status); no draft was written" false
+  return 0
+}
+
+# From here on there is a partial document on disk, and the trap owns it.
+: > "$output" \
+  || cannot_compute DEP002 "could not open $output for writing; no draft was written" false
+draft_incomplete=true
+
+draft_append <<EOF
 # Rewrite draft: $skill_name
 
 Generated from: $provenance
@@ -260,9 +311,9 @@ Generated from: $provenance
 
 EOF
 
-cat "$audit_report" >> "$output"
+[[ -z "$audit_text" ]] || draft_append <<< "$audit_text"
 
-cat >> "$output" <<'EOF'
+draft_append <<'EOF'
 
 ## Proposed structure
 
@@ -284,7 +335,7 @@ Follow the Agent Skills spec and ICM context-management principles:
 EOF
 
 if ! text_matches false true "^#{2,6}[[:space:]]+When to use[[:space:]]*$" "$target_body"; then
-  cat >> "$output" <<'EOF'
+  draft_append <<'EOF'
 ### When to use
 
 Use this skill when:
@@ -299,7 +350,7 @@ EOF
 fi
 
 if ! text_matches false true "^#{2,6}[[:space:]]+Examples?[[:space:]]*$" "$target_body"; then
-  cat >> "$output" <<'EOF'
+  draft_append <<'EOF'
 ### Examples
 
 #### Example 1: <scenario>
@@ -326,7 +377,7 @@ EOF
 fi
 
 if ! text_matches false true "^#{2,6}[[:space:]]+Validation" "$target_body"; then
-  cat >> "$output" <<'EOF'
+  draft_append <<'EOF'
 ### Validation checklist
 
 - [ ] <observable pass/fail criterion 1>
@@ -336,7 +387,7 @@ if ! text_matches false true "^#{2,6}[[:space:]]+Validation" "$target_body"; the
 EOF
 fi
 
-cat >> "$output" <<'EOF'
+draft_append <<'EOF'
 
 ## Action items
 
@@ -353,4 +404,5 @@ cat >> "$output" <<'EOF'
 - If the skill is doing more than one job, consider splitting it instead of expanding the rewrite.
 EOF
 
+draft_incomplete=false
 echo "Rewrite draft written to: $output"

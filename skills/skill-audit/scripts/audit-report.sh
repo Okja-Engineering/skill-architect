@@ -93,6 +93,12 @@ fi
 # Each is required to be present *and* to answer a question with a known answer
 # — a jq on PATH that runs and prints nothing satisfies a presence check and
 # then emits an empty report at exit 0, which is the fault this closes.
+#
+# And each is read again wherever it is called. This line settles what the tool
+# did when it was asked here; it settles nothing about the five jq calls below
+# it, and unread they were fatal: a jq that answered this question and failed
+# the merge left this script exiting 5 with no report and no diagnostic, which
+# is the exact outcome the header above says it exists to prevent.
 require_tool jq false
 require_tool awk false
 require_tool grep false
@@ -192,7 +198,9 @@ if command -v skill-validator &>/dev/null; then
     # enumerates over the same tool: 0 clean, 1 errors, 2 warnings only, 3
     # usage error. 0 and 2 assert no spec error, 1 asserts at least one, and 3
     # or anything outside the set is not a verdict at all.
-    spec_errors_said="$(jq -r '.errors' <<< "$spec_raw")"
+    jq_answer false "read the spec error count out of skill-validator's payload" \
+      "$spec_raw" -r '.errors'
+    spec_errors_said="$answered"
     case $spec_status in
       0|2)
         [[ "$spec_errors_said" -eq 0 ]] \
@@ -228,7 +236,7 @@ quality_error=""
 if command -v skillscore &>/dev/null; then
   quality_status=0
   quality_raw="$(skillscore "$skill_dir" --json)" || quality_status=$?
-  if ! quality_report_conforms "$quality_raw"; then
+  if ! quality_report_conforms "$quality_raw" false; then
     quality_error="$(source_failure skillscore "$quality_status" "$quality_raw")"
   elif [[ $quality_status -ne 0 ]]; then
     quality_error="$(source_failure skillscore "$quality_status" "$quality_raw")"
@@ -266,7 +274,7 @@ policy_error=""
 if [[ -x "$script_dir/check-structure.sh" ]]; then
   struct_status=0
   struct_raw="$("$script_dir/check-structure.sh" --json "$skill_dir")" || struct_status=$?
-  if ! payload_is_conforming "$struct_raw"; then
+  if ! payload_is_conforming "$struct_raw" false; then
     policy_error="$(source_failure check-structure.sh "$struct_status" "$struct_raw")"
   else
     # check-structure.sh exits 0 pass, 1 path failure, 2 policy failure, 3 no
@@ -275,8 +283,12 @@ if [[ -x "$script_dir/check-structure.sh" ]]; then
     # with the payload's own verdict means the two halves of one answer
     # contradict each other. Either way there is nothing here to report as a
     # policy verdict, and the report says so rather than picking a half.
-    policy_findings=$(echo "$struct_raw" | jq -c '.findings')
-    policy_passed=$(echo "$struct_raw" | jq -r '.passed')
+    jq_answer false "read check-structure.sh's findings out of its payload" \
+      "$struct_raw" -c '.findings'
+    policy_findings="$answered"
+    jq_answer false "read check-structure.sh's own verdict out of its payload" \
+      "$struct_raw" -r '.passed'
+    policy_passed="$answered"
     case $struct_status in
       0) [[ "$policy_passed" == "true" ]] \
            || policy_error="check-structure.sh exited 0 beside a payload that reports it did not pass" ;;
@@ -296,12 +308,13 @@ fi
 # --- PL001: license check (inline — avoids double-running skill-validator) ---
 # The frontmatter comes from the shared primitive, which is where the question
 # "where does the frontmatter end" is now asked, once, for all of these scripts.
-frontmatter="$(skill_frontmatter "$skill_md")" \
-  || cannot_compute DEP002 "could not read the frontmatter of $skill_md" false
+skill_frontmatter "$skill_md" false
+frontmatter="$section"
 
 if ! text_matches false false "^license:[[:space:]]" "$frontmatter"; then
-  policy_findings=$(echo "$policy_findings" | jq -c \
-    '. + [{"level": "fail", "rule": "PL001", "message": "missing license (house policy)"}]')
+  jq_answer false "add the PL001 finding to the policy findings" "$policy_findings" \
+    -c '. + [{"level": "fail", "rule": "PL001", "message": "missing license (house policy)"}]'
+  policy_findings="$answered"
 fi
 
 # --- Merge into unified report ---
@@ -314,7 +327,8 @@ fi
 # asked about. So the document is proven to be the report before it is printed,
 # as far down as a consumer reads the summary, and a report that would not
 # compose is the same DEP002 exit 3 as a source that would not read.
-report="$(jq -n \
+jq_answer false "compose the report" "" \
+  -n \
   --arg skill "$skill_dir" \
   --arg timestamp "$timestamp" \
   --argjson spec "$spec_json" \
@@ -351,7 +365,8 @@ report="$(jq -n \
       findings: $policy_findings
     },
     policy_error: (if $policy_error == "" then null else $policy_error end)
-  }')"
+  }'
+report="$answered"
 
 json_document_conforms "$report" '
   if type != "object" then false

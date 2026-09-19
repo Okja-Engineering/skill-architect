@@ -83,8 +83,8 @@ findings=()
 # The body, read through the shared primitive. This was a private toggle that
 # re-entered frontmatter on a third `---`, so one markdown horizontal rule ended
 # every check below it and a skill with broken references reported none.
-body="$(skill_body "$skill_md")" \
-  || cannot_compute DEP002 "could not read the body of $skill_md" "$json_output"
+skill_body "$skill_md" "$json_output"
+body="$section"
 
 # Both reference sweeps read their input through text_extract, and the reason is
 # the shape they used to have: the extraction sat inside the process
@@ -164,12 +164,16 @@ if $json_output; then
     rest="${f#*|}"
     rule="${rest%%|*}"
     message="${rest#*|}"
-    json_findings=$(echo "$json_findings" | jq --arg level "$level" --arg rule "$rule" --arg msg "$message" \
-      '. + [{"level": $level, "rule": $rule, "message": $msg}]')
+    jq_answer true "add a $rule finding to the payload" "$json_findings" \
+      --arg level "$level" --arg rule "$rule" --arg msg "$message" \
+      '. + [{"level": $level, "rule": $rule, "message": $msg}]'
+    json_findings="$answered"
   done
-  payload="$(echo "$json_findings" | jq --argjson passed "$([[ $fail -eq 0 ]] && echo true || echo false)" \
-    '{findings: ., passed: $passed}')"
-  payload_is_conforming "$payload" \
+  jq_answer true "close the findings payload" "$json_findings" \
+    --argjson passed "$([[ $fail -eq 0 ]] && echo true || echo false)" \
+    '{findings: ., passed: $passed}'
+  payload="$answered"
+  payload_is_conforming "$payload" true \
     || cannot_compute DEP002 "the findings payload could not be built; no verdict was computed" true
   printf '%s\n' "$payload"
 else
