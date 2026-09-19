@@ -1285,6 +1285,14 @@ stated_exit_codes() {
   exit_line_of "$1" | grep -oE '(^|[^0-9])[0-9]+=' | grep -oE '[0-9]+' | sort -u
 }
 
+# english_count <n> — the number written the way these docs write it. Defined
+# once because two derivations below compare a word in prose against a count,
+# and two private copies of a number-word list is one list that can drift.
+english_count() {
+  printf '%s\n' zero one two three four five six seven eight nine ten eleven twelve \
+    | sed -n "$(($1 + 1))p"
+}
+
 # states_exit <script> <code> — true when <code> is in that script's set.
 states_exit() {
   local wanted="$2"
@@ -1866,8 +1874,7 @@ fi
 # the list cannot disagree. This is the half that was wrong: the sentence said
 # three while the scripts required ten.
 readme_claimed_count="$(sed -n 's/^The skills shell out to \([a-z]*\) external tools.*/\1/p' README.md | head -1)"
-readme_count_words="zero one two three four five six seven eight nine ten eleven twelve"
-readme_count_expected="$(printf '%s\n' $readme_count_words | sed -n "$((readme_required_n + 1))p")"
+readme_count_expected="$(english_count "$readme_required_n")"
 assert_value "the readme's tool count is the number of tools it lists ($readme_required_n)" \
   "$([[ -n "$readme_claimed_count" && "$readme_claimed_count" == "$readme_count_expected" ]] && echo true || echo false)"
 
@@ -2111,6 +2118,65 @@ assert_value "every row in SKILL.md's exit table names a script that exists" \
 if [[ -n "$exit_rows_stale" ]]; then
   echo "  rows naming no script:$exit_rows_stale"
 fi
+
+# The sentence beside the table counts the table's own rows, so the two cannot
+# disagree. It said four house-policy checks carry their verdict in the exit
+# status; there are three, and the fourth and fifth rows are the two generators
+# the sentence above it names. An off-by-one prose count in the section whose
+# whole subject is a doc that drifted from the scripts — which is what a count
+# written as a word rather than derived does, every time.
+#
+# The criterion is the table's: a script that can exit with something other than
+# 0 or 3 is saying something about the skill in its exit status. 0 and 3 alone
+# say only "a document was produced" and "it was not".
+exit_verdict_carriers=0
+exit_generators=0
+for vscript in "$SCRIPTS_DIR"/*.sh; do
+  [[ -n "$(exit_line_of "$vscript")" ]] || continue
+  vcarries=false
+  for vcode in $(stated_exit_codes "$vscript"); do
+    case "$vcode" in
+      0|3) ;;
+      *) vcarries=true ;;
+    esac
+  done
+  if $vcarries; then
+    exit_verdict_carriers=$((exit_verdict_carriers + 1))
+  else
+    exit_generators=$((exit_generators + 1))
+  fi
+done
+echo "  scripts carrying a verdict in their exit status: $exit_verdict_carriers"
+echo "  scripts that are generators: $exit_generators"
+assert_value "the scripts were sorted into verdict-carriers and generators, not read as an empty set" \
+  "$([[ $((exit_verdict_carriers + exit_generators)) -eq "$exit_documented" && "$exit_verdict_carriers" -gt 0 ]] && echo true || echo false)"
+
+doc_carrier_word="$(sed -n 's/^The \([a-z][a-z]*\) house-policy checks do carry their verdict in the exit status.*/\1/p' \
+  skills/skill-audit/SKILL.md | head -1)"
+assert_value "SKILL.md's count of the checks that carry a verdict in the exit status is the table's own ($exit_verdict_carriers)" \
+  "$([[ -n "$doc_carrier_word" && "$doc_carrier_word" == "$(english_count "$exit_verdict_carriers")" ]] && echo true || echo false)"
+if [[ "$doc_carrier_word" != "$(english_count "$exit_verdict_carriers")" ]]; then
+  echo "  SKILL.md says: ${doc_carrier_word:-<no such sentence>}"
+  echo "  the table says: $(english_count "$exit_verdict_carriers")"
+fi
+
+# And the other half of the same sentence pair, so neither number can be right
+# only because the check reads one of them.
+doc_generators_named=0
+for gscript in "$SCRIPTS_DIR"/*.sh; do
+  [[ -n "$(exit_line_of "$gscript")" ]] || continue
+  gcarries=false
+  for gcode in $(stated_exit_codes "$gscript"); do
+    case "$gcode" in 0|3) ;; *) gcarries=true ;; esac
+  done
+  $gcarries && continue
+  grep -q "report a verdict in their output, not in their exit status" skills/skill-audit/SKILL.md \
+    && sed -n 's/^\*\*\(.*\)report a verdict in their output.*/\1/p' skills/skill-audit/SKILL.md \
+       | grep -qF -- "$(basename "$gscript")" \
+    && doc_generators_named=$((doc_generators_named + 1))
+done
+assert_value "SKILL.md names every generator as one, and there are $exit_generators of them" \
+  "$([[ "$doc_generators_named" -eq "$exit_generators" ]] && echo true || echo false)"
 
 # And the behaviour the table now tells the truth about. audit-report.sh exits 0
 # over a failing skill — deliberately, because 0 means a report was generated —
