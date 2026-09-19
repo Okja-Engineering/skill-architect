@@ -1023,6 +1023,47 @@ the_expansion_substitutes_home_and_nothing_else() {
   return 0
 }
 
+# A destination no filesystem could hold, which until now was *accepted* — and
+# accepting it is what costs. Both the shape pass and the expansion build their
+# result a character at a time, so both are quadratic in the length of what
+# they accept: the whole decision took 25 seconds on a 200,000-character
+# destination and 101 seconds on 400,000, which puts a megabyte past any CI
+# timeout. A suite killed by a timeout prints no summary, and "no summary" is
+# the silent-abort failure this harness exists to refuse — so an input that
+# cannot be a path is refused rather than chewed on.
+#
+# 4096 is PATH_MAX on the more generous of the two platforms this runs on;
+# macOS stops at 1024. A destination longer than that cannot be created, so
+# refusing it costs nothing real, and the refusal names the length the way
+# every other refusal here names its cause.
+#
+# Measured on the invariant and not on the bound: what must hold is that an
+# unusable length is refused and an ordinary one is not. The exact limit is
+# free to move.
+a_destination_no_filesystem_could_hold() {
+  awk 'BEGIN { s = ""; while (length(s) < 5000) s = s "aaaaaaaaaaaaaaaaaaaa"; print s }' </dev/null
+}
+
+the_expansion_refuses_a_destination_no_filesystem_could_hold() {
+  local dir long
+  dir="$(containment_probe_dir)"
+  long="$(a_destination_no_filesystem_could_hold)"
+  if expanded_destination "$dir" "~/$long" >/dev/null 2>&1; then
+    printf 'the expansion accepted a destination of %s characters, which no filesystem can hold\n' \
+      "${#long}" >&2
+    return 1
+  fi
+  # And through the whole decision, because that is the path a destination in
+  # the document takes, and the cost is the decision's cost.
+  if containment_verdict "$dir" "$(block_with_destination "~/$long")" >/dev/null 2>&1; then
+    printf 'the containment decision accepted a destination of %s characters\n' "${#long}" >&2
+    return 1
+  fi
+  # The other direction: an ordinary destination is still accepted.
+  expanded_destination "$dir" '~/.claude/skills' >/dev/null || return 1
+  return 0
+}
+
 # <name> — the text of a function defined in this suite, read out of this
 # suite's own source.
 suite_function_body() {
@@ -1777,6 +1818,8 @@ require "the resolved verdict alone refuses a climb through a path that does not
 
 require "the destination expansion substitutes this run's home and nothing else" \
   quietly the_expansion_substitutes_home_and_nothing_else
+require "the destination expansion refuses a destination no filesystem could hold" \
+  quietly the_expansion_refuses_a_destination_no_filesystem_could_hold
 require "the destination expansion refuses every command separator, and runs none of them" \
   quietly expansion_refuses_every_command_separator
 require "the destination expansion refuses every redirection, and runs none of them" \
