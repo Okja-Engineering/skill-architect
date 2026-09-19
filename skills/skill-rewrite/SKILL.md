@@ -2,7 +2,7 @@
 name: skill-rewrite
 description: Draft a rewritten SKILL.md for an Agent Skill based on a skill-audit report. Use when a skill has failed or weak audit dimensions and you need a concrete rewrite plan before editing. The skill does not apply changes without explicit approval.
 license: MIT
-compatibility: POSIX shell (bash 3.2+ or zsh), git.
+compatibility: bash 3.2+.
 metadata:
   version: "0.1.0"
 ---
@@ -28,36 +28,76 @@ Do not use this skill to apply changes silently; the draft must be reviewed and 
 
 Inputs:
 
+- `skill_root`: the directory holding this `SKILL.md` — the `skill-rewrite` skill directory. Every command below is anchored on it, directly or through `audit_root`, so the commands run from any working directory rather than only from the skill's own.
+- `audit_root`: the sibling `skill-audit` skill directory, `"$skill_root/../skill-audit"`. `skill-rewrite` runs `skill-audit`'s check scripts and reads its evaluation matrix; it bundles neither.
 - `target_skill`: the skill directory to rewrite.
 - `audit_report`: optional path to an existing audit report. If omitted, run `skill-audit` first.
+
+Prerequisites:
+
+Required tools: `skill-validator`.
+
+Stage 1 and `draft-rewrite.sh` both run `skill-audit`'s `check-frontmatter.sh`, which validates the spec with `skill-validator`. Install it with `brew install agent-ecosystem/tap/skill-validator`, because without it the two paths do not behave alike and only one of them protects you:
+
+Without `skill-validator`: `check-frontmatter.sh` exits `3`; `draft-rewrite.sh` exits `0`.
+
+Stage 1 runs the check directly, so it exits 3 with `required tool not found: skill-validator` on stderr and reports no verdict rather than one it could not compute — that guard is what protects you. `draft-rewrite.sh` is not inside that guard yet: it discards the check's exit status and merges the check's stderr into the report, so it exits 0, writes `REWRITE-DRAFT.md` anyway, and presents `required tool not found: skill-validator` as the draft's own `Current state`. **That is an open defect in `draft-rewrite.sh`, not a contract to rely on.** Until it refuses, install `skill-validator` before Stage 2 and read the draft's `Current state` before working from it; a draft whose `Current state` names a missing tool is a draft built from nothing.
+
+Nothing on this skill's path needs `skillscore`, which scores quality this skill does not run, or `jq`, which `skill-audit`'s scripts require only in their `--json` modes; add them if you extend the stages to use them.
+
+This skill is not self-contained. It bundles `draft-rewrite.sh` and runs no check of its own: every check it runs comes from `$audit_root/scripts/` — `check-frontmatter.sh` and `check-structure.sh`, which both load `verdict-guard.sh` and refuse to compute a verdict without it. A pruner who removes the guard as an unused file, or who installs this skill alone, gets a draft built from nothing. Install or prune the two skills together.
 
 ### Stage 1: Run audit if needed
 
 If no audit report is provided, run the audit:
 
 ```bash
-skill_root="<path-to-skill-architect>/skills/skill-audit"
+skill_root="<path-to-skill-architect>/skills/skill-rewrite"
+audit_root="$skill_root/../skill-audit"
 target_skill="<target-skill-dir>"
-"$skill_root/scripts/check-frontmatter.sh" "$target_skill"
-"$skill_root/scripts/check-structure.sh" "$target_skill"
+"$audit_root/scripts/check-frontmatter.sh" "$target_skill"
+"$audit_root/scripts/check-structure.sh" "$target_skill"
 ```
 
-Capture the output and score the 10 dimensions using `references/evaluation-matrix.md` from `skill-audit`.
+Capture the output and score the 10 dimensions against `"$audit_root/references/evaluation-matrix.md"`.
 
 ### Stage 2: Generate rewrite draft
 
-Run the rewrite drafter:
+Run the rewrite drafter. Without `-a` it runs the Stage 1 checks itself; with `-a` it reads the report you already have:
 
 ```bash
-scripts/draft-rewrite.sh -t <target-skill-dir> [-a <audit-report-path>]
+skill_root="<path-to-skill-architect>/skills/skill-rewrite"
+target_skill="<target-skill-dir>"
+"$skill_root/scripts/draft-rewrite.sh" -t "$target_skill"
+"$skill_root/scripts/draft-rewrite.sh" -t "$target_skill" -a "<audit-report-path>"
 ```
 
-This creates a `REWRITE-DRAFT.md` next to the target skill's `SKILL.md` with:
+This writes a `REWRITE-DRAFT.md` next to the target skill's `SKILL.md`, and names it on stdout. The draft is a skeleton to work from, not a rewritten skill: the drafter reads the target's `SKILL.md` only to run three heading probes over it, and never writes to it.
 
-- Preserved frontmatter (with corrected `name` if mismatched).
-- A proposed structure following the Agent Skills spec and ICM principles.
-- Templates for missing sections: `When to use`, `Deterministic actions`, `Orchestration`, `Examples`, `Constraints`.
-- A checklist mapping each failed/weak audit dimension to a concrete fix.
+#### The sections the drafter writes
+
+```text
+## Current state
+## Proposed structure
+## Missing section templates
+### When to use
+### Examples
+#### Example 1: <scenario>
+### Validation checklist
+## Action items
+## Notes
+```
+
+Above them, a `# Rewrite draft: <target>` title. What each holds:
+
+- `Current state` — the Stage 1 checks' output with their stdout and stderr merged into one stream, or the contents of the report given with `-a`. The merge is why a missing tool shows up here as the skill's own state; see Prerequisites.
+- `Proposed structure` — the spec and ICM section list. Fixed text, the same for every target.
+- `Missing section templates` — a blank template for each of `When to use`, `Examples` and `Validation checklist` the target has no heading for. The three probes read heading levels `##` to `######` and ignore case, and they are not all the same shape: `When to use` and `Example`/`Examples` must be the whole heading, while `Validation` is matched as a prefix, so a target's own `### Validation` section suppresses the `Validation checklist` template. A target that already has all three gets the heading and nothing under it.
+- `Action items` and `Notes` — fixed text, the same for every target.
+
+**What the drafter does not do**, and what Stage 3 is therefore for. It does not copy or correct the target's frontmatter. It writes no template for `Deterministic actions`, `Orchestration`, `AI judgment` or `Constraints`. That is four of the six sections its own `Proposed structure` requires. `Action items` is a five-item review checklist, not a mapping of the audit's findings: it is the same text for a skill that audits clean and one that fails, and the drafter never reads the evaluation matrix. Scoring the dimensions and turning them into fixes is Stage 1 and Stage 3 work, done by the reader.
+
+`tests/test_rewrite.sh` compares the list above against the headings a run actually writes, so neither side can change without the other.
 
 ### Stage 3: Produce rewrite plan
 
@@ -116,10 +156,11 @@ When in doubt, keep the draft conservative and flag the uncertainty for the main
 ### Generate a rewrite draft
 
 ```bash
-scripts/draft-rewrite.sh -t skills/release-check -a ./release-check-audit.md
+skill_root="<path-to-skill-architect>/skills/skill-rewrite"
+"$skill_root/scripts/draft-rewrite.sh" -t <target-skill-dir> -a <audit-report-path>
 ```
 
-Output: `skills/release-check/REWRITE-DRAFT.md`.
+Output: `<target-skill-dir>/REWRITE-DRAFT.md`.
 
 ### Rewrite plan outline
 
