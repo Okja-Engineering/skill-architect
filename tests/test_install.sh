@@ -602,6 +602,23 @@ containment_refuses_an_escape_after_a_quoted_hash() {
 echo "installing # into the skills directory" && cp -R skills/skill-audit /etc/codex/skills/skill-audit'
 }
 
+# The other half of that rule, and the half nothing measured. `uncommented`
+# ends a line at a `#` only when a space or a tab is in front of it, and that
+# test had no control: the one above puts its `#` inside quotes, so the quoting
+# branch decides it and the `prev` test is never reached. Reverting the `prev`
+# test — letting any `#` end the line — left this suite at 43 passed, 0 failed
+# on both shells, which is a control asserting something it does not measure.
+#
+# What the test is actually for: a `#` is a comment only where a word begins.
+# Mid-word it is an ordinary character, so `x#../..` is one word naming a climb
+# and not a comment plus nothing, and a reader that stopped at the `#` would
+# have read `x`. This is on a line that is not the destination, so the
+# resolution never looks at it.
+containment_refuses_a_climb_behind_a_mid_word_hash() {
+  containment_refuses 'skills_dir=~/.claude/skills
+cp -R skills/skill-audit x#../../../../../../ESCAPED-THE-SCRATCH-ROOT/skill-audit'
+}
+
 # A destination whose value is only known by running it, and the one control
 # the ordering of the two fences exists for. Being refused is not enough here:
 # the resolution expands the destination with a shell, so a substitution that
@@ -1475,6 +1492,8 @@ require "the containment decision reads the whole block, not just its first line
   containment_refuses_a_block_whose_second_line_escapes
 require "the containment decision inspects what follows a quoted # on a line" \
   containment_refuses_an_escape_after_a_quoted_hash
+require "the containment decision reads a # that is mid-word as an ordinary character" \
+  containment_refuses_a_climb_behind_a_mid_word_hash
 require "a substitution in the destination is refused before it can run" \
   quietly containment_refuses_a_substitution_before_it_can_run
 require "the containment decision refuses a name the block never binds, away from the destination" \
