@@ -100,7 +100,7 @@ The report nests the full output of each source under `spec`, `quality`, and `po
 "$skill_root/scripts/audit-report.sh" "$target_skill" | jq -e '.summary.passed'
 ```
 
-The four house-policy checks do carry their verdict in the exit status, and each one's own set is in the table. Treat any status outside a script's set as a script that reached no verdict, not as a verdict you have not seen before.
+The three house-policy checks do carry their verdict in the exit status, and each one's own set is in the table. Treat any status outside a script's set as a script that reached no verdict, not as a verdict you have not seen before.
 
 Rule IDs: every finding carries a level and a rule ID. At level `fail`: `PL001` for license, `PL002` for headings, `PL003` for line count, `PL004` for code blocks, `PL005` for lists, `PT001` for missing scripts, `PT002` for missing markdown links, and — on an exit 3, in the same findings array a `--json` consumer reads — `DEP001` when a required tool is absent and `DEP002` when a source returns a status or a payload the script cannot interpret. At level `unverified`: `PATH`, for a reference built from a glob or a variable, which the scripts cannot resolve and so report without judging; an unverified finding is not a failure and does not change the exit status. Those ten are the whole set these scripts emit, and `tests/test_f01.sh` compares this line against what they can emit so that neither side can grow without the other.
 
