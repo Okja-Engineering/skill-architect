@@ -2,7 +2,7 @@
 name: skill-audit
 description: Evaluate an Agent Skill directory against the Agent Skills spec, Anthropic best practices, and the Interpretable Context Methodology (ICM). Use when reviewing a SKILL.md before release, after a major edit, or when a skill is not triggering or executing reliably.
 license: MIT
-compatibility: POSIX shell (bash 3.2+ or zsh), git.
+compatibility: bash 3.2+.
 metadata:
   version: "0.2.0"
 ---
@@ -43,13 +43,16 @@ Read these in order:
 Resolve `skill_root` to the directory containing this `SKILL.md` and run the bundled scripts:
 
 ```bash
-command -v skill-validator >/dev/null 2>&1 || { echo "skill-validator not found. Install with: brew install agent-ecosystem/tap/skill-validator" >&2; exit 1; }
-command -v skillscore >/dev/null 2>&1 || { echo "skillscore not found. Install with: npm install -g skillscore" >&2; exit 1; }
+for tool in awk dirname grep jq skill-validator skillscore wc; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "required tool not found: $tool" >&2; exit 3; }
+done
 
 "$skill_root/scripts/check-frontmatter.sh" "$target_skill"
 "$skill_root/scripts/check-structure.sh" "$target_skill"
 "$skill_root/scripts/check-quality.sh" "$target_skill"
 ```
+
+The preflight names every tool the three commands below it state as a precondition, and it exits **3** because 3 is the status they exit with: a missing dependency is an execution error, rule ID `DEP001`, and **1** in the exit table below is a spec or path failure — a verdict about the audited skill that a preflight has not computed. Neither the list nor the status is written down twice. `tests/test_f01.sh` masks each of those tools in turn, runs the three commands, and requires the preflight to refuse exactly when one of them refuses and with the status it refused with — so a tool that becomes a precondition without reaching this list fails that suite rather than reaching a reader. The scope is the stated preconditions: a tool a script shells out to without stating it as one is in neither this list nor that comparison, and each script's own `# Exit codes:` header is where its set is stated. `skill-validator` and `skillscore` are installed with the commands in the list below.
 
 The checks use established tools, each for what it does best:
 
@@ -101,6 +104,8 @@ The report nests the full output of each source under `spec`, `quality`, and `po
 ```
 
 The three house-policy checks do carry their verdict in the exit status, and each one's own set is in the table. Treat any status outside a script's set as a script that reached no verdict, not as a verdict you have not seen before.
+
+All **five** of the scripts above load `scripts/verdict-guard.sh`, which is where "I could not compute a verdict" is decided: a required tool that is absent or not answering becomes a `DEP001` or `DEP002` finding and an exit 3, rather than a status a reader would take for a verdict. A script that cannot load it exits 3 on that alone. No command in this document invokes the guard — it is sourced, not run — so an installer that copies the files the commands name, or a pruner that removes what looks like an unused file, leaves every check in this skill exiting 3. Install and prune it with them. The count above is derived from the scripts by `tests/test_f01.sh`, not written down twice.
 
 Rule IDs: every finding carries a level and a rule ID. At level `fail`: `PL001` for license, `PL002` for headings, `PL003` for line count, `PL004` for code blocks, `PL005` for lists, `PT001` for missing scripts, `PT002` for missing markdown links, and — on an exit 3, in the same findings array a `--json` consumer reads — `DEP001` when a required tool is absent and `DEP002` when a source returns a status or a payload the script cannot interpret. At level `unverified`: `PATH`, for a reference built from a glob or a variable, which the scripts cannot resolve and so report without judging; an unverified finding is not a failure and does not change the exit status. Those ten are the whole set these scripts emit, and `tests/test_f01.sh` compares this line against what they can emit so that neither side can grow without the other.
 
