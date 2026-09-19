@@ -569,6 +569,7 @@ tests/test_harness.sh
 tests/test_skill.sh
 tests/test_install.sh
 tests/test_walk.sh
+tests/test_rewrite.sh
 tests/test_f01.sh
 tests/test_f02.sh
 
