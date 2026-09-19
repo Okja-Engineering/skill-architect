@@ -98,22 +98,67 @@ BLOCK_SKILLS
   return 0
 }
 
-# --- Containment, decided after resolution ------------------------------------
+# --- What this suite bounds, and what it does not -----------------------------
 #
-# The block runs with HOME and the working directory both inside the harness
-# scratch root, with an environment that carries nothing else, and under
-# `set -u`. None of that is containment on its own: a redirected home and a
-# working directory inside the root are two places to climb out of, and what
-# used to stand here was the claim that an absolute path and a `~name` were the
-# whole set of ways out. They were not. `$HOME/../../../..`, `../../../..`, a
-# climb to the filesystem root followed by an absolute tail, and a destination
-# whose every character is innocent but whose path runs through a symlink all
-# passed that guard; one of them installed a full skills tree outside the
-# scratch root and one of them deleted a decoy home's files first. A list of
-# spellings cannot be a containment proof, because the next spelling is not on
-# it, and the claim of completeness is what let that survive a gate.
+# Read this before the code, because five rounds of defect in this area were
+# all one defect: the claim written here was wider than the mechanism under it.
 #
-# So the verdict is the resolved write, and it is taken where the write is:
+# What this suite does is **run the README's block**. That is the point of it —
+# the install instructions were written and never run, and the only way to know
+# a documented command installs and converges is to execute it. A block is a
+# shell script. A shell script can do anything a shell can do, and it does it
+# after any verdict this file reaches.
+#
+# ## What is bounded, and proven
+#
+# **The destination.** `run_documented_block` does not write the block out or
+# execute it until the destination it will use has been expanded *in that run's
+# own environment* — by substitution over text, with no shell behind it — and
+# resolved, with `.` and `..` folded away and symlinks followed through the part
+# of the path that exists, and shown to land strictly inside the harness scratch
+# root. A destination this suite cannot expand without a shell is refused with
+# the character it could not account for named, so "nothing to expand" is a
+# reported refusal and not a silent one.
+#
+# That fence earns its keep, and it is the one that catches the accident that
+# actually happens: someone edits the documented destination — the single line
+# the README asks a reader to change — and without it the suite installs into
+# that reader's live skills directory. It has happened in this file's history.
+# An earlier version rewrote the destination with `sed` and checked the rewrite
+# with `grep`, reported its verdict through `assert`, which reports and returns,
+# and then ran `rm -rf` against a real skills directory after its own guard had
+# already said no.
+#
+# ## What is not bounded
+#
+# **Where the block writes.** The block is executed, so every command in it runs
+# after the verdict, and a text scan over words cannot bound where a program
+# writes. `npm install -g pkg` contains no path word at all, every one of its
+# words is accountable to the pass below, and it writes outside any scratch
+# root. So does `pip install --user`, and so does `curl … | sh`. No enumeration
+# of path shapes reaches those, because where a program writes is a fact about
+# what it does and not about what its words look like. This is not a gap in the
+# pass below that a further round could close; it is the category the pass is
+# not in.
+#
+# ## This is not a sandbox
+#
+# It cannot be one, and it must not read as one. A check in this file cannot be
+# a security boundary against a hostile README, because anyone who can edit
+# README.md can edit tests/test_install.sh in the same commit — a hostile
+# document implies a hostile suite. There is no boundary there to defend, so
+# nothing here is written as if there were.
+#
+# What limits the rest of the block is not a check at all. It is the environment
+# the block is given: `HOME` redirected into the harness scratch root, the
+# working directory a scratch copy of the skills tree, `env -i` so nothing else
+# is carried in, and `set -u`. That is a blast radius for an accident, and a
+# blast radius is the honest thing to have against an accident. It is not a
+# proof and it is not called one.
+#
+# ## Where the code below stands
+#
+# The verdict is the resolved write, and it is taken where the write is:
 # `run_documented_block` does not write the block out or execute it until the
 # destination it will use has been expanded *in that run's own environment* and
 # resolved — `.` and `..` folded away, symlinks followed through the part of the
@@ -131,51 +176,48 @@ BLOCK_SKILLS
 # the expansion shapes someone had thought of, and the fourth round found the
 # category the screen had never contained. See the sweep section below.
 #
-# The shape pass below is the other fence, and it is not the lesser one. The
-# resolved verdict can only decide the *destination*, because that is the one
-# word whose value is fixed before the block runs; `"$skills_dir/$skill"` has no
-# value until the loop binding `$skill` is running, so there is nothing to
-# resolve and the question has to be asked of the name instead. So the two
-# fences divide the block between them: resolution decides where the write
-# lands, and the shape pass decides every word resolution cannot reach. What it
-# demands is stated the other way round from the old list — not the escapes it
-# knows, but that a word be accountable: no absolute path, no `~name`, no `..`
-# in any position, and no expansion whose value this suite cannot name. Only
-# HOME, PWD and the names the block itself binds are accountable; anything else,
-# including a command substitution, is refused. PATH is deliberately not on that
-# list: the run provides it, its value is absolute, and nothing an install block
-# does is resolved from it.
+# The pass below is a **diagnostic**, and that word is doing work. It walks the
+# block's words and refuses the path shapes it can name: an absolute path, a
+# `~name`, a `..` in any position, an expansion whose value it cannot name.
+# Only HOME, PWD and the names the block itself binds are accountable; anything
+# else, including a command substitution, is refused. PATH is deliberately not
+# on that list: the run provides it, its value is absolute, and nothing an
+# install block does is resolved from it.
 #
-# Where that fence carries load is the words the resolution cannot reach, and
-# only there — which is a narrower claim than the one that stood here. It used
-# to be the thing that made the resolution safe to reach, because the
-# resolution expanded the destination with a shell and a destination carrying a
-# substitution had to be refused before it got there. It is not that any more:
-# the expansion cannot run anything, so the destination is fenced by the
-# expansion and the resolution, and every rule in the shape pass would still
-# refuse a bad *destination* with the rule removed. That is why each rule is
-# measured on a word that is not the destination
-# (`containment_refuses_every_unaccountable_word_away_from_the_destination`);
-# a control that handed a rule a destination would now pass without it.
-# The shape pass still runs first, but as ordering rather than as a fence in
-# front of a shell.
+# It is here because it is cheap and because it catches an obvious accident —
+# a second line in the block edited to write somewhere absolute — early and
+# with a readable reason. It is **not** a fence around the block, it is not
+# complete, and it cannot be made complete. Four spellings that walk straight
+# past it are handed to a control below and required to be *admitted*, so that
+# this paragraph cannot drift back into a claim without a test reddening:
+# a backslash before a leading slash, a brace expansion, a `..` composed from
+# two bound single dots, and an `npm install -g` that names no path at all.
+# That list is not the set of ways past it. By the section above there is no
+# such set.
 #
-# Nothing above is left standing on its own word. Every mechanism either
-# paragraph names has a control below that hands it something it must refuse,
-# on the seam where it is the only thing that can refuse it, and reverting the
-# mechanism reddens that control — which is the difference between this and
-# what stood here before, where the argument *was* the claim. The residue is
-# named rather than implied: resolution decides where the destination lands, the
-# expansion decides whether the destination can be read at all, and the shape
-# pass decides every other word by name. A destination the shape pass admits
-# and the expansion cannot read is refused with the character it could not
-# account for named, so "nothing to expand" is a reported refusal and not a
-# silent one.
+# It is also, since the expansion stopped being a shell, redundant for the
+# *destination*: take its `~name` rule out and a `~name` destination is still
+# refused by the expansion, take its `..` rule out and a `..` destination is
+# still refused by where it resolves. So its rules are measured on words that
+# are not the destination, which is the only place it decides anything alone —
+# `"$skills_dir/$skill"` has no value until the loop binding `$skill` is
+# running, so there is nothing for the resolution to resolve. A control that
+# handed one of these rules a destination would pass with the rule deleted.
+#
+# Every mechanism named in this section has a control below that hands it
+# something it must refuse, on the seam where it is the only thing that can
+# refuse it, and reverting the mechanism reddens that control. That sentence
+# stood here last round and was false: the mid-word `#` test in `uncommented`
+# had no such control, and reverting it left the suite fully green while a `..`
+# climb went from refused to admitted. It has one now
+# (`containment_refuses_a_climb_behind_a_mid_word_hash`), which is what makes
+# the sentence a measurement rather than an assertion. The way to keep it true
+# is to measure it — revert each mechanism and watch — not to write it again.
 #
 # All of these are `require`s, not `assert`s: a failed precondition has to stop
 # the suite, because a reported failure is not a refusal.
 
-text_names_nothing_outside_a_redirected_home() {
+path_words_are_ones_this_diagnostic_can_account_for() {
   awk '
     BEGIN { sq = sprintf("%c", 39) }
 
@@ -283,8 +325,8 @@ text_names_nothing_outside_a_redirected_home() {
   '
 }
 
-block_names_nothing_outside_a_redirected_home() {
-  documented_manual_copy_block | text_names_nothing_outside_a_redirected_home
+the_blocks_path_words_are_accountable() {
+  documented_manual_copy_block | path_words_are_ones_this_diagnostic_can_account_for
 }
 
 # --- The resolved verdict -----------------------------------------------------
@@ -371,21 +413,14 @@ path_resolves_inside() {
 # inert in a path. A destination that needs more than this is refused, and the
 # refusal names what it could not account for.
 #
-# And it cannot reach an interpreter, which is a property of how it is run and
-# not of what is written in it. Process creation is made impossible before awk
-# starts, and awk then replaces that shell rather than being started by it, so
-# `system()`, an output pipe, a command into `getline` and every other way out
-# of awk fail for want of a process to be — whatever they are spelled like, and
-# whoever writes one here next. That is the whole argument, and it is measured
-# in both directions on every run by the control below. What it does not claim:
-# awk needs no process to write a file, so this says nothing about a write the
-# awk program itself performs. The destination text cannot cause one, because
-# the text arrives in the environment and is never program text.
+# Kept to one command on purpose: `body_reaches_no_interpreter` accounts for
+# exactly this shape — one `awk`, a single-quoted program, literal assignments
+# in front of it and nothing else — and refuses a body it cannot account for.
+# Anything added here that is not that shape, including a wrapper that would
+# make process creation impossible, is a control failure until that check is
+# widened to account for it deliberately.
 expanded_destination() {
-  (
-    ulimit -u 1 2>/dev/null
-    export DESTINATION_TEXT="$2" DESTINATION_HOME="$1/home"
-    exec awk '
+  DESTINATION_TEXT="$2" DESTINATION_HOME="$1/home" awk '
     function refuse(why) {
       printf "the destination is not one this suite can expand without a shell: %s\n", why \
         > "/dev/stderr"
@@ -439,8 +474,7 @@ expanded_destination() {
       print out
       exit 0
     }
-    ' </dev/null
-  )
+  ' </dev/null
 }
 
 # <run dir> <destination text> — the absolute, resolved path the block would
@@ -482,11 +516,23 @@ destination_resolves_inside_the_scratch_root() {
 #
 # <run dir> <block text> — may this block be run in this run's environment?
 #
-# Three fences. The shape pass over every word, which is the only thing that can
-# reach the words with no value yet. Then the destination, read out of the block
-# the way a shell reads a word, and expanded without one — a destination this
-# suite cannot expand is refused there. Then the resolved verdict on what it
-# expanded to, which is the proof: it is decided by where the write lands.
+# Two fences and a diagnostic, and the difference between those two words is
+# the point. The destination is read out of the block the way a shell reads a
+# word and expanded without one — a destination this suite cannot expand is
+# refused there — and then the resolved verdict decides where that expansion
+# lands. Those two are fences: between them the destination is bounded, and
+# nothing gets past them by being spelled a new way.
+#
+# The path-word pass is the diagnostic. It refuses the path shapes it can name,
+# early and with a readable reason, and it is the only thing that looks at the
+# words with no value yet. It is not a bound on where the block writes and
+# nothing here treats it as one; see the section at the top of this file for
+# why no pass over words could be.
+#
+# So what this function answers is narrow, and it is the honest form of the
+# question: *does this block name a destination that lands inside the scratch
+# root, and does anything else in it look obviously wrong?* It is not "is this
+# block safe to run". The block is a shell script.
 #
 # The order is no longer a safety property. It was, while the expansion was a
 # shell: the shape pass had to refuse a substitution before the resolution
@@ -517,7 +563,7 @@ containment_verdict() {
     return 1
   fi
   destination_resolves_inside_the_scratch_root "$dir" "$dest" || return 1
-  printf '%s\n' "$block" | text_names_nothing_outside_a_redirected_home || return 1
+  printf '%s\n' "$block" | path_words_are_ones_this_diagnostic_can_account_for || return 1
   return 0
 }
 
@@ -690,24 +736,25 @@ containment_refuses_an_unbound_name_away_from_the_destination() {
 cp -R skills/skill-audit "$SKILLS_BACKUP/skill-audit"'
 }
 
-# Every remaining rule in the shape pass, each handed something on a line that
-# is *not* the destination — and that placement is the whole point of this
-# control.
+# The path shapes this diagnostic names, each handed to it on a line that is
+# *not* the destination — and that placement is the whole point. Since the
+# expansion stopped being a shell, the destination is no longer where it
+# carries load: take its `~name` rule out and a `~name` destination is still
+# refused, by the expansion; take its `..` rule out and a `..` destination is
+# still refused, by where it resolves. A control that handed those rules a
+# *destination* would pass with the rule gone.
 #
-# Since the expansion stopped being a shell, the destination is no longer where
-# the shape pass carries load: take its `~name` rule out and a `~name`
-# destination is still refused, by the expansion; take its `..` rule out and a
-# `..` destination is still refused, by where it resolves. Controls that hand
-# those rules a *destination* therefore pass with the rule gone, which is the
-# non-discriminating shape this cluster keeps producing. Where the shape pass
-# is the only fence is every other word in the block, because
-# `"$skills_dir/$skill"` has no value until the loop is running and there is
-# nothing to resolve. So the rules are measured there.
+# Its name says what it measures. It used to be called
+# `containment_refuses_every_unaccountable_word_away_from_the_destination`,
+# and "every unaccountable word" is a completeness claim four literal
+# spellings cannot support — the control below shows exactly how little it
+# supports.
 #
-# The absolute-path rule already has such a control of its own, in
-# `containment_refuses_a_block_whose_second_line_escapes`, and so does the
-# unbound-name rule directly above; these are the four that did not.
-containment_refuses_every_unaccountable_word_away_from_the_destination() {
+# The absolute-path rule has a control of its own in
+# `containment_refuses_a_block_whose_second_line_escapes`, the unbound-name
+# rule directly above, and the mid-word `#` test in
+# `containment_refuses_a_climb_behind_a_mid_word_hash`.
+the_diagnostic_refuses_the_path_shapes_it_names() {
   containment_refuses 'skills_dir=~/.claude/skills
 cp -R skills/skill-audit ~root/.claude/skills/skill-audit' || return 1
   containment_refuses 'skills_dir=~/.claude/skills
@@ -716,6 +763,44 @@ cp -R skills/skill-audit ../../../../ESCAPED-THE-SCRATCH-ROOT/skill-audit' || re
 cp -R skills/skill-audit "$(id)/skill-audit"' || return 1
   containment_refuses 'skills_dir=~/.claude/skills
 cp -R skills/skill-audit "`id`/skill-audit"' || return 1
+  return 0
+}
+
+# And the other side of it, which is the control this section was missing and
+# the reason the claim above it stood unchallenged for five rounds: blocks the
+# diagnostic **admits**, required to be admitted.
+#
+# Every one of these writes outside the scratch root when run, and every one is
+# waved through by the pass. Asserting the admission rather than the refusal is
+# deliberate. A control that only ever demands refusals can be read as evidence
+# of completeness — that is precisely how it was read — and this one cannot:
+# it is a standing, executable statement that the pass is a diagnostic. If
+# someone widens the pass to catch one of these, this control reddens and makes
+# them come back and change the prose too, which is the coupling that was
+# missing. The prose and the mechanism move together or not at all.
+#
+# This is not a list of the ways past it. There is no such list: `npm install
+# -g` is here because it contains no path word at all, and no enumeration of
+# path shapes reaches a program that writes outside the root without naming a
+# path. See the section at the top of this file.
+the_diagnostic_admits_blocks_that_leave_the_scratch_root() {
+  local label block
+  while IFS='|' read -r label block; do
+    [ -n "$label" ] || continue
+    if ! printf 'skills_dir=~/.claude/skills\n%b\n' "$block" \
+         | path_words_are_ones_this_diagnostic_can_account_for >/dev/null 2>&1; then
+      printf 'the path-word diagnostic refused a block this file documents as admitted:\n  %s\n  %b\n' \
+        "$label" "$block" >&2
+      printf 'that is not a failure of the block. It means the prose above, which calls this\n' >&2
+      printf 'a diagnostic and names this spelling as one it does not catch, is now wrong.\n' >&2
+      return 1
+    fi
+  done <<'ADMITTED'
+a backslash before a leading slash|cp -R skills/skill-audit \\/etc/codex/skills/skill-audit
+a brace expansion|cp -R skills/skill-audit {/etc,/tmp}/codex/skills/skill-audit
+a climb composed from two bound single dots|up=.\ncp -R skills/skill-audit "$up$up/$up$up/$up$up/ESCAPED/skill-audit"
+a command that names no path at all|npm install -g some-package
+ADMITTED
   return 0
 }
 
@@ -1817,8 +1902,10 @@ require "a substitution in the destination is refused before it can run" \
   quietly containment_refuses_a_substitution_before_it_can_run
 require "the containment decision refuses a name the block never binds, away from the destination" \
   containment_refuses_an_unbound_name_away_from_the_destination
-require "the containment decision refuses every unaccountable word away from the destination" \
-  quietly containment_refuses_every_unaccountable_word_away_from_the_destination
+require "the path-word diagnostic refuses the path shapes it names, away from the destination" \
+  quietly the_diagnostic_refuses_the_path_shapes_it_names
+require "the path-word diagnostic admits blocks that leave the scratch root, as documented" \
+  quietly the_diagnostic_admits_blocks_that_leave_the_scratch_root
 require "the containment decision refuses a block that assigns no destination" \
   containment_refuses_a_block_that_assigns_no_destination
 
@@ -1863,7 +1950,7 @@ require "the check for that accepts a body that only substitutes" \
   quietly the_interpreter_check_accepts_a_body_that_only_substitutes
 
 require "the README's manual-copy block names nothing outside a redirected home" \
-  quietly block_names_nothing_outside_a_redirected_home
+  quietly the_blocks_path_words_are_accountable
 require "the destination the README's block resolves to is inside the harness scratch root" \
   quietly the_documented_block_is_contained
 require "the repository ships skills for the checks below to be about" \
