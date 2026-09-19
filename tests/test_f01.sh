@@ -1306,91 +1306,6 @@ assert_value "a status outside a stated set is refused, so the check can fail" \
 assert_value "a status inside a stated set is accepted, so the check is not refusing everything" \
   "$(states_exit "$SCRIPTS_DIR/audit-report.sh" 3 && echo true || echo false)"
 
-# --- The readme's prerequisite list is the scripts' own ------------------------
-#
-# The readme said "The skills shell out to three external tools" and listed
-# skill-validator, skillscore and jq. That was true when the only hard
-# preconditions were those three. This diff made seven more of them hard: every
-# tool a script now routes through require_tool exits 3 when it is absent or
-# present and not answering, which is the whole point of the change.
-#
-# The trade is honest in the code and stated in each script's header. The
-# user-facing table is where it went wrong, and it went wrong in the direction
-# that matters: a reader was told a tool was optional when a script now refuses
-# to run without it. So the claim is derived here rather than restated there —
-# the same mechanism as the rule-ID census and the exit table, for the same
-# reason, because a prose count is exactly the thing that drifts.
-#
-# The anchor is `^Required tools:` on its own line, holding every tool in
-# backticks. Both directions are checked: a tool a script requires and the
-# readme omits, and a tool the readme claims and nothing requires.
-# `|| true` on the extraction, not on the comparison: an anchor that is missing
-# entirely must reach the assertions as an empty set and fail them, rather than
-# taking the suite down under pipefail before it can report anything. The
-# "was read, not matched as an empty set" assertion below is what refuses the
-# empty reading.
-readme_anchor="$(sed -n 's/^Required tools:[[:space:]]*//p' README.md | head -1)"
-readme_required="$({ printf '%s' "$readme_anchor" | grep -oE '`[a-z][a-z-]*`' || true; } \
-  | tr -d '`' | sort -u)"
-
-scripts_required=""
-for pscript in "$SCRIPTS_DIR"/*.sh skills/skill-rewrite/scripts/*.sh; do
-  case "$pscript" in *verdict-guard.sh) continue ;; esac
-  scripts_required="$scripts_required $(tools_required_by "$pscript" | tr '\n' ' ')"
-done
-scripts_required="$({ printf '%s' "$scripts_required" | tr ' ' '\n' | grep -v '^$' || true; } | sort -u)"
-readme_required_n="$({ printf '%s' "$readme_required" | grep -c . || true; } | tr -d ' ')"
-
-readme_missing=""
-for ptool in $scripts_required; do
-  case "
-$readme_required
-" in *"
-$ptool
-"*) ;; *) readme_missing="$readme_missing $ptool" ;; esac
-done
-
-readme_stale=""
-for ptool in $readme_required; do
-  case "
-$scripts_required
-" in *"
-$ptool
-"*) ;; *) readme_stale="$readme_stale $ptool" ;; esac
-done
-
-echo "  tools the readme lists as prerequisites: $(printf '%s' "$readme_required" | tr '\n' ' ')"
-echo "  tools the scripts require: $(printf '%s' "$scripts_required" | tr '\n' ' ')"
-assert_value "the readme's prerequisite list was read, not matched as an empty set" \
-  "$([[ "$readme_required_n" -ge 8 ]] && echo true || echo false)"
-assert_value "every tool a script requires is listed as a prerequisite in the readme" \
-  "$([[ -z "$readme_missing" ]] && echo true || echo false)"
-if [[ -n "$readme_missing" ]]; then
-  echo "  required by a script, absent from the readme:$readme_missing"
-fi
-assert_value "every prerequisite the readme lists is required by a script" \
-  "$([[ -z "$readme_stale" ]] && echo true || echo false)"
-if [[ -n "$readme_stale" ]]; then
-  echo "  claimed by the readme, required by nothing:$readme_stale"
-fi
-
-# The count written in the prose is the list's own length, so the sentence and
-# the list cannot disagree. This is the half that was wrong: the sentence said
-# three while the scripts required ten.
-readme_claimed_count="$(sed -n 's/^The skills shell out to \([a-z]*\) external tools.*/\1/p' README.md | head -1)"
-readme_count_words="zero one two three four five six seven eight nine ten eleven twelve"
-readme_count_expected="$(printf '%s\n' $readme_count_words | sed -n "$((readme_required_n + 1))p")"
-assert_value "the readme's tool count is the number of tools it lists ($readme_required_n)" \
-  "$([[ -n "$readme_claimed_count" && "$readme_claimed_count" == "$readme_count_expected" ]] && echo true || echo false)"
-
-# The readme must not tell a reader that a script which now requires jq is
-# unaffected by its absence. check-frontmatter.sh has no --json mode at all and
-# requires jq; check-quality.sh required nothing at base and requires it now.
-assert_value "the readme does not claim text mode is unaffected by a missing jq" \
-  "$(grep -q 'Text mode needs no jq and is unaffected' README.md && echo false || echo true)"
-jq_requirers="$(grep -lE '^[[:space:]]*[^#]*require_tool[[:space:]]+jq' "$SCRIPTS_DIR"/*.sh | wc -l | tr -d ' ')"
-assert_value "the readme names every script that requires jq, and there are $jq_requirers of them" \
-  "$([[ "$jq_requirers" -eq 5 ]] && grep -qi 'all five .*scripts require jq' README.md && echo true || echo false)"
 
 # adverse_args_of <basename> — the invocation that reaches a verdict, with
 # `@target` standing for the skill directory. A runnable script with no entry
@@ -1774,6 +1689,16 @@ assert_value "drafter, a writable TMPDIR: left no temporary audit behind in it" 
 # parsed — so each needs the explicit refusal the guard load-check three lines
 # below the first one already uses.
 
+# What the sweeps below prove, recorded as they prove it. A tool is a hard
+# precondition of these scripts when a script that cannot get an answer from it
+# refuses to run, names it, and exits inside its own stated set — which is the
+# readme's own criterion for listing one, and is exactly what each sweep here
+# drives. The readme's census reads this variable, so the two halves of
+# "required" — stated through require_tool, and stated by an explicit refusal
+# where require_tool cannot reach — are one list rather than one list and a
+# blind spot.
+unguarded_proved=""
+
 # One directory, one file, prepended to the real PATH. Nothing is mirrored,
 # replaced or uninstalled.
 unguarded_stub_path() {
@@ -1806,6 +1731,9 @@ done
 echo "  unguarded date cases driven: $date_cases"
 assert_value "the unguarded date cases were enumerated, not read as empty" \
   "$([[ "$date_cases" -eq 3 ]] && echo true || echo false)"
+# Recorded beside the assertions that are its proof, not written down again
+# somewhere the proof cannot be seen.
+unguarded_proved="$unguarded_proved date"
 
 # The control: the real clock, and the report carries a timestamp.
 run_on_path "$(working_tool_path date)" "$SCRIPTS_DIR/audit-report.sh" tests/fixtures/f01/valid-full
@@ -1837,6 +1765,120 @@ done
 echo "  unguarded dirname cases driven: $dirname_cases"
 assert_value "the unguarded dirname cases were enumerated, not read as empty" \
   "$([[ "$dirname_cases" -eq 6 ]] && echo true || echo false)"
+unguarded_proved="$unguarded_proved dirname"
+
+# --- The readme's prerequisite list is the scripts' own ------------------------
+#
+# Placed here, below every sweep above, because that is where its evidence is.
+# The readme's criterion for listing a tool is behavioural — "a script that
+# cannot get an answer from one of them exits 3 and says which" — and this
+# derived the list from `require_tool` alone, which is a mechanism rather than
+# a criterion. Two tools meet the criterion outside that mechanism and were
+# therefore absent: `dirname`, which runs before the guard exists to announce
+# it, and `date`, which has no constant answer for a probe to compare against.
+# Both became hard preconditions in this branch, by the fix that gave each an
+# explicit refusal — so the very change that made them required is the change
+# that moved them out of sight of the list. The count was short by two.
+#
+# So the list is `require_tool` plus what the sweeps above proved, and "proved"
+# is meant literally: each name in `unguarded_proved` is recorded beside the
+# assertions that drove that tool broken and watched the script refuse, name it
+# and exit inside its own stated set. A name cannot be added to that variable
+# and stay true without those assertions holding.
+#
+# The boundary, stated rather than implied: this finds an unguarded tool that
+# something drove, not one nobody thought of. Closing that needs the set of
+# external command words in each script, which is a shell parser, and is not
+# what this suite does.
+#
+# The readme said "The skills shell out to three external tools" and listed
+# skill-validator, skillscore and jq. That was true when the only hard
+# preconditions were those three. This diff made seven more of them hard: every
+# tool a script now routes through require_tool exits 3 when it is absent or
+# present and not answering, which is the whole point of the change.
+#
+# The trade is honest in the code and stated in each script's header. The
+# user-facing table is where it went wrong, and it went wrong in the direction
+# that matters: a reader was told a tool was optional when a script now refuses
+# to run without it. So the claim is derived here rather than restated there —
+# the same mechanism as the rule-ID census and the exit table, for the same
+# reason, because a prose count is exactly the thing that drifts.
+#
+# The anchor is `^Required tools:` on its own line, holding every tool in
+# backticks. Both directions are checked: a tool a script requires and the
+# readme omits, and a tool the readme claims and nothing requires.
+# `|| true` on the extraction, not on the comparison: an anchor that is missing
+# entirely must reach the assertions as an empty set and fail them, rather than
+# taking the suite down under pipefail before it can report anything. The
+# "was read, not matched as an empty set" assertion below is what refuses the
+# empty reading.
+readme_anchor="$(sed -n 's/^Required tools:[[:space:]]*//p' README.md | head -1)"
+readme_required="$({ printf '%s' "$readme_anchor" | grep -oE '`[a-z][a-z-]*`' || true; } \
+  | tr -d '`' | sort -u)"
+
+scripts_required="$unguarded_proved"
+for pscript in "$SCRIPTS_DIR"/*.sh skills/skill-rewrite/scripts/*.sh; do
+  case "$pscript" in *verdict-guard.sh) continue ;; esac
+  scripts_required="$scripts_required $(tools_required_by "$pscript" | tr '\n' ' ')"
+done
+scripts_required="$({ printf '%s' "$scripts_required" | tr ' ' '\n' | grep -v '^$' || true; } | sort -u)"
+readme_required_n="$({ printf '%s' "$readme_required" | grep -c . || true; } | tr -d ' ')"
+
+readme_missing=""
+for ptool in $scripts_required; do
+  case "
+$readme_required
+" in *"
+$ptool
+"*) ;; *) readme_missing="$readme_missing $ptool" ;; esac
+done
+
+readme_stale=""
+for ptool in $readme_required; do
+  case "
+$scripts_required
+" in *"
+$ptool
+"*) ;; *) readme_stale="$readme_stale $ptool" ;; esac
+done
+
+echo "  tools the readme lists as prerequisites: $(printf '%s' "$readme_required" | tr '\n' ' ')"
+echo "  tools the scripts require: $(printf '%s' "$scripts_required" | tr '\n' ' ')"
+echo "  of those, required outside require_tool and proved so above:$unguarded_proved"
+# A census that silently lost its second half would read exactly like one that
+# never had it, and every assertion below would pass. The half is asserted.
+assert_value "the tools required outside require_tool were proved and carried into the census, not read as an empty set" \
+  "$([[ -n "$unguarded_proved" ]] && echo true || echo false)"
+assert_value "the readme's prerequisite list was read, not matched as an empty set" \
+  "$([[ "$readme_required_n" -ge 8 ]] && echo true || echo false)"
+assert_value "every tool a script requires is listed as a prerequisite in the readme" \
+  "$([[ -z "$readme_missing" ]] && echo true || echo false)"
+if [[ -n "$readme_missing" ]]; then
+  echo "  required by a script, absent from the readme:$readme_missing"
+fi
+assert_value "every prerequisite the readme lists is required by a script" \
+  "$([[ -z "$readme_stale" ]] && echo true || echo false)"
+if [[ -n "$readme_stale" ]]; then
+  echo "  claimed by the readme, required by nothing:$readme_stale"
+fi
+
+# The count written in the prose is the list's own length, so the sentence and
+# the list cannot disagree. This is the half that was wrong: the sentence said
+# three while the scripts required ten.
+readme_claimed_count="$(sed -n 's/^The skills shell out to \([a-z]*\) external tools.*/\1/p' README.md | head -1)"
+readme_count_words="zero one two three four five six seven eight nine ten eleven twelve"
+readme_count_expected="$(printf '%s\n' $readme_count_words | sed -n "$((readme_required_n + 1))p")"
+assert_value "the readme's tool count is the number of tools it lists ($readme_required_n)" \
+  "$([[ -n "$readme_claimed_count" && "$readme_claimed_count" == "$readme_count_expected" ]] && echo true || echo false)"
+
+# The readme must not tell a reader that a script which now requires jq is
+# unaffected by its absence. check-frontmatter.sh has no --json mode at all and
+# requires jq; check-quality.sh required nothing at base and requires it now.
+assert_value "the readme does not claim text mode is unaffected by a missing jq" \
+  "$(grep -q 'Text mode needs no jq and is unaffected' README.md && echo false || echo true)"
+jq_requirers="$(grep -lE '^[[:space:]]*[^#]*require_tool[[:space:]]+jq' "$SCRIPTS_DIR"/*.sh | wc -l | tr -d ' ')"
+assert_value "the readme names every script that requires jq, and there are $jq_requirers of them" \
+  "$([[ "$jq_requirers" -eq 5 ]] && grep -qi 'all five .*scripts require jq' README.md && echo true || echo false)"
 
 # F6 — `usage()` in draft-rewrite.sh is a heredoc, and it runs on the
 # argument-parsing paths, before `require_tool cat`. A broken `cat` made `-h`
