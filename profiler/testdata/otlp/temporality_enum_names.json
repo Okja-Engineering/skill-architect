@@ -13,6 +13,7 @@
                 "dataPoints": [
                   {
                     "attributes": [
+                      { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
                       { "key": "type", "value": { "stringValue": "input" } },
                       { "key": "model", "value": { "stringValue": "claude-sonnet-5" } }
                     ],
@@ -32,6 +33,7 @@
                 "dataPoints": [
                   {
                     "attributes": [
+                      { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
                       { "key": "type", "value": { "stringValue": "output" } },
                       { "key": "model", "value": { "stringValue": "claude-sonnet-5" } }
                     ],

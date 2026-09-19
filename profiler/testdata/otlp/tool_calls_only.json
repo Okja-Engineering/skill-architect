@@ -14,6 +14,7 @@
               "timeUnixNano": "1789332595460000000",
               "body": { "stringValue": "claude_code.tool_result" },
               "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
                 { "key": "event.name", "value": { "stringValue": "tool_result" } },
                 { "key": "tool_name", "value": { "stringValue": "Read" } },
                 { "key": "tool_use_id", "value": { "stringValue": "toolu_01AAAA" } },
@@ -24,6 +25,7 @@
               "timeUnixNano": "1789332595560000000",
               "body": "claude_code.tool_result",
               "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
                 { "key": "event.name", "value": { "stringValue": "tool_result" } },
                 { "key": "tool_name", "value": { "stringValue": "Bash" } },
                 { "key": "tool_use_id", "value": { "stringValue": "toolu_01BBBB" } },
@@ -33,6 +35,7 @@
             {
               "timeUnixNano": "1789332595660000000",
               "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
                 { "key": "event.name", "value": { "stringValue": "tool_result" } },
                 { "key": "tool_name", "value": { "stringValue": "Write" } },
                 { "key": "tool_use_id", "value": { "stringValue": "toolu_01CCCC" } },

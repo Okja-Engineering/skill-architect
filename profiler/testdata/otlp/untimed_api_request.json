@@ -7,6 +7,7 @@
             {
               "body": { "stringValue": "claude_code.api_request" },
               "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
                 { "key": "event.name", "value": { "stringValue": "api_request" } },
                 { "key": "event.timestamp", "value": { "stringValue": "2026-09-13T20:49:55.100Z" } },
                 { "key": "model", "value": { "stringValue": "claude-sonnet-5" } },

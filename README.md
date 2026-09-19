@@ -65,10 +65,36 @@ only when the export yields a value the adapter can actually read:
 | `tool_calls` | `claude_code.tool_result` events carrying a tool name and a readable `success` value, **or** `claude_code.tool_decision` events recording a reject with a tool name. Either alone is enough |
 | `timing` | `claude_code.api_request` events carrying a parseable timestamp |
 
-Anything else is `none`, and `capture` delivers exactly what `probe` advertised, because
-both read the export through the same extractor. A partial export carrying tool calls and
-timing but no token metric yields those two `present` and `tokens` `unknown` with a
-reason, rather than discarding the run.
+Anything else is `none`. A partial export carrying tool calls and timing but no token
+metric yields those two `present` and `tokens` `unknown` with a reason, rather than
+discarding the run.
+
+**`--session` selects what is read, not just what the profile is labelled with.** Both
+capture routes documented below append to one file by design, and route (a) listens on the
+standard OTLP port, so one export legitimately holds several sessions and whatever else on
+the machine was exporting. A record contributes to a profile only when it carries that
+`session.id` **and** was not recorded by another product's instrumentation scope. A
+session id the export does not contain gives `unknown`, with a reason naming how many
+records were passed over and why — never a confident number belonging to somebody
+else's run. A record
+carrying no `session.id` at all contributes to nothing: a record that does not say which
+run it is from cannot be attributed to one. `capture` refuses an empty `--session` for the
+same reason — with no identity asserted there is nothing to scope by — and the library's
+`Capture` refuses it too, so a Go caller is told rather than handed a profile of the whole
+file.
+
+The scope half is an exclusion, not an allowlist. A scope that names **no** library is
+read, because an instrumentation scope is optional in OTLP and a receiver or collector in
+the path may not carry one through; refusing those would trade a wrong number for no
+number on every pipeline that drops it, and the `session.id` test still stands over them.
+A scope that positively names another product is not read.
+
+`probe` takes no `--session`, because it is asked what an export can yield without being
+told which session: it answers for the export as a whole. So an export holding two
+sessions can probe `tokens: otel` while `capture --session <the one that is not in it>`
+reports `unknown`. A profile never disagrees with itself, though — the `capability` block
+it carries is derived from that capture's own session-scoped read, through the same
+extractor that produced its values.
 
 A file you supplied is never reported as "unconfigured". If it cannot be read as an
 OTLP/JSON export — unreadable, empty, not a JSON object at the top level, malformed, or

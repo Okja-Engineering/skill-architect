@@ -40,11 +40,31 @@ record — and that list is what was observed on one version, so treat it as the
 floor rather than the whole of it. See the privacy note in the repository
 README ("A capture identifies you"). Read the file before you share it.
 
+**Every `sum` data point and every log record here carries
+`session.id: 00000000-0000-4000-8000-000000000001`**, the one session these
+fixtures are a capture of, except where a fixture exists to hold more than one
+(`two_sessions.ndjson`, `two_sessions_one_metric.json`, `foreign_scope.json` —
+all three use their own ids, listed below). A capture reads only the records carrying the session it was asked for,
+so a fixture whose records name no session is an export no producer writes and
+pins nothing; tests read these through `fixtureSession`.
+
+Two kinds of record are deliberately left without one, because the session
+filter never reaches them. `malformed.json` and the tail of
+`truncated_final_line.ndjson` cannot be read as an export at all. And
+`gauge_not_sum.json` carries a **gauge** point: only a sum's data points are
+session-filtered, because a sum is the only shape a signal reads a value out
+of, so that export is refused for its shape whoever's it is and a `session.id`
+on it would pin nothing.
+
 | Fixture | What it pins |
 |---|---|
 | `full_export.ndjson` | The happy path in the shape a capture actually has: a metrics batch and a logs batch concatenated as NDJSON. All four token types, a `tool_result`, a rejected `tool_decision`, two `api_request`s. All three signals `present`. |
 | `tokens_only.json` | Two `resourceMetrics` entries with two `scopeMetrics` each — legal, and a parser that indexes `[0]` loses three quarters of the file. Also two non-token metrics carrying their own `type` attribute: `claude_code.lines_of_code.count` here carries `type: "output"`, which it never does in reality, so that if the `type` lookup were not scoped to `claude_code.token.usage` the output count would be wrong by 999999. |
 | `tool_calls_only.json` | The three ways a record names its event: `body.stringValue`, a bare-string `body`, and no `body` at all with only the `event.name` attribute. |
+| `kvlist_attribute_series.ndjson` | Two cumulative data points whose `kvlistValue` attribute carries the same two members in opposite order, beside a second pair carrying that map nested inside an `arrayValue`. A map is equal irrespective of member order and an array is not, so this is two series holding 100 and 50; an identity taken from the compacted JSON reads four and reports 300. Cumulative, because that is the temporality under which two split series *add*. |
+| `two_sessions.ndjson` | Two sessions in one export, which is what both documented capture routes produce: they append to one file by design, and route (a) listens on the standard OTLP port. Session `2222…` spent 48000/9100 tokens over 12 seconds and made two tool calls; session `3333…` sits beside it with 1200/340 and one call, 27.8 hours later. Read without scoping, the file reports 49200/9440 and a `total_ms` of 99999000 for whichever session it is labelled with. |
+| `two_sessions_one_metric.json` | The other multi-session metric layout, and the one `two_sessions.ndjson` cannot hold: both sessions inside **one** metric's `dataPoints` array, interleaved, which is what a collector flushing them together writes. Session `2222…` holds 5000/700 and session `3333…` holds 90000/4300, so the filter has to run within the array — the four points total 95000/5000, which is neither session's. `two_sessions.ndjson` gives each session its own batch, so scoping it can drop a whole metric and never filter inside one. A session the file does not carry empties the metric, which must then be dropped: kept as an empty sum it makes the reason say the metric "carried no sum data points" of an export carrying four. |
+| `foreign_scope.json` | One session id (`2222…`) on every record, so only the scope and the event naming can tell three of them apart: a `claude_code.token.usage` sum of 7000 and a `tool_result` under scope `some.other.product`, and a record under the harness's own scope whose `body` names a bare `tool_result` that only re-qualification in the reader turned into a `claude_code` event. Beside them, a genuine 1000-token point, a `tool_result`, an `api_request`, and a record named by its `event.name` attribute in the short form — which is the documented spelling and must still be read. A reader that attributes by name alone reports 8000 input tokens, four tool calls and a 99999000 ms span. |
 | `log_record_shapes.json` | Four `tool_result` records spread over two `resourceLogs` with two `scopeLogs` each — a walk that indexes `[0]` loses three quarters of them. The first record's `body` says `tool_result` while its `event.name` attribute says `api_request`: the body wins, so this export has no `api_request` in it at all. Two of the four carry no `timeUnixNano` and sort last, in file order. |
 | `as_double_wins_over_as_int.json` | One point carrying both `asDouble` and `asInt`, with different numbers in them. `asDouble` is what Claude Code's own exporter sets, so it is what is read — consistently, not by whichever the decoder reached first. |
 | `partial_no_tokens.json` | A logs-only capture: tool calls and timing are `present`, tokens `unknown` with its own reason. A partial export never costs the caller the signals it does carry. |

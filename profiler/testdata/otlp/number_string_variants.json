@@ -13,6 +13,7 @@
                 "dataPoints": [
                   {
                     "attributes": [
+                      { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
                       { "key": "type", "value": { "stringValue": "input" } },
                       { "key": "model", "value": { "stringValue": "claude-sonnet-5" } }
                     ],
@@ -22,6 +23,7 @@
                   },
                   {
                     "attributes": [
+                      { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
                       { "key": "type", "value": { "stringValue": "output" } },
                       { "key": "model", "value": { "stringValue": "claude-sonnet-5" } }
                     ],
@@ -46,6 +48,7 @@
               "timeUnixNano": 1789332595100000000,
               "body": { "stringValue": "claude_code.api_request" },
               "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
                 { "key": "event.name", "value": { "stringValue": "api_request" } },
                 { "key": "model", "value": { "stringValue": "claude-sonnet-5" } }
               ]
@@ -54,6 +57,7 @@
               "timeUnixNano": "1789332595460000000",
               "body": { "stringValue": "claude_code.tool_result" },
               "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
                 { "key": "event.name", "value": { "stringValue": "tool_result" } },
                 { "key": "tool_name", "value": { "stringValue": "Read" } },
                 { "key": "success", "value": { "boolValue": true } }
