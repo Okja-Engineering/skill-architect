@@ -238,3 +238,81 @@ func TestUsageErrorsExitOneSoThatTwoMeansOneThing(t *testing.T) {
 		})
 	}
 }
+
+// The invariant: `probe` and `capture` read one export through one extractor, so
+// a caller must not be able to learn from `capture` that the export was
+// unreadable and from `probe` that everything is merely "none". A capability
+// cannot say "error" — the vocabulary is a source or none — so the run says it,
+// on stderr, and this holds the pairing end to end at the CLI, which is the
+// surface the defect was found on.
+//
+// The exit status is deliberately not part of the pairing: `probe` has no
+// documented exit contract, so it stays 0 and is asserted to stay 0. Changing it
+// is new surface for 0.5.0, and a test that demanded a nonzero status here would
+// be pinning the fix to a decision nobody has taken.
+func TestProbe_SaysOnStderrWhyACapabilityIsNone(t *testing.T) {
+	bin := buildProfiler(t)
+	missing := filepath.Join(t.TempDir(), "otel-export.json")
+
+	for _, tc := range []struct {
+		name      string
+		otel      string
+		wantNoise bool
+		about     string
+	}{
+		{name: "an export file that is not there", otel: missing, wantNoise: true,
+			about: "capture calls this an error and exits 2; probe must not be silent about it"},
+		{name: "an export that cannot be read at all", otel: fixture("malformed.json"), wantNoise: true,
+			about: "capture calls this an error; probe must say the same thing"},
+		{name: "no export configured", wantNoise: false,
+			about: "an answer about the session, not a fault of the run — capture exits 0"},
+		{name: "an export carrying every signal", otel: fixture("full_export.ndjson"), wantNoise: false,
+			about: "nothing failed, so a diagnostic would be noise"},
+		{name: "a file that is not an export at all", otel: fixture("no_envelope.json"), wantNoise: false,
+			about: "parsed fine and simply is not an export; capture exits 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{"probe", "--harness", "claude_code"}
+			if tc.otel != "" {
+				args = append(args, "--otel-file", tc.otel)
+			}
+			cmd := exec.Command(bin, args...)
+			var stderr strings.Builder
+			cmd.Stderr = &stderr
+			out, _ := cmd.Output()
+
+			if got := cmd.ProcessState.ExitCode(); got != 0 {
+				t.Errorf("exit status = %d, want 0 — probe has no exit contract to break", got)
+			}
+
+			// stdout is the report, and it is the same report either way: the
+			// diagnostic must not have widened what a caller parses.
+			var report profiler.CapabilityReport
+			if err := json.Unmarshal(out, &report); err != nil {
+				t.Fatalf("stdout is not a capability report: %v\n%s", err, out)
+			}
+			if len(report.Capabilities) != 5 {
+				t.Errorf("report covers %d capabilities, want 5", len(report.Capabilities))
+			}
+
+			noise := strings.TrimSpace(stderr.String())
+			switch {
+			case tc.wantNoise && noise == "":
+				t.Errorf("stderr is empty — %s", tc.about)
+			case !tc.wantNoise && noise != "":
+				t.Errorf("stderr says %q — %s", noise, tc.about)
+			}
+			if noise == "" {
+				return
+			}
+			for _, line := range strings.Split(noise, "\n") {
+				if !strings.HasPrefix(line, "probe: ") {
+					t.Errorf("diagnostic %q is not attributed to probe", line)
+				}
+			}
+			if tc.otel == missing && !strings.Contains(noise, missing) {
+				t.Errorf("the diagnostic does not name the path that could not be read: %q", noise)
+			}
+		})
+	}
+}

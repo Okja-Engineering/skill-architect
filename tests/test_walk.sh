@@ -13,13 +13,25 @@ mkdir -p "$tmp"
 # on the next are not the same statement: errexit kills the suite at the check
 # and the label is never printed, or bash 3.2 runs on and prints PASS. The
 # assertion has to *be* the check.
+#
+# The `skills` value is checked by resolving it, not by comparing it to a
+# spelling. Pinning it to the literal `skills` here was what let the four
+# manifests drift apart: three said `./skills/`, this suite required the fourth
+# to say something else, and normalising them meant breaking a test. What the
+# layout actually requires is that the value point at the directory holding the
+# skills, which is true of either spelling, so that is what is asserted. Whether
+# the four manifests *agree* is a four-manifest question and lives with the rest
+# of them, in tests/test_install.sh.
 plugin_points_to_canonical_skill_dir() {
   python3 - <<'PY'
-import json
+import json, os
 with open('.devin-plugin/plugin.json') as f:
     manifest = json.load(f)
 assert manifest['name'] == 'skill-architect'
-assert manifest['skills'] == 'skills'
+skills = manifest['skills']
+assert os.path.isdir(skills), 'skills path does not resolve: %r' % skills
+for skill in ('skill-audit', 'skill-rewrite'):
+    assert os.path.isfile(os.path.join(skills, skill, 'SKILL.md')), skill
 PY
 }
 

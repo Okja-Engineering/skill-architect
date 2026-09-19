@@ -46,6 +46,12 @@
 #                                        a command substitution in it is a
 #                                        value the repository decides.
 #
+#   require <label> <command> [args...]  an assertion that also halts the suite,
+#                                        read exactly as `assert` is: a
+#                                        precondition that cannot fail is a
+#                                        guard that can never refuse, which is
+#                                        worse than a vacuous assertion.
+#
 #   <harness name> ()                    a redefinition of anything the shared
 #                                        harness provides, in any of bash's
 #                                        three spellings.
@@ -91,7 +97,7 @@ BEGIN {
 
   # Everything the shared harness provides. A suite that defines one of these
   # has its own copy of it.
-  n = split("assert assert_value quietly witness_exit harness_init harness_exit harness_summary harness_ready", list, " ")
+  n = split("assert assert_value require quietly witness_exit harness_init harness_exit harness_summary harness_ready", list, " ")
   for (i = 1; i <= n; i++) harness_name[list[i]] = 1
 
   n = split("; && || | & then else do { (", list, " ")
@@ -226,15 +232,15 @@ function report(ln, reason, text) {
   bad++
 }
 
-function check_command_shape(toks, i, nt, ln, text,   j, cw) {
+function check_command_shape(verb, toks, i, nt, ln, text,   j, cw) {
   if (i + 1 > nt || is_op(toks[i + 1])) {
-    report(ln, "assert has no label", text)
+    report(ln, verb " has no label", text)
     return
   }
   j = i + 2
   while (j <= nt && !is_op(toks[j]) && wrapper[dequote(toks[j])]) j++
   if (j > nt || is_op(toks[j])) {
-    report(ln, "assert has no verdict to run", text)
+    report(ln, verb " has no verdict to run", text)
     return
   }
   if (has_expansion(toks[j])) return
@@ -298,11 +304,11 @@ function process(s, ln,   nt, toks, i, name) {
   check_shadowing(toks, nt, ln, s)
   for (i = 1; i <= nt; i++) {
     name = toks[i]
-    if (name != "assert" && name != "assert_value") continue
+    if (name != "assert" && name != "assert_value" && name != "require") continue
     if (i > 1 && !separator[toks[i - 1]]) continue
     sites++
-    if (name == "assert") check_command_shape(toks, i, nt, ln, s)
-    else check_value_shape(toks, i, nt, ln, s)
+    if (name == "assert_value") check_value_shape(toks, i, nt, ln, s)
+    else check_command_shape(name, toks, i, nt, ln, s)
   }
 }
 
