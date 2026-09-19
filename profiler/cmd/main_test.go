@@ -160,6 +160,55 @@ func TestCaptureExitCode_TwoMeansNothingWasReadAndSomethingFailed(t *testing.T) 
 	}
 }
 
+// Help that was asked for is not a usage error.
+//
+// Every help path exited 1, because help and usage-error were the same path:
+// the top-level switch sends an unrecognised first word to usage() and exits 1,
+// and `-h` is an unrecognised first word; the subcommands hand their args to
+// flag.Parse, which returns flag.ErrHelp for `-h`, and parseFlags treated any
+// non-nil error as a typo.
+//
+// The two cases are not the same event. A usage error is the caller getting it
+// wrong, and 1 is right for it. `--help` is the caller getting exactly what
+// they asked for, and a program that exits nonzero having done what it was
+// asked cannot be scripted against: `profiler --help` in a shell with `set -e`
+// takes the script down, and a wrapper cannot tell "I printed the help" from
+// "your flags are wrong".
+//
+// 0 disturbs neither of the other two statuses. 1 already means usage error and
+// 2 already means the capture read nothing, and help is neither.
+func TestRequestedHelpExitsZero(t *testing.T) {
+	bin := buildProfiler(t)
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"-h on the command itself", []string{"-h"}},
+		{"--help on the command itself", []string{"--help"}},
+		{"-h on probe", []string{"probe", "-h"}},
+		{"-h on capture", []string{"capture", "-h"}},
+		{"--help on probe", []string{"probe", "--help"}},
+		{"--help on capture", []string{"capture", "--help"}},
+		{"help as a word", []string{"help"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(bin, tc.args...)
+			out, _ := cmd.CombinedOutput()
+			if got := cmd.ProcessState.ExitCode(); got != 0 {
+				t.Errorf("exit status = %d, want 0 — help was asked for and given\n%s", got, out)
+			}
+			// Exiting 0 having printed nothing would satisfy the status and
+			// still not be help.
+			if len(out) == 0 {
+				t.Error("help exited 0 and printed nothing at all")
+			}
+			if !strings.Contains(string(out), "usage:") && !strings.Contains(string(out), "Usage of") {
+				t.Errorf("help printed no usage text:\n%s", out)
+			}
+		})
+	}
+}
+
 // Exit 2 has to mean one thing, or a script branching on it cannot act. The
 // flag package exits 2 of its own accord on an unrecognised flag, which would
 // put "you typed the flag wrong" and "the capture read nothing" behind the same

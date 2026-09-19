@@ -67,10 +67,12 @@ masked_path() {
 run_on_path() {
   local use_path="$1"
   shift
+  local cmd="$1"
   local errfile="$mask_root/stderr"
   code=0
   output=$(PATH="$use_path" "$@" 2>"$errfile") || code=$?
   errout="$(cat "$errfile")"
+  witness_exit "$cmd" "$code"
 }
 
 # run_masked <tool> <cmd> [args...] — run with <tool> absent from PATH.

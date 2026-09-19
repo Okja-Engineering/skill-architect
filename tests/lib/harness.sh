@@ -87,6 +87,26 @@ harness_init() {
   harness_scratch="$(mktemp -d)" || exit 1
 }
 
+# Every status this harness has watched a script exit with, as
+# `<basename>:<code>` words. A suite can then ask whether a script's own
+# `# Exit codes:` header is true of the script rather than only of the document
+# that copies it: the header and the doc are compared to each other, and both
+# could move together — a status added that the script can never emit, or one
+# dropped that it emits on every failure — with nothing anywhere noticing.
+# Recorded here rather than per suite because every run goes through this
+# function, so there is no call site left to forget.
+exit_witness=""
+
+# witness_exit <cmd> <code> — record a status, if <cmd> was a script whose
+# contract that status is a statement about. A run of `bash -c` is a statement
+# about the fragment it was handed, and skill-validator's status is
+# skill-validator's contract, not this repository's.
+witness_exit() {
+  case "$1" in
+    *.sh) exit_witness="$exit_witness ${1##*/}:$2" ;;
+  esac
+}
+
 # assert <label> <command> [args...]
 #
 # Run the command and report the label. Taking a command rather than a value is
@@ -174,7 +194,8 @@ harness_summary() {
 # "stopped short" fails by the same route as "never loaded".
 harness_ready() {
   local n
-  for n in harness_init harness_exit assert assert_value quietly harness_summary; do
+  for n in harness_init harness_exit assert assert_value quietly witness_exit \
+           harness_summary; do
     declare -F "$n" >/dev/null 2>&1 || return 1
   done
   return 0

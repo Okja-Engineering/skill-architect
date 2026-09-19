@@ -1,30 +1,112 @@
 #!/usr/bin/env bash
-# Draft a rewritten SKILL.md for a skill, from a skill-audit report.
+# Draft a rewrite of a skill: run the skill-audit checks over it, and compose
+# their output with the structural templates the audit says are missing.
 # Writes REWRITE-DRAFT.md into the target skill directory and names it on
 # stdout. The draft is a skeleton plus the audit output for a reader to work
 # from; it does not rewrite the skill and does not touch its SKILL.md.
-# Exit codes: 0=draft written, 1=usage or input error.
-# A usage error is a missing or unknown option, an option given without its
-# value, a target directory or SKILL.md that is not there, or a report named
-# with -a that is not there. Every one of them is reported on stderr, naming
-# the option or the path, and leaves no draft behind.
+# Exit codes: 0=draft written, 1=usage or target error, 3=execution error.
+#
+# A usage or target error is a missing or unknown option, an option given
+# without its value, a target directory or SKILL.md that is not there, or a
+# report named with -a that is not there. Every one of them is reported on
+# stderr, naming the option or the path, and leaves no draft behind.
+#
+# An execution error is one of three: a required tool is absent, which the rule
+# registry calls DEP001; an audit source gave this script no answer it could use,
+# DEP002; or a verdict-guard.sh that would not load, reported before either ID
+# exists to name it. Those IDs classify the exits and are not printed — this
+# script's stdout says where it wrote the draft and carries no findings array for
+# an ID to arrive in.
+#
 # The audit's own verdict is not this script's exit status: a skill with
 # failing house policy is the case the drafter exists for, so findings in the
-# report are a successful run.
+# report are a successful run. A check that could not compute a verdict is a
+# different thing, and it stops the draft.
+#
+# This script used to run both audit checks with `2>&1 || true`, which is two
+# defects in one line. The status was discarded, so a check that reached no
+# verdict at all was indistinguishable from one that reported a failing skill,
+# and this script wrote a draft and exited 0 either way. And merging stderr into
+# the capture put the checks' diagnostics into the draft's "Current state"
+# section as if they were findings about the skill: with skill-validator absent,
+# a clean skill's draft opened with "ERROR: skill-validator exited with
+# unexpected status 127" presented as the current state of the skill.
+#
+# A draft is a document about an audit, so there has to have been an audit. A
+# spec or policy failure is exactly the input this script wants and is accepted;
+# a check that could not compute a verdict is not, and stops the draft.
 set -euo pipefail
+
+# `dirname` runs before the guard exists to announce it, so both calls carry the
+# same explicit refusal the load check below uses. Unread, their status was this
+# script's own: a broken dirname left `cd` with nothing to enter and errexit
+# exited 1, which this contract spends on "usage or target error" — a broken
+# tool reported as a mistake in the caller's command line.
+script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" \
+  || { echo "ERROR: cannot resolve this script's own directory: dirname or cd gave no answer; no draft was written" >&2; exit 3; }
+skill_audit_root="$(dirname "$script_dir")/../skill-audit" \
+  || { echo "ERROR: cannot resolve the skill-audit directory: dirname gave no answer; no draft was written" >&2; exit 3; }
+verdict_guard="$skill_audit_root/scripts/verdict-guard.sh"
+# The guard is the one dependency it cannot announce itself, so loading it is
+# checked before and after — see its header for why an unchecked source would
+# exit with a status that means a draft was written.
+bash -n "$verdict_guard" 2>/dev/null \
+  || { echo "ERROR: cannot load $verdict_guard: missing or malformed; no draft was written" >&2; exit 3; }
+# shellcheck source=../../skill-audit/scripts/verdict-guard.sh
+source "$verdict_guard"
+{ declare -F verdict_guard_ready >/dev/null && verdict_guard_ready; } \
+  || { echo "ERROR: $verdict_guard did not load its guards; no draft was written" >&2; exit 3; }
 
 target_skill=""
 audit_report=""
+own_audit_report=""
+output=""
+draft_incomplete=false
 
+# The temporary audit this script writes when it was not handed one. It is
+# removed on every exit path rather than only the successful one: the checks
+# below can now stop the draft, and a new exit path that leaked a file each time
+# would be this change's own doing.
+#
+# The draft itself is the trap's too, from the moment it is opened until the
+# moment it is finished. "No draft was written" is what this script says on
+# every path that does not reach the end, and it was not true: composing the
+# draft is eight writes, any one of which can fail, and `-a` pointing at a file
+# that exists and cannot be read put a six-line stub in the caller's skill
+# directory at exit 1 — a status this contract spends on the caller's own
+# mistake. No amount of checking before the first byte fixes that, because the
+# writes come after it. So the sentence is made true the only way it can be:
+# an incomplete draft is not left behind.
+cleanup() {
+  [[ -n "$own_audit_report" ]] && rm -f "$own_audit_report"
+  [[ "$draft_incomplete" == true ]] && rm -f "$output"
+  return 0
+}
+trap cleanup EXIT
+
+# Written with the shell's own `printf` rather than a `cat` heredoc, and that is
+# the fix rather than a style preference. This function runs on the
+# argument-parsing paths — `-h`, no argument, an unknown option — which are all
+# before `require_tool cat` further down, and there is nowhere earlier to put
+# that precondition: the arguments have to be read before this script knows
+# whether it was asked to do any work at all. So a broken `cat` made `-h` exit 2
+# where this contract says 0, and the other two exit 2 where it says 1, printing
+# nothing on either channel.
+#
+# Reordering the precondition would not have fixed it and would have cost
+# something: `-h` would then refuse to print help because a tool the help text
+# does not need was broken. Telling the caller how to invoke this script is not
+# a computation, so it is done with no tool to require and no status to read.
+# `cat` stays a stated precondition below, where the draft is composed, which is
+# the work that genuinely needs it.
 usage() {
-  cat <<EOF
-Usage: draft-rewrite.sh -t <target-skill-dir> [-a <audit-report-path>]
-
-Options:
-  -t, --target    Target skill directory to rewrite (required)
-  -a, --audit     Path to an existing skill-audit report (optional)
-  -h, --help      Show this help
-EOF
+  printf '%s\n' \
+    'Usage: draft-rewrite.sh -t <target-skill-dir> [-a <audit-report-path>]' \
+    '' \
+    'Options:' \
+    '  -t, --target    Target skill directory to rewrite (required)' \
+    '  -a, --audit     Path to an existing skill-audit report (optional)' \
+    '  -h, --help      Show this help'
 }
 
 # require_value <option> <count> — refuse an option written without its value.
@@ -84,41 +166,142 @@ if [[ -n "$audit_report" && ! -f "$audit_report" ]]; then
   exit 1
 fi
 
-skill_name="$(basename "$target_skill")"
+# Every tool this script computes with: awk reads the target's body, grep
+# answers which sections it is missing, cat writes the draft, and mktemp holds
+# the audit when it was not handed one. basename used to be on this list and is
+# not, because it is no longer used: the skill's name is the last path component
+# and parameter expansion is the same operation with nothing to require.
+require_tool awk false
+require_tool grep false
+require_tool cat false
+require_tool mktemp false
+
+skill_name="${target_skill%/}"
+skill_name="${skill_name##*/}"
 output="$target_skill/REWRITE-DRAFT.md"
 
 # skill-audit is skill-rewrite's sibling, so it is resolved by going up from
-# this script to the skill directory that holds it and then across. Resolved
-# from this script's own location and not from the caller's working directory,
-# which is not part of the answer: `CDPATH=` and `--` are what keep it that way,
-# for the reason verdict-guard.sh sets out at length.
-script_dir="$(CDPATH= cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-skill_audit_root="$(dirname "$script_dir")/../skill-audit"
+# this script to the skill directory that holds it and then across. That
+# happens at the top of this file now, beside the guard load check that cannot
+# be written without it. Resolved from this script's own location and not from
+# the caller's working directory, which is not part of the answer: `CDPATH=`
+# and `--` are what keep it that way, for the reason verdict-guard.sh sets out
+# at length.
 
 # What the draft says it was built from.
 #
 # A machine-local mktemp path was the one thing it could not be. It names a
-# file that is gone by the time anyone reads the draft — or worse, one that is
-# still there, since nothing removed it — and it never meant anything outside
-# the process that wrote it. So the two cases state what they actually are: a
+# file the trap above has already removed by the time anyone reads the draft,
+# and it never meant anything outside the process that wrote it. So the two cases state what they actually are: a
 # report the caller named is named, and checks the drafter ran itself are
 # described as checks the drafter ran itself.
 if [[ -z "$audit_report" ]]; then
   provenance="structural checks run by this script: skill-audit's check-frontmatter.sh and check-structure.sh"
   echo "No audit report provided; running structural checks..." >&2
-  audit_report="$(mktemp)"
-  # The report is this script's scratch and not an artifact, so it does not
-  # outlive the run. The trap goes on with the file rather than after the
-  # checks, so no exit path between the two — including an errexit abort — can
-  # leave it behind.
-  trap 'rm -f "$audit_report"' EXIT
-  "$skill_audit_root/scripts/check-frontmatter.sh" "$target_skill" > "$audit_report" 2>&1 || true
-  "$skill_audit_root/scripts/check-structure.sh" "$target_skill" >> "$audit_report" 2>&1 || true
+  # An explicit template, under the caller's temp directory and named after the
+  # tool that made it. `mktemp` with no template ignores TMPDIR on BSD and
+  # honours it on GNU, so a bare call puts this file somewhere the caller did
+  # not choose on one of the two platforms this skill supports — and leaves a
+  # leak nobody can look for, because its location differs by platform and its
+  # name says nothing about where it came from.
+  #
+  # Its status is read, like every other external this script computes with.
+  # `require_tool mktemp` above proves mktemp can make a file under TMPDIR, and
+  # that is a different statement from this call having made one: the check
+  # happens once, and the directory can stop being writable between the check
+  # and the call. Unread, mktemp's own exit 1 became this script's, and 1 is
+  # "usage or target error" here — so a temp directory that does not exist was
+  # reported as a mistake in the caller's command line, with nothing naming
+  # mktemp and no "no draft was written".
+  #
+  # The answer is checked as well as the status. A mktemp exiting 0 having
+  # printed nothing leaves this the empty string, and every use of it below is a
+  # redirection: the draft would be composed over a file named "".
+  own_audit_status=0
+  own_audit_report="$(mktemp "${TMPDIR:-/tmp}"/draft-rewrite-audit.XXXXXX)" \
+    || own_audit_status=$?
+  [[ $own_audit_status -eq 0 && -n "$own_audit_report" ]] \
+    || cannot_compute DEP002 "mktemp could not make a temporary audit under ${TMPDIR:-/tmp} (status $own_audit_status); no draft was written" false
+  audit_report="$own_audit_report"
+  # Each check's status is read, and each check's stdout is captured alone.
+  # check-frontmatter.sh and check-structure.sh both exit 0 pass, 1 a spec or
+  # path failure, 2 a policy failure, 3 no verdict reached. The first three are
+  # findings about the skill, which is what a rewrite draft is written from. The
+  # fourth is not a finding about anything: it means the check could not answer,
+  # and a draft composed over it would present the check's own failure as the
+  # state of the skill.
+  #
+  # The two checks are named once, in full, at this one declaration site rather
+  # than spelled as a bare basename joined to the root inside the loop. A
+  # reader asking which of the sibling's checks this script runs gets the
+  # answer by reading it, and so does tests/test_rewrite.sh, which decides that
+  # question between this file and the SKILL.md and can only do so if the
+  # names are here to be read.
+  for audit_check in \
+    "$skill_audit_root/scripts/check-frontmatter.sh" \
+    "$skill_audit_root/scripts/check-structure.sh"; do
+    audit_status=0
+    "$audit_check" "$target_skill" >> "$audit_report" || audit_status=$?
+    case $audit_status in
+      0|1|2) ;;
+      *) cannot_compute DEP002 "${audit_check##*/} reached no verdict over $target_skill (status $audit_status); no draft was written" false ;;
+    esac
+  done
 else
   provenance="audit report $audit_report"
 fi
 
-cat > "$output" <<EOF
+# Which sections the target is missing is a question about its body, and the
+# body is read through the shared primitive for the reason check-structure.sh
+# now does: `## When to use` written at column 0 inside the YAML frontmatter is
+# a comment to a parser and a heading to a grep over the whole file, so a skill
+# whose body has no sections at all was handed a draft with no templates in it.
+#
+# Read before the draft file is opened, with everything else this script reads.
+# That ordering is worth keeping and it was never the whole of the rule, which
+# is where the claim went wrong: composing the draft is itself eight writes, so
+# "everything that can stop this script stops it before the first byte" cannot
+# be made true by moving reads earlier. What can be made true, and is, is the
+# sentence those words were standing in for — "no draft was written" — and the
+# trap above is what makes it true, on every path including the ones that fail
+# in the middle of writing.
+skill_body "$target_skill/SKILL.md" false
+target_body="$section"
+
+# And the audit itself, which is the other thing the draft is composed from.
+# It used to be read with `cat "$audit_report" >> "$output"`, three writes into
+# the document — so `-a` naming a file that exists and cannot be read passed
+# the `-f` test above, opened the draft, wrote its header, and died inside cat
+# with errexit spending exit 1 and the caller left holding six lines. Read here
+# it is one more thing that stops this script before it starts writing, and
+# cat's status is read where cat is called, with the sentence naming cat.
+audit_status=0
+audit_text="$(cat -- "$audit_report")" || audit_status=$?
+[[ $audit_status -eq 0 ]] \
+  || cannot_compute DEP002 "cat could not read the audit report at $audit_report (status $audit_status); no draft was written" false
+
+# draft_append — append this function's stdin to the draft, reading cat's status
+# where cat is called.
+#
+# `require_tool cat` above says cat answered one question at one moment. It says
+# nothing about these seven writes, and unread their status was this script's:
+# under errexit a cat that failed on the third one exited this script with cat's
+# own status, having already written the first two. The status is read here once
+# rather than at seven call sites, where it would be forgotten at one of them.
+draft_append() {
+  local status=0
+  cat >> "$output" || status=$?
+  [[ $status -eq 0 ]] \
+    || cannot_compute DEP002 "cat could not write the draft to $output (status $status); no draft was written" false
+  return 0
+}
+
+# From here on there is a partial document on disk, and the trap owns it.
+: > "$output" \
+  || cannot_compute DEP002 "could not open $output for writing; no draft was written" false
+draft_incomplete=true
+
+draft_append <<EOF
 # Rewrite draft: $skill_name
 
 Generated from: $provenance
@@ -127,9 +310,9 @@ Generated from: $provenance
 
 EOF
 
-cat "$audit_report" >> "$output"
+[[ -z "$audit_text" ]] || draft_append <<< "$audit_text"
 
-cat >> "$output" <<'EOF'
+draft_append <<'EOF'
 
 ## Proposed structure
 
@@ -150,8 +333,8 @@ Follow the Agent Skills spec and ICM context-management principles:
 
 EOF
 
-if ! grep -qiE "^#{2,6}[[:space:]]+When to use[[:space:]]*$" "$target_skill/SKILL.md"; then
-  cat >> "$output" <<'EOF'
+if ! text_matches false true "^#{2,6}[[:space:]]+When to use[[:space:]]*$" "$target_body"; then
+  draft_append <<'EOF'
 ### When to use
 
 Use this skill when:
@@ -165,8 +348,8 @@ Do not use this skill when <negative scope>.
 EOF
 fi
 
-if ! grep -qiE "^#{2,6}[[:space:]]+Examples?[[:space:]]*$" "$target_skill/SKILL.md"; then
-  cat >> "$output" <<'EOF'
+if ! text_matches false true "^#{2,6}[[:space:]]+Examples?[[:space:]]*$" "$target_body"; then
+  draft_append <<'EOF'
 ### Examples
 
 #### Example 1: <scenario>
@@ -192,8 +375,8 @@ Expected output:
 EOF
 fi
 
-if ! grep -qiE "^#{2,6}[[:space:]]+Validation" "$target_skill/SKILL.md"; then
-  cat >> "$output" <<'EOF'
+if ! text_matches false true "^#{2,6}[[:space:]]+Validation" "$target_body"; then
+  draft_append <<'EOF'
 ### Validation checklist
 
 - [ ] <observable pass/fail criterion 1>
@@ -203,7 +386,7 @@ if ! grep -qiE "^#{2,6}[[:space:]]+Validation" "$target_skill/SKILL.md"; then
 EOF
 fi
 
-cat >> "$output" <<'EOF'
+draft_append <<'EOF'
 
 ## Action items
 
@@ -220,4 +403,5 @@ cat >> "$output" <<'EOF'
 - If the skill is doing more than one job, consider splitting it instead of expanding the rewrite.
 EOF
 
+draft_incomplete=false
 echo "Rewrite draft written to: $output"

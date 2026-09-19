@@ -340,14 +340,24 @@ assert_value "audit-report, policy source reports a path failure: policy_error i
 # same one in both places: the payload is the documented shape or it is a source
 # this report could not read.
 
+# policy_stub_tree <name> <payload> [exit-code]
+#
+# The exit code is a parameter because a policy source's status and its payload
+# are two statements about one run, and this suite has cases about the payload
+# and cases about their agreement. Wiring every stub to exit 0 made the
+# payload-shape rows above also assert that a failing payload at exit 0 is fine,
+# which it is not: the real check-structure.sh exits 2 when it reports a policy
+# failure. Each row states the status its payload belongs with, so the rows about
+# shape stay rows about shape.
 policy_stub_tree() {
   local name="$1"
   local payload="$2"
+  local exit_code="${3:-0}"
   local dir="$mask_root/policy-$name"
   if [[ ! -d "$dir" ]]; then
     cp -R skills/skill-audit/scripts "$dir"
     printf '%s' "$payload" > "$dir/stub-policy-payload"
-    printf '#!/usr/bin/env bash\ncat "$(dirname "$0")/stub-policy-payload"\nexit 0\n' \
+    printf '#!/usr/bin/env bash\ncat "$(dirname "$0")/stub-policy-payload"\nexit %s\n' "$exit_code" \
       > "$dir/check-structure.sh"
     chmod +x "$dir/check-structure.sh"
   fi
@@ -361,14 +371,16 @@ P_UNVER='{"level": "unverified", "rule": "PATH", "message": "dynamic/glob path: 
 policy_names=()
 policy_payloads=()
 policy_readable=()
+policy_status=()
 policy_case() {
   policy_names+=("$1")
   policy_payloads+=("$2")
   policy_readable+=("$3")
+  policy_status+=("${4:-0}")
 }
 
 policy_case conforming-pass      "{\"passed\": true, \"findings\": []}"                   yes
-policy_case conforming-fail      "{\"passed\": false, \"findings\": [$P_FAIL]}"            yes
+policy_case conforming-fail      "{\"passed\": false, \"findings\": [$P_FAIL]}"            yes 2
 policy_case conforming-unverified "{\"passed\": true, \"findings\": [$P_UNVER]}"           yes
 policy_case top-number           '123'                                                     no
 policy_case top-error-object     '{"error": "x"}'                                          no
@@ -390,7 +402,7 @@ policy_case trailing-garbage     '{"passed": true, "findings": []} {"x": 1}'    
 
 for i in "${!policy_names[@]}"; do
   pname="${policy_names[$i]}"
-  run_present "$(policy_stub_tree "$pname" "${policy_payloads[$i]}")" tests/fixtures/f01/valid-full
+  run_present "$(policy_stub_tree "$pname" "${policy_payloads[$i]}" "${policy_status[$i]}")" tests/fixtures/f01/valid-full
 
   assert_value "audit-report, policy payload $pname: exits inside the documented set" \
     "$([[ $code -eq 0 || $code -eq 3 ]] && echo true || echo false)"
@@ -412,7 +424,7 @@ done
 # the verdicts it was given, not to re-derive them from the findings that came
 # with them. A source saying it failed, for a reason it did not enumerate as a
 # `level: "fail"` finding, is still a source saying it failed.
-run_present "$(policy_stub_tree says-failed '{"passed": false, "findings": []}')" tests/fixtures/f01/valid-full
+run_present "$(policy_stub_tree says-failed '{"passed": false, "findings": []}' 2)" tests/fixtures/f01/valid-full
 assert_value "audit-report, policy source says it failed: summary.passed is false" \
   "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "false" ]] && echo true || echo false)"
 assert_value "audit-report, policy source says it failed: the source is read, not errored" \
@@ -465,7 +477,22 @@ source_stub_path() {
 }
 
 # The spec source is read as `.passed`, `.errors` and `.warnings` of one
-# document, so one document that is an object is the whole of what has to hold.
+# document, so those three fields are what has to hold — not merely that the
+# document is an object.
+#
+# `type == "object"` was the whole claim, and the cases below drove it with
+# non-objects only. That is the blind spot, and it is the same defect one level
+# in that the guard's own comment warns about: an object carrying none of the
+# three fields passed the claim, and the merge then read `.passed` out of it and
+# got null. `{"foo": 1}` produced a failing verdict with `spec_error: null` —
+# the defect G3-04 was raised for, reappearing through a source that parsed.
+# `{"passed": "yes"}` was worse: jq reads a non-empty string as truthy, so
+# `summary.passed` came out **true**, a verdict read off a string.
+#
+# For contrast, `check-frontmatter.sh` reads the same source and gets this
+# right; its claim reaches `.errors` because `.errors` is the whole of what it
+# reads. The two claims differ because the reads differ, which is the rule, not
+# an inconsistency: the claim reaches as far as the caller reads and no further.
 spec_names=()
 spec_payloads=()
 spec_readable=()
@@ -476,6 +503,7 @@ spec_case() {
 }
 
 spec_case conforming    '{"passed": true, "errors": 0, "warnings": 0}'   yes
+spec_case no-warnings   '{"passed": true, "errors": 0}'                  yes
 spec_case top-number    '0'                                             no
 spec_case top-array     '[1, 2]'                                        no
 spec_case top-string    '"a verdict"'                                   no
@@ -483,6 +511,14 @@ spec_case top-boolean   'true'                                          no
 spec_case top-null      'null'                                          no
 spec_case two-documents '{"passed": true} {"passed": false}'            no
 spec_case not-json      'not json at all'                               no
+# An object, one level in — the half the table never drove.
+spec_case no-fields     '{"foo": 1}'                                    no
+spec_case passed-string '{"passed": "yes", "errors": 0}'                no
+spec_case passed-number '{"passed": 1, "errors": 0}'                    no
+spec_case passed-null   '{"passed": null, "errors": 0}'                  no
+spec_case errors-string '{"passed": true, "errors": "none"}'            no
+spec_case errors-absent '{"passed": true, "warnings": 0}'               no
+spec_case warnings-str  '{"passed": true, "errors": 0, "warnings": "x"}' no
 
 for i in "${!spec_names[@]}"; do
   vname="${spec_names[$i]}"
@@ -557,5 +593,220 @@ for i in "${!quality_names[@]}"; do
   fi
 done
 
+#
+# The *_error fields carried the source's own output verbatim, and a source that
+# exited 0 printing nothing therefore left `spec_error: null` beside
+# `spec_passed: false`: the empty answer and a working source produced the same
+# empty string, jq rendered it as null, and the report asserted a spec failure
+# while naming no reason for it. A reader cannot tell that from a skill whose
+# spec genuinely failed with no message.
+#
+# "The source said nothing" is a fact about the source, so the report states it.
+# The source's status is stated too — it used to be discarded with `|| true`, so
+# a source that died was indistinguishable from one that answered badly.
+#
+# Each case drives a source that is present and useless, in the three shapes a
+# source can be useless in, and each is asserted on the same three things: the
+# verdict does not claim a pass, the error field is not null, and the error
+# field names the source rather than being whatever the source happened to say.
+
+# silent_source_path <name> <tool> <exit> <stdout>
+silent_source_path() {
+  local name="$1"
+  local tool="$2"
+  local exit_code="$3"
+  local said="$4"
+  local dir="$mask_root/quiet-$name"
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir"
+    printf '%s' "$said" > "$dir/said"
+    printf '#!/usr/bin/env bash\ncat "$(dirname "$0")/said"\nexit %s\n' "$exit_code" > "$dir/$tool"
+    chmod +x "$dir/$tool"
+  fi
+  echo "$dir:$PATH"
+}
+
+reason_cases=0
+for rcase in "spec|skill-validator|0||exited 0 and said nothing" \
+             "spec|skill-validator|4|boom|exited 4 with text that is not a report" \
+             "spec|skill-validator|0|{\"a\":1}{\"b\":2}|answered with two documents" \
+             "quality|skillscore|0||exited 0 and said nothing" \
+             "quality|skillscore|9|boom|exited 9 with text that is not a report"; do
+  rfield="${rcase%%|*}"; rrest="${rcase#*|}"
+  rtool="${rrest%%|*}";  rrest="${rrest#*|}"
+  rexit="${rrest%%|*}";  rrest="${rrest#*|}"
+  rsaid="${rrest%%|*}";  rwhy="${rrest#*|}"
+  reason_cases=$((reason_cases + 1))
+  run_on_path "$(silent_source_path "$rfield-$rexit-$reason_cases" "$rtool" "$rexit" "$rsaid")" \
+    "$REPORT" tests/fixtures/f01/valid-full
+  assert_value "audit-report, $rfield source $rwhy: a report is still produced (exit 0)" \
+    "$([[ $code -eq 0 ]] && echo true || echo false)"
+  assert_value "audit-report, $rfield source $rwhy: the source is not read" \
+    "$(echo "$output" | jq -e --arg f "$rfield" '.[$f] == null' >/dev/null 2>&1 && echo true || echo false)"
+  assert_value "audit-report, $rfield source $rwhy: the error field is not null" \
+    "$(echo "$output" | jq -e --arg f "${rfield}_error" '.[$f] != null' >/dev/null 2>&1 && echo true || echo false)"
+  assert_value "audit-report, $rfield source $rwhy: the error names the source and the status" \
+    "$(echo "$output" | jq -e --arg f "${rfield}_error" --arg t "$rtool" --arg c "$rexit" \
+        '.[$f] | test($t) and test("exited " + $c)' >/dev/null 2>&1 && echo true || echo false)"
+done
+
+echo "  unreadable-source reason cases driven: $reason_cases"
+assert_value "the unreadable-source reason cases were enumerated, not read as empty" \
+  "$([[ "$reason_cases" -eq 5 ]] && echo true || echo false)"
+
+# --- A source's status is read against its payload -----------------------------
+#
+# The shape half above is only half. Both soft sources have their status
+# captured and then never compared to what they said, so a source that
+# contradicted itself was believed:
+#
+#   skill-validator, a conforming payload at exit 1  -> `passed: true`, unread
+#   skillscore, a conforming report at exit 7        -> `quality_score: 99`
+#
+# The second is the sharper one, because the same source read by
+# `check-quality.sh` is refused: skillscore's contract is "0 when it produced a
+# report, nonzero when it did not", so exit 7 says there is no report, and
+# `check-quality.sh` exits 3 over the very payload this file published a grade
+# from. One source, two readers, two answers — which is precisely the drift the
+# guard's shared predicates exist to prevent, arriving through the status
+# instead of through the shape.
+#
+# The policy source, one level down in this same file, has read its status
+# against its payload all along. These two are brought up to it rather than
+# given a mechanism of their own.
+#
+# A status and a payload are the source's two statements about one run. Where
+# they contradict each other the source has told us nothing, and this file does
+# what it does with every other unreadable source: names it, leaves the field
+# null, and still produces a report.
+
+# skill-validator's documented statuses are 0 clean, 1 errors, 2 warnings only,
+# 3 usage error — the same set check-frontmatter.sh enumerates over the same
+# tool. 0 and 2 assert no spec error; 1 asserts at least one.
+spec_status_cases=0
+for scase in "0|{\"passed\": true, \"errors\": 3, \"warnings\": 0}|exit 0 beside a payload reporting three errors" \
+             "2|{\"passed\": true, \"errors\": 2, \"warnings\": 1}|exit 2 beside a payload reporting two errors" \
+             "1|{\"passed\": true, \"errors\": 0, \"warnings\": 0}|exit 1 beside a payload reporting none" \
+             "3|{\"passed\": true, \"errors\": 0, \"warnings\": 0}|a usage error beside a conforming payload" \
+             "9|{\"passed\": true, \"errors\": 0, \"warnings\": 0}|a status outside its documented set"; do
+  sexit="${scase%%|*}"; srest="${scase#*|}"
+  spayload="${srest%%|*}"; swhy="${srest#*|}"
+  spec_status_cases=$((spec_status_cases + 1))
+  run_on_path "$(silent_source_path "spec-status-$spec_status_cases" skill-validator "$sexit" "$spayload")" \
+    "$REPORT" tests/fixtures/f01/valid-full
+
+  assert_value "audit-report, spec source $swhy: exits inside the documented set" \
+    "$([[ $code -eq 0 || $code -eq 3 ]] && echo true || echo false)"
+  assert_value "audit-report, spec source $swhy: the source is not read" \
+    "$(echo "$output" | jq -e '.spec == null' >/dev/null 2>&1 && echo true || echo false)"
+  assert_value "audit-report, spec source $swhy: names the source and its status" \
+    "$(echo "$output" | jq -e '.spec_error != null and (.spec_error | test("skill-validator"))' >/dev/null 2>&1 && echo true || echo false)"
+  assert_value "audit-report, spec source $swhy: claims no pass over a source it could not read" \
+    "$([[ "$(echo "$output" | jq -r '.summary.spec_passed' 2>/dev/null)" == "false" && "$(echo "$output" | jq -r '.summary.passed' 2>/dev/null)" == "false" ]] && echo true || echo false)"
+done
+echo "  spec-source status cases driven: $spec_status_cases"
+assert_value "the spec-source status cases were enumerated, not read as empty" \
+  "$([[ "$spec_status_cases" -eq 5 ]] && echo true || echo false)"
+
+# The controls, one per status that carries a verdict. Without them the cases
+# above would pass against a file that refused every status there is.
+spec_agree_cases=0
+for scase in "0|{\"passed\": true, \"errors\": 0, \"warnings\": 0}|true|a clean pass at exit 0" \
+             "2|{\"passed\": true, \"errors\": 0, \"warnings\": 1}|true|warnings only at exit 2" \
+             "1|{\"passed\": false, \"errors\": 1, \"warnings\": 0}|false|a spec failure at exit 1"; do
+  sexit="${scase%%|*}"; srest="${scase#*|}"
+  spayload="${srest%%|*}"; srest="${srest#*|}"
+  swant="${srest%%|*}"; swhy="${srest#*|}"
+  spec_agree_cases=$((spec_agree_cases + 1))
+  run_on_path "$(silent_source_path "spec-agree-$spec_agree_cases" skill-validator "$sexit" "$spayload")" \
+    "$REPORT" tests/fixtures/f01/valid-full
+  assert_value "audit-report, spec source $swhy: is read, with no spec_error" \
+    "$(echo "$output" | jq -e '.spec != null and .spec_error == null' >/dev/null 2>&1 && echo true || echo false)"
+  assert_value "audit-report, spec source $swhy: the report carries the source's own verdict" \
+    "$([[ "$(echo "$output" | jq -r '.summary.spec_passed' 2>/dev/null)" == "$swant" ]] && echo true || echo false)"
+done
+echo "  spec-source agreement controls driven: $spec_agree_cases"
+assert_value "the spec-source agreement controls were enumerated, not read as empty" \
+  "$([[ "$spec_agree_cases" -eq 3 ]] && echo true || echo false)"
+
+# skillscore says it produced a report by exiting 0, so any nonzero status is a
+# source with no report to read, whatever arrived on its stdout.
+quality_status_cases=0
+for qcase in "7|{\"overallScore\": {\"percentage\": 99, \"letterGrade\": \"A\"}}|a conforming report at exit 7" \
+             "1|{\"overallScore\": {\"percentage\": 50, \"letterGrade\": \"F\"}}|a conforming report at exit 1"; do
+  qexit="${qcase%%|*}"; qrest="${qcase#*|}"
+  qpayload="${qrest%%|*}"; qwhy="${qrest#*|}"
+  quality_status_cases=$((quality_status_cases + 1))
+  run_on_path "$(silent_source_path "quality-status-$quality_status_cases" skillscore "$qexit" "$qpayload")" \
+    "$REPORT" tests/fixtures/f01/valid-full
+
+  assert_value "audit-report, quality source $qwhy: exits inside the documented set" \
+    "$([[ $code -eq 0 || $code -eq 3 ]] && echo true || echo false)"
+  assert_value "audit-report, quality source $qwhy: the source is not read, and is named" \
+    "$(echo "$output" | jq -e '.quality == null and .quality_error != null and (.quality_error | test("skillscore"))' >/dev/null 2>&1 && echo true || echo false)"
+  assert_value "audit-report, quality source $qwhy: no score is read out of a source that reported none" \
+    "$(echo "$output" | jq -e '.summary.quality_score == null and .summary.quality_grade == null' >/dev/null 2>&1 && echo true || echo false)"
+  # Quality informs, it does not decide. A refused score leaves the verdict be.
+  assert_value "audit-report, quality source $qwhy: the verdict over a passing skill is still a pass" \
+    "$([[ "$(echo "$output" | jq -r '.summary.passed' 2>/dev/null)" == "true" ]] && echo true || echo false)"
+  # The same payload, put to the script whose whole job is that one source.
+  # Two readers of one source must not disagree about whether it answered.
+  run_on_path "$(silent_source_path "quality-status-$quality_status_cases" skillscore "$qexit" "$qpayload")" \
+    skills/skill-audit/scripts/check-quality.sh tests/fixtures/f01/valid-full
+  assert_value "check-quality, $qwhy: refuses it too, so the two readers agree" \
+    "$([[ $code -eq 3 ]] && echo true || echo false)"
+done
+echo "  quality-source status cases driven: $quality_status_cases"
+assert_value "the quality-source status cases were enumerated, not read as empty" \
+  "$([[ "$quality_status_cases" -eq 2 ]] && echo true || echo false)"
+
+# The control: exit 0 with the same report is read.
+run_on_path "$(silent_source_path "quality-agree" skillscore 0 '{"overallScore": {"percentage": 99, "letterGrade": "A"}}')" \
+  "$REPORT" tests/fixtures/f01/valid-full
+assert_value "audit-report, quality source conforming at exit 0: is read, with the score" \
+  "$(echo "$output" | jq -e '.quality_error == null and .summary.quality_score == 99' >/dev/null 2>&1 && echo true || echo false)"
+
+
+# A spec source this report cannot read leaves no spec verdict to claim.
+run_on_path "$(silent_source_path "spec-verdict" skill-validator 0 "")" "$REPORT" tests/fixtures/f01/valid-full
+assert_value "audit-report, spec source unreadable: summary.passed is false" \
+  "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "false" ]] && echo true || echo false)"
+assert_value "audit-report, spec source unreadable: no error count is read out of it" \
+  "$(echo "$output" | jq -e '.summary.spec_errors == null' >/dev/null 2>&1 && echo true || echo false)"
+
+# The control. Without it every case above would pass against a report that
+# named a reason for every source, readable or not.
+run_present "$REPORT" tests/fixtures/f01/valid-full
+assert_value "audit-report, every source readable: no reason is named for any of them" \
+  "$(echo "$output" | jq -e '.spec_error == null and .quality_error == null and .policy_error == null' >/dev/null 2>&1 && echo true || echo false)"
+
+# A policy source whose status and payload disagree is two statements about one
+# run that contradict each other, and there is no half of it to report.
+disagreeing_tree="$mask_root/disagreeing-policy"
+cp -R skills/skill-audit/scripts "$disagreeing_tree"
+printf '#!/usr/bin/env bash\nprintf %s\nexit 2\n' \
+  "'{\"findings\": [], \"passed\": true}\\n'" > "$disagreeing_tree/check-structure.sh"
+chmod +x "$disagreeing_tree/check-structure.sh"
+
+run_present "$disagreeing_tree/audit-report.sh" tests/fixtures/f01/valid-full
+assert_value "audit-report, policy status and payload disagree: summary.passed is false" \
+  "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "false" ]] && echo true || echo false)"
+assert_value "audit-report, policy status and payload disagree: the report names the contradiction" \
+  "$(echo "$output" | jq -e '.policy_error | test("check-structure") and test("2")' >/dev/null 2>&1 && echo true || echo false)"
+assert_value "audit-report, policy status and payload disagree: it claims no findings from either half" \
+  "$(echo "$output" | jq -e '.summary.total_findings == 0 and (.policy.findings | length) == 0' >/dev/null 2>&1 && echo true || echo false)"
+
+# A policy source exiting outside its own contract reached no verdict at all.
+outside_tree="$mask_root/outside-contract-policy"
+cp -R skills/skill-audit/scripts "$outside_tree"
+printf '#!/usr/bin/env bash\nprintf %s\nexit 42\n' \
+  "'{\"findings\": [], \"passed\": false}\\n'" > "$outside_tree/check-structure.sh"
+chmod +x "$outside_tree/check-structure.sh"
+
+run_present "$outside_tree/audit-report.sh" tests/fixtures/f01/valid-full
+assert_value "audit-report, policy source exits outside its contract: summary.passed is false" \
+  "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "false" ]] && echo true || echo false)"
+assert_value "audit-report, policy source exits outside its contract: the report names the status" \
+  "$(echo "$output" | jq -e '.policy_error | test("42")' >/dev/null 2>&1 && echo true || echo false)"
 
 harness_summary

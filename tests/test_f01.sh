@@ -21,11 +21,19 @@ CHECK_PATHS="skills/skill-audit/scripts/check-paths.sh"
 CHECK_QUALITY="skills/skill-audit/scripts/check-quality.sh"
 
 # Helper: run a command and capture output + exit code.
+# The suite's own runner for the cases that want both channels merged. It is
+# not run_on_path with a different PATH — that one keeps stdout and stderr
+# apart so a payload can be parsed — but the status it sees is the same kind of
+# fact, so it is recorded the same way. Without this, every case driven through
+# here was invisible to the exit-status witness at the end of this file, and
+# `check-frontmatter.sh`'s exit 2 was stated by its header, driven three times
+# in this suite, and witnessed nowhere.
 run() {
   local cmd="$1"
   shift
   code=0
   output=$("$cmd" "$@" 2>&1) || code=$?
+  witness_exit "$cmd" "$code"
 }
 
 # Helper: run skill-validator validate structure and capture output + exit code.
@@ -315,6 +323,88 @@ run_present "$CHECK_FM" tests/fixtures/f01/malformed-yaml
 assert_value "frontmatter, validator present: malformed-yaml fails (exit 1)" "$([[ $code -eq 1 ]] && echo true || echo false)"
 assert_value "frontmatter, validator present: malformed-yaml reports SPEC FAIL" "$(echo "$output" | grep -q 'SPEC FAIL' && echo true || echo false)"
 
+# --- The spec source's payload is read, not inferred from its exit status ---
+#
+# check-frontmatter.sh asks for `-o json` and derived its whole spec verdict
+# from `$?`, reading the payload only to quote it back in a failure message. On
+# a healthy toolchain the status is a faithful proxy for the payload, which is
+# what kept this invisible: a skill-validator that exits 0 while printing
+# something that is not JSON satisfied every check and printed `frontmatter OK`.
+# Masking the tool does not reach it — absence was already handled. The tool has
+# to be *present and lying*.
+#
+# Both directions are driven, because a check on one of them is a check on the
+# status again: a payload that cannot be read, and a payload that can be read
+# and disagrees with the status it arrived with, each way round.
+
+# spec_source_path <name> <exit> <stdout> — a skill-validator that says exactly
+# this. One directory, one file, prepended to the real PATH.
+spec_source_path() {
+  local name="$1"
+  local exit_code="$2"
+  local payload="$3"
+  local dir="$mask_root/spec-$name"
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir"
+    printf '%s' "$payload" > "$dir/spec-payload"
+    printf '#!/usr/bin/env bash\ncat "$(dirname "$0")/spec-payload"\nexit %s\n' "$exit_code" \
+      > "$dir/skill-validator"
+    chmod +x "$dir/skill-validator"
+  fi
+  echo "$dir:$PATH"
+}
+
+# name | exit | payload | why it is no verdict
+spec_liars="
+notjson|0|checked 1 skill, all good|exit 0 with a payload that is not JSON
+notjson-fail|1|1 error found|exit 1 with a payload that is not JSON
+empty|0||exit 0 with nothing on the payload channel
+number|0|7|exit 0 with a JSON document that is not an object
+noerrors|0|{\"passed\": true}|exit 0 with an object carrying no errors count
+stream|0|{\"errors\": 0}{\"errors\": 0}|exit 0 with two documents
+clean-at-1|1|{\"passed\": true, \"errors\": 0}|exit 1 beside a payload reporting no error
+dirty-at-0|0|{\"passed\": false, \"errors\": 3}|exit 0 beside a payload reporting three
+dirty-at-2|2|{\"passed\": false, \"errors\": 2}|exit 2 beside a payload reporting two
+"
+
+spec_liar_cases=0
+while IFS='|' read -r sname sexit spayload swhy; do
+  [[ -z "$sname" ]] && continue
+  spec_liar_cases=$((spec_liar_cases + 1))
+  run_on_path "$(spec_source_path "$sname" "$sexit" "$spayload")" "$CHECK_FM" tests/fixtures/f01/valid-full
+  assert_value "frontmatter, spec source $swhy: exits 3, not a status meaning a verdict" \
+    "$([[ $code -eq 3 ]] && echo true || echo false)"
+  assert_value "frontmatter, spec source $swhy: never prints frontmatter OK" \
+    "$(echo "$output" | grep -q 'frontmatter OK' && echo false || echo true)"
+  assert_value "frontmatter, spec source $swhy: never reports a policy verdict either" \
+    "$(echo "$output" | grep -q 'PL001' && echo false || echo true)"
+  assert_value "frontmatter, spec source $swhy: says on stderr that it could not read the source" \
+    "$(echo "$errout" | grep -qi 'skill-validator' && echo true || echo false)"
+done <<< "$spec_liars"
+
+echo "  spec-source disagreement cases driven: $spec_liar_cases"
+assert_value "the spec-source cases were enumerated, not read as empty" \
+  "$([[ "$spec_liar_cases" -eq 9 ]] && echo true || echo false)"
+
+# The controls, both statuses that carry a verdict. Without these the cases
+# above would pass against a script that refused every payload there is.
+run_on_path "$(spec_source_path "agrees-clean" 0 '{"passed": true, "errors": 0, "warnings": 0}')" \
+  "$CHECK_FM" tests/fixtures/f01/valid-full
+assert_value "frontmatter, spec source agreeing at exit 0: reaches its verdict (exit 0)" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+
+run_on_path "$(spec_source_path "agrees-warn" 2 '{"passed": true, "errors": 0, "warnings": 1}')" \
+  "$CHECK_FM" tests/fixtures/f01/valid-full
+assert_value "frontmatter, spec source agreeing at exit 2: warnings only is not a spec failure" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+
+run_on_path "$(spec_source_path "agrees-fail" 1 '{"passed": false, "errors": 1, "warnings": 0}')" \
+  "$CHECK_FM" tests/fixtures/f01/valid-full
+assert_value "frontmatter, spec source agreeing at exit 1: reports the spec failure (exit 1)" \
+  "$([[ $code -eq 1 ]] && echo true || echo false)"
+assert_value "frontmatter, spec source agreeing at exit 1: relays the payload it read" \
+  "$(echo "$output" | grep -q 'SPEC FAIL' && echo true || echo false)"
+
 # --- Every enumeration the guard introduced, walked at both edges ---
 #
 # A `case` arm or an `||` splits results into two sets: the ones a script will
@@ -332,12 +422,27 @@ assert_value "frontmatter, validator present: malformed-yaml reports SPEC FAIL" 
 # cannot interpret. An arm that reached the license gate anyway would print
 # "frontmatter OK" over a validator that never ran — S2's exact symptom.
 
-for spec in "0:0:ok" "1:1:no" "2:0:ok" "3:3:no" "4:3:no" "42:3:no"; do
+#
+# Each stub here carries a payload that *agrees* with the status it exits with,
+# so these cases ask about the status enumeration and nothing else. They used to
+# carry a line of plain text, which made every one of them also a case about an
+# unreadable payload — and passed, because the payload was not read at all. The
+# payload question is its own section above, walked in both directions; keeping
+# the two apart is what lets either boundary move without the other's cases
+# going quiet.
+SPEC_AGREES_CLEAN='{"passed": true, "errors": 0, "warnings": 0}'
+SPEC_AGREES_FAIL='{"passed": false, "errors": 1, "warnings": 0}'
+
+for spec in "0:0:ok:clean" "1:1:no:fail" "2:0:ok:clean" "3:3:no:clean" "4:3:no:clean" "42:3:no:clean"; do
   vcode="${spec%%:*}"
   vrest="${spec#*:}"
   vwant="${vrest%%:*}"
-  vverdict="${vrest#*:}"
-  run_on_path "$(stub_tool_path skill-validator "$vcode")" "$CHECK_FM" tests/fixtures/f01/valid-full
+  vrest="${vrest#*:}"
+  vverdict="${vrest%%:*}"
+  vshape="${vrest#*:}"
+  vpayload="$SPEC_AGREES_CLEAN"
+  [[ "$vshape" == "fail" ]] && vpayload="$SPEC_AGREES_FAIL"
+  run_on_path "$(spec_source_path "status-$vcode" "$vcode" "$vpayload")" "$CHECK_FM" tests/fixtures/f01/valid-full
   assert_value "frontmatter, validator exits $vcode: exits $vwant" \
     "$([[ $code -eq $vwant ]] && echo true || echo false)"
   if [[ "$vverdict" == "ok" ]]; then
@@ -351,11 +456,11 @@ done
 
 # The unenumerated arm still names what it could not interpret, and the
 # enumerated exit-3 arm names the tool that failed to run.
-run_on_path "$(stub_tool_path skill-validator 42)" "$CHECK_FM" tests/fixtures/f01/valid-full
+run_on_path "$(spec_source_path "status-42" 42 "$SPEC_AGREES_CLEAN")" "$CHECK_FM" tests/fixtures/f01/valid-full
 assert_value "frontmatter, validator exits 42: names the tool and the status" \
   "$(echo "$errout" | grep -q 'skill-validator' && echo "$errout" | grep -q '42' && echo true || echo false)"
 
-run_on_path "$(stub_tool_path skill-validator 3)" "$CHECK_FM" tests/fixtures/f01/valid-full
+run_on_path "$(spec_source_path "status-3" 3 "$SPEC_AGREES_CLEAN")" "$CHECK_FM" tests/fixtures/f01/valid-full
 assert_value "frontmatter, validator exits 3: names the tool that failed to run" \
   "$(echo "$errout" | grep -q 'skill-validator' && echo true || echo false)"
 
@@ -617,10 +722,21 @@ done
 # only that one runs on to `command not found`, or — worse, and reproduced —
 # straight through to a clean exit 0 with no guard behind the verdict at all.
 # These modes take the real guard and cut out one definition each, so the check
-# has to cover the whole set rather than whichever names a caller listed. Adding
-# a guard to the shared file without adding it to that set fails here.
+# has to cover the whole set rather than whichever names a caller listed.
+#
+# The set is read out of the guard rather than written here, so a primitive
+# added to the shared file tomorrow is covered the day it lands. A hand-kept
+# list is the same defect one level up: it covers the names a fixer remembered,
+# and the one it did not is exactly the one whose absence nothing catches. The
+# count is asserted first, because an expression that matched no definition
+# would make every case below vacuously true.
+guard_definitions="$(sed -n 's/^\([a-z_][a-z_0-9]*\)() {$/\1/p' skills/skill-audit/scripts/verdict-guard.sh)"
+guard_definition_count="$(printf '%s\n' "$guard_definitions" | grep -c '[a-z]' || true)"
+assert_value "the guard's definitions were enumerated, not read as an empty set" \
+  "$([[ "${guard_definition_count:-0}" -ge 6 ]] && echo true || echo false)"
+echo "  guard primitives examined: $(printf '%s' "$guard_definitions" | tr '\n' ' ')"
 
-for gdrop in json_string cannot_compute require_tool json_document_conforms payload_is_conforming verdict_guard_ready; do
+for gdrop in $guard_definitions; do
   gdir="$(guard_broken_tree "drop-$gdrop")"
   run_present "$gdir/check-structure.sh" --json tests/fixtures/f01/valid-full
   assert_value "check-structure.sh --json, guard missing $gdrop: exits 3, not a status meaning a verdict" \
@@ -901,7 +1017,14 @@ emitted_rules="$(rules_emitted_by "$SCRIPTS_DIR"/*.sh)"
 # `errexit`/`pipefail` would kill the suite at the assignment instead — the
 # check unable to report the very state it was written for, which is the defect
 # this whole cluster is about.
-registry_line="$(grep -m1 '^Exit codes:' skills/skill-audit/SKILL.md || true)"
+#
+# The anchor is `^Rule IDs:`. It used to be `^Exit codes:`, because the rule
+# registry and an exit-code claim shared one sentence — and that sentence
+# asserted a single exit contract over five scripts that do not share one. The
+# exit contracts are a table now, derived per script and checked below; the rule
+# registry keeps its own line and its own anchor, because they were never one
+# claim.
+registry_line="$(grep -m1 '^Rule IDs:' skills/skill-audit/SKILL.md || true)"
 # Any rule-shaped token in backticks, not a fixed list of the prefixes in use. A
 # whitelist here would make the registry side unable to grow either: a new rule
 # announced under a new prefix would be invisible to the very line that claims
@@ -953,6 +1076,1103 @@ run_present "$CHECK_STRUCT" --json tests/fixtures/f01/glob-paths
 assert_value "structure --json: relays the child's PATH finding at its own level" \
   "$(echo "$output" | jq -e '.findings[] | select(.rule == "PATH" and .level == "unverified")' >/dev/null 2>&1 && echo true || echo false)"
 
+# --- A tool is a precondition only when it answered -----------------------------
+#
+# `command -v` proves a name resolves. Every fault this cluster closes was of
+# the other kind: a jq on PATH that ran and printed nothing left check-paths.sh
+# and audit-report.sh exiting 0 with an empty payload channel; a grep that
+# answered with an error status turned a clean skill into nine fabricated PL
+# failures beside `policy_error: null`; a wc that exited 127 became
+# check-structure.sh's own exit status. None of those is absence, and a masked
+# PATH cannot reach any of them.
+#
+# So the cases below drive a tool that is *present and broken*, over the whole
+# cross product of the scripts and the tools each one declares. The tool list is
+# read out of the script and the probe list out of the guard, so a dependency
+# added tomorrow is covered the day it lands rather than the day someone
+# remembers to add a case.
+#
+# A stub here is one directory holding one file, prepended to the real PATH.
+# Nothing is mirrored, replaced or uninstalled.
+
+# counting_tool_path <tool> — a PATH whose <tool> forwards to the real one and
+# writes down how many times it was asked anything. Used only to find out how
+# many questions require_tool's probe puts to a tool, below.
+counting_tool_path() {
+  local tool="$1"
+  local dir="$mask_root/counting-$tool"
+  mkdir -p "$dir"
+  printf '#!/usr/bin/env bash\nprintf x >> "%s/.asked"\nexec %s "$@"\n' \
+    "$dir" "$(command -v "$tool")" > "$dir/$tool"
+  chmod +x "$dir/$tool"
+  : > "$dir/.asked"
+  echo "$dir:$PATH"
+}
+
+# probe_calls_of <tool> — how many times require_tool's probe invokes <tool>.
+#
+# Measured against the guard rather than written down here, because it is the
+# guard's number: `grep` is asked twice (a pattern that matches and one that
+# must not), every other probe once, and a probe rewritten tomorrow changes it
+# without changing this file. The probe-only stub below needs it to know which
+# invocation is the first one require_tool did *not* make.
+probe_calls_of() {
+  local tool="$1"
+  local dir="$mask_root/counting-$tool"
+  local cpath
+  cpath="$(counting_tool_path "$tool")"
+  PATH="$cpath" /usr/bin/env bash -c \
+    'source skills/skill-audit/scripts/verdict-guard.sh; require_tool "$1" false' \
+    _ "$tool" >/dev/null 2>&1 || true
+  local asked
+  asked="$(wc -c < "$dir/.asked")"
+  printf '%s' "${asked//[[:space:]]/}"
+}
+
+# broken_tool_path <tool> <mode> — a PATH whose <tool> is present and useless.
+#   silent     exit 0, no output           (the jq fault, verbatim)
+#   erroring   exit 2                      (the grep fault, verbatim)
+#   wrong      exit 0, a confident lie
+#
+# All three fail the probe, and that is the whole of what was wrong with them:
+# `require_tool` stopped every script before a single call site ran, so the
+# cross product proved the *precondition* twenty times over and never once
+# reached the code the precondition is a precondition for. Twenty-four calls
+# read a tool's output without reading its status, and no case here could fail.
+# What is missing is a tool that answers and then stops, which is not a
+# contrived shape: a wrapper that handles the flags it knows, a build with one
+# codec missing, a binary that works until a resource runs out. It is inside
+# the threat model this project already states, which is "present and broken"
+# rather than "absent". answering_tool_path below is that tool.
+#
+# Nothing is mirrored, replaced or uninstalled: one directory, one real file,
+# prepended to the real PATH.
+broken_tool_path() {
+  local tool="$1"
+  local mode="$2"
+  local dir="$mask_root/broken-$tool-$mode"
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir"
+    case "$mode" in
+      silent)   printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/$tool" ;;
+      erroring) printf '#!/usr/bin/env bash\nexit 2\n' > "$dir/$tool" ;;
+      wrong)    printf '#!/usr/bin/env bash\nprintf %s\nexit 0\n' "'not-an-answer\\n'" > "$dir/$tool" ;;
+    esac
+    chmod +x "$dir/$tool"
+  fi
+  echo "$dir:$PATH"
+}
+
+# answering_tool_path <tool> <n> — a PATH whose <tool> answers its first <n>
+# questions and refuses every one after them.
+#
+# One of these per call a clean run makes is what turns "the first call site is
+# guarded" into "every call site is guarded". A stub that refuses everything
+# after the probe only ever reaches the *first* unguarded call, because the
+# script stops there — so it proves one site per script and tool and says
+# nothing about the ones behind it. Measured on this branch: it proved the
+# guard on check-paths.sh's body read and left the code-block read three calls
+# later unexamined, and that read named the SKILL.md over a file that was
+# perfectly readable with awk nowhere in the sentence.
+#
+# So the refusal walks the run. `n` runs from the number of questions the probe
+# asks up to one short of the number a clean run asks in total, which is a
+# derived denominator: every call a clean run makes is driven as the call that
+# fails, and adding a call site to a script adds a case here the day it lands.
+#
+# Every read in the stub is a shell builtin. `cat` is one of the tools this
+# stands in for, and a stub that shelled out to `cat` to read its own counter
+# would call itself.
+answering_tool_path() {
+  local tool="$1"
+  local answers="$2"
+  local dir="$mask_root/answers-$tool-$answers"
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir"
+    printf '%s\n' \
+      '#!/usr/bin/env bash' \
+      "asked=\"$dir/.asked\"" \
+      'n=0' \
+      '[[ -f "$asked" ]] && read -r n < "$asked"' \
+      'n=$((n + 1))' \
+      'printf %s "$n" > "$asked"' \
+      "if (( n <= $answers )); then exec $(command -v "$tool") \"\$@\"; fi" \
+      'exit 5' > "$dir/$tool"
+    chmod +x "$dir/$tool"
+  fi
+  # The counter is reset on every call, so each case starts with the tool able
+  # to answer again.
+  rm -f "$dir/.asked"
+  echo "$dir:$PATH"
+}
+
+# calls_in_a_clean_run <script> <args> <tool> — how many questions a run that
+# reaches its verdict puts to <tool>. The denominator of the walk above.
+calls_in_a_clean_run() {
+  local script="$1"
+  local args="$2"
+  local tool="$3"
+  local dir="$mask_root/counting-$tool"
+  local cpath ctarget asked
+  cpath="$(counting_tool_path "$tool")"
+  ctarget="$(adverse_target)"
+  PATH="$cpath" "$script" ${args//@target/$ctarget} >/dev/null 2>&1 || true
+  asked="$(wc -c < "$dir/.asked")"
+  printf '%s' "${asked//[[:space:]]/}"
+}
+
+# working_tool_path <tool> — the control. A stub that forwards to the real tool
+# must be accepted, or every case above would pass because the stub mechanism
+# itself breaks the script rather than because the guard caught anything.
+working_tool_path() {
+  local tool="$1"
+  local dir="$mask_root/working-$tool"
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir"
+    printf '#!/usr/bin/env bash\nexec %s "$@"\n' "$(command -v "$tool")" > "$dir/$tool"
+    chmod +x "$dir/$tool"
+  fi
+  echo "$dir:$PATH"
+}
+
+# The probes the guard actually holds, read from its own case arms. A tool the
+# guard has no probe for is not asserted here: skill-validator and skillscore
+# are sources whose answers are proven where they are read, not by a probe.
+guard_probed_tools="$(sed -n '/^tool_answers() {/,/^}$/p' skills/skill-audit/scripts/verdict-guard.sh \
+  | sed -n 's/^[[:space:]]*\([a-z][a-z]*\))[[:space:]].*/\1/p' | sort -u)"
+echo "  tools the guard probes: $(printf '%s' "$guard_probed_tools" | tr '\n' ' ')"
+
+# tools_required_by <script> — the tools the script states as preconditions.
+#
+# The line start is not anchored, because a precondition stated after a `&&` or
+# inside an `if` is the same precondition. Comment lines are excluded, because
+# these files discuss require_tool in prose and `require_tool asks each of them`
+# is not a dependency on a tool called `asks`. `[^#]*` cannot cross a `#`, so a
+# line whose first non-space character is one contributes nothing.
+tools_required_by() {
+  { grep -hE '^[[:space:]]*[^#]*require_tool[[:space:]]+[a-z][a-z-]*' "$1" || true; } \
+    | sed -E 's/.*require_tool[[:space:]]+([a-z][a-z-]*).*/\1/' | sort -u
+}
+
+# Every tool any script requires is either probed here or is one of the two
+# audit sources, whose answers are proven where they are read — by
+# json_document_conforms in check-frontmatter.sh, and by
+# quality_report_conforms in check-quality.sh and audit-report.sh. There is no
+# cheap question with a known answer to put to either, and the read is a
+# stronger check than a probe would be.
+#
+# Written as coverage rather than as a list of names to match: a fixed list is
+# the defect one level up, and would have to be edited by whoever adds a tool —
+# which is the person least likely to notice it needs editing. This way, adding
+# `require_tool foo` without a probe or a stated exemption fails here.
+GUARD_PROBE_EXEMPT="skill-validator skillscore"
+unprobed_tools=""
+required_tool_count=0
+for tscript in skills/skill-audit/scripts/*.sh skills/skill-rewrite/scripts/*.sh; do
+  # verdict-guard.sh defines require_tool; it does not call it. Its
+  # verdict_guard_ready name list mentions it beside the next primitive, which
+  # reads as a dependency on a tool with that name. The question here is which
+  # tools a *caller* requires.
+  case "$tscript" in *verdict-guard.sh) continue ;; esac
+  for ttool in $(tools_required_by "$tscript"); do
+    required_tool_count=$((required_tool_count + 1))
+    case "
+$guard_probed_tools
+" in *"
+$ttool
+"*) continue ;; esac
+    case " $GUARD_PROBE_EXEMPT " in *" $ttool "*) continue ;; esac
+    unprobed_tools="$unprobed_tools $ttool($(basename "$tscript"))"
+  done
+done
+echo "  tool preconditions walked: $required_tool_count"
+assert_value "the tool preconditions were enumerated, not read as an empty set" \
+  "$([[ "$required_tool_count" -ge 15 ]] && echo true || echo false)"
+assert_value "every tool a script requires is probed, or is a source proven where it is read" \
+  "$([[ -z "$unprobed_tools" ]] && echo true || echo false)"
+if [[ -n "$unprobed_tools" ]]; then
+  echo "  required with neither a probe nor a stated exemption:$unprobed_tools"
+fi
+
+# The scripts the cross product drives are read off the tree, not written down
+# here. The hand-written list was four, and the two it left out were the two
+# that needed it: `mktemp` is required by `draft-rewrite.sh` alone, and
+# `check-quality.sh` is in neither `--json` mode, so the one mechanism built to
+# catch a present-and-broken tool never reached either of them. The mktemp probe
+# that accepted any answer at all was reachable only through the drafter, and
+# nothing drove the drafter. A list of names has to be edited by whoever adds a
+# script, who is the person least likely to notice it needs editing — the same
+# reason the tool list above is read off the scripts rather than restated.
+#
+# That paragraph was written above a list of six names. It was three lines of
+# argument for deriving the list, followed by the list. The coverage assertion
+# below held the literal to the tree, so the set was right; what was wrong was
+# that the next reader would believe the comment instead of reading the three
+# lines under it, and would add a script expecting it to be picked up.
+#
+# It is read off the tree now. A script arriving in either skill enters the
+# cross product the day it lands, and the half of the coverage check that
+# compared the literal against the tree is gone with the literal, because an
+# assertion that cannot fail is the thing this suite exists to refuse. The half
+# that remains is the one still capable of failing: a script driven here with
+# no invocation that reaches a verdict.
+#
+# Runnable is the criterion, as it was for the coverage check: verdict-guard.sh
+# is sourced rather than run, and a file without the executable bit is not
+# something a caller invokes.
+ADVERSE_SCRIPTS=""
+for ascript in "$SCRIPTS_DIR"/*.sh skills/skill-rewrite/scripts/*.sh; do
+  case "$ascript" in *verdict-guard.sh) continue ;; esac
+  [[ -x "$ascript" ]] || continue
+  ADVERSE_SCRIPTS="$ADVERSE_SCRIPTS $ascript"
+done
+
+# --- What a script can be made to exit with, against what it says ---------------
+#
+# The exit-table derivation below this compares each script's header against
+# SKILL.md. That is one half of the question, and it is the half that needs a
+# doc: it loops the audit scripts only, because skill-audit's SKILL.md is the
+# only doc with a table. So `draft-rewrite.sh` states an exit contract that
+# nothing anywhere compares against — which is why F1 and F6 went unseen. Both
+# are statuses outside its stated set, and no case could have failed.
+#
+# The other half needs no doc at all: a script's own `# Exit codes:` header
+# against the statuses it can actually be made to emit. That is what closes the
+# class rather than the two instances, it covers both skills, and it is asserted
+# here over every adverse condition this suite drives.
+#
+# exit_line_of <script>     — the script's own statement of its exit contract.
+# stated_exit_codes <script> — the numbers in it.
+exit_line_of() {
+  sed -n 's/^# Exit codes:[[:space:]]*//p' "$1" | head -1
+}
+
+stated_exit_codes() {
+  exit_line_of "$1" | grep -oE '(^|[^0-9])[0-9]+=' | grep -oE '[0-9]+' | sort -u
+}
+
+# english_count <n> — the number written the way these docs write it. Defined
+# once because two derivations below compare a word in prose against a count,
+# and two private copies of a number-word list is one list that can drift.
+english_count() {
+  printf '%s\n' zero one two three four five six seven eight nine ten eleven twelve \
+    | sed -n "$(($1 + 1))p"
+}
+
+# states_exit <script> <code> — true when <code> is in that script's set.
+states_exit() {
+  local wanted="$2"
+  local c
+  for c in $(stated_exit_codes "$1"); do
+    [[ "$c" == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
+# The helper is read against a script whose contract is known, so a parse that
+# silently produced the empty set would not pass as "every status conformed".
+assert_value "the exit contract of audit-report.sh parses to the set its header states" \
+  "$([[ "$(stated_exit_codes "$SCRIPTS_DIR/audit-report.sh" | tr '\n' ' ')" == "0 3 " ]] && echo true || echo false)"
+assert_value "the exit contract of draft-rewrite.sh parses to the set its header states" \
+  "$([[ "$(stated_exit_codes skills/skill-rewrite/scripts/draft-rewrite.sh | tr '\n' ' ')" == "0 1 3 " ]] && echo true || echo false)"
+assert_value "a status outside a stated set is refused, so the check can fail" \
+  "$(states_exit "$SCRIPTS_DIR/audit-report.sh" 2 && echo false || echo true)"
+assert_value "a status inside a stated set is accepted, so the check is not refusing everything" \
+  "$(states_exit "$SCRIPTS_DIR/audit-report.sh" 3 && echo true || echo false)"
+
+
+# adverse_args_of <basename> — the invocation that reaches a verdict, with
+# `@target` standing for the skill directory. A runnable script with no entry
+# fails the coverage assertion below instead of being quietly skipped.
+adverse_args_of() {
+  case "$1" in
+    check-structure.sh|check-paths.sh) echo "--json @target" ;;
+    check-frontmatter.sh|check-quality.sh|audit-report.sh|check-extra.sh) echo "@target" ;;
+    draft-rewrite.sh) echo "-t @target" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Every script the cross product will drive has an invocation that reaches a
+# verdict. Membership is no longer a question — the list is the tree — so what
+# is asked here is the half that can still be answered no: a script with no
+# entry in adverse_args_of would be driven with no arguments, reach its usage
+# path, and prove nothing about a broken tool.
+adverse_uncovered=""
+adverse_scripts_seen=0
+for ascript in $ADVERSE_SCRIPTS; do
+  adverse_scripts_seen=$((adverse_scripts_seen + 1))
+  adverse_args_of "$(basename "$ascript")" >/dev/null \
+    || adverse_uncovered="$adverse_uncovered $(basename "$ascript")(no-invocation)"
+done
+echo "  runnable scripts read off the tree: $adverse_scripts_seen"
+assert_value "the runnable scripts were read off the tree, not matched as an empty set" \
+  "$([[ "$adverse_scripts_seen" -eq 6 ]] && echo true || echo false)"
+assert_value "every runnable script in both skills has an invocation that reaches a verdict" \
+  "$([[ -z "$adverse_uncovered" ]] && echo true || echo false)"
+if [[ -n "$adverse_uncovered" ]]; then
+  echo "  driven against a broken tool with no invocation to drive:$adverse_uncovered"
+fi
+
+# A fresh target per case. `draft-rewrite.sh` writes its draft into the target
+# it was handed, so a shared copy would carry the previous case's draft into the
+# next one. The copy keeps the fixture's own directory name because
+# skill-validator checks `name` against it, and a renamed copy would fail the
+# control for a reason that has nothing to do with the tool under test.
+adverse_target() {
+  local root="$mask_root/adverse"
+  rm -rf "$root"
+  mkdir -p "$root"
+  cp -R tests/fixtures/f01/valid-full "$root/valid-full"
+  echo "$root/valid-full"
+}
+
+# The break modes, named once so the count below and the loop cannot disagree
+# about how many there are.
+# assert_refused <script> <name> <tool> <why> <json> <target>
+#
+# What a script owes its caller when a tool it computes with will not answer,
+# whichever way it will not answer and at whichever call. One statement of it,
+# because it is one statement: the three fixed modes and the walk across every
+# call position are the same contract driven from different places, and two
+# copies of it is one copy that drifts.
+assert_refused() {
+  local rscript="$1"
+  local rname="$2"
+  local rtool="$3"
+  local rwhy="$4"
+  local rjson="$5"
+  local rtarget="$6"
+
+  assert_value "$rname, $rtool $rwhy: exits 3, not a status meaning a verdict" \
+    "$([[ $code -eq 3 ]] && echo true || echo false)"
+  assert_value "$rname, $rtool $rwhy: exits inside the set its own header states" \
+    "$(states_exit "$rscript" "$code" && echo true || echo false)"
+  assert_value "$rname, $rtool $rwhy: never reports passed true" \
+    "$(echo "$output" | grep -qE '"passed":[[:space:]]*true' && echo false || echo true)"
+  assert_value "$rname, $rtool $rwhy: the diagnostic names $rtool, not another component" \
+    "$(echo "$errout" | grep -q -- "$rtool" && echo true || echo false)"
+  # A script that produces a document must not have produced one. The drafter
+  # is the case that matters: a tool it could not use left it writing a draft
+  # anyway, at exit 0, and the draft is what a reader then treats as the
+  # audit's findings. Driven at every call position, this is also what says the
+  # draft is not left half-written when the tool stops in the middle of it.
+  if [[ "$rname" == draft-rewrite.sh ]]; then
+    assert_value "$rname, $rtool $rwhy: no draft was written" \
+      "$([[ ! -e "$rtarget/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+  fi
+  if [[ -n "$rjson" ]]; then
+    assert_value "$rname, $rtool $rwhy: the payload carries DEP002" \
+      "$(echo "$output" | jq -e '.findings[] | select(.rule == "DEP002")' >/dev/null 2>&1 && echo true || echo false)"
+    # stdout is the payload channel, so it carries the payload and nothing
+    # else. A broken tool does not honour `-q`: a grep stub that printed a word
+    # and exited 0 put that word on this channel ahead of the payload, so the
+    # guard that caught the fault corrupted the report of it.
+    assert_value "$rname, $rtool $rwhy: stdout carries exactly the payload and nothing else" \
+      "$(printf '%s' "$output" | jq -se 'length == 1' >/dev/null 2>&1 && echo true || echo false)"
+  else
+    assert_value "$rname, $rtool $rwhy: stdout carries no verdict at all" \
+      "$([[ -z "$output" ]] && echo true || echo false)"
+  fi
+}
+
+# The three modes that fail the probe, named once so the count below and the
+# loop cannot disagree about how many there are.
+BROKEN_MODES="silent erroring wrong"
+broken_modes_n=0
+for bmode in $BROKEN_MODES; do broken_modes_n=$((broken_modes_n + 1)); done
+
+broken_cases=0
+answering_cases=0
+for bscript in $ADVERSE_SCRIPTS; do
+  bname="$(basename "$bscript")"
+  # A script with no invocation is reported by the coverage assertion above; it
+  # is skipped rather than driven with no arguments, and rather than taking the
+  # suite down at this assignment under errexit before it can report anything.
+  bargs=""
+  bargs="$(adverse_args_of "$bname")" || bargs=""
+  [[ -n "$bargs" ]] || continue
+  for btool in $(tools_required_by "$bscript"); do
+    # Only the tools the guard has a probe for; the rest are proven at their read.
+    case "
+$guard_probed_tools
+" in
+      *"
+$btool
+"*) ;;
+      *) continue ;;
+    esac
+    bjson=""
+    case "$bargs" in *--json*) bjson="--json" ;; esac
+    for bmode in $BROKEN_MODES; do
+      broken_cases=$((broken_cases + 1))
+      btarget="$(adverse_target)"
+      run_on_path "$(broken_tool_path "$btool" "$bmode")" "$bscript" ${bargs//@target/$btarget}
+      assert_refused "$bscript" "$bname" "$btool" "present but $bmode" "$bjson" "$btarget"
+    done
+    # And the walk: every question a clean run puts to this tool, driven as the
+    # question it refuses. The first of them is require_tool's probe answered
+    # and the first real call refused; the last is every call answered but the
+    # final one. A call site added to this script joins the walk the day it
+    # lands, because the bound is measured rather than written down.
+    bprobe="$(probe_calls_of "$btool")"
+    bcalls="$(calls_in_a_clean_run "$bscript" "$bargs" "$btool")"
+    assert_value "$bname asks $btool a countable number of questions, and more than the probe does" \
+      "$([[ "$bcalls" -gt "$bprobe" ]] && echo true || echo false)"
+    bn="$bprobe"
+    while [[ "$bn" -lt "$bcalls" ]]; do
+      broken_cases=$((broken_cases + 1))
+      answering_cases=$((answering_cases + 1))
+      btarget="$(adverse_target)"
+      run_on_path "$(answering_tool_path "$btool" "$bn")" "$bscript" ${bargs//@target/$btarget}
+      assert_refused "$bscript" "$bname" "$btool" "answering only its first $bn of $bcalls questions" "$bjson" "$btarget"
+      bn=$((bn + 1))
+    done
+    # The control, per tool: forwarded to the real thing, the verdict is reached.
+    btarget="$(adverse_target)"
+    run_on_path "$(working_tool_path "$btool")" "$bscript" ${bargs//@target/$btarget}
+    assert_value "$bname, $btool forwarded to the real tool: reaches its verdict (exit 0)" \
+      "$([[ $code -eq 0 ]] && echo true || echo false)"
+    # And the control on the walk's own bound: a stub that answers every
+    # question a clean run asks must reach the verdict too, or the cases above
+    # would be passing because the stub mechanism breaks the script.
+    btarget="$(adverse_target)"
+    run_on_path "$(answering_tool_path "$btool" "$bcalls")" "$bscript" ${bargs//@target/$btarget}
+    assert_value "$bname, $btool answering all $bcalls of its questions: reaches its verdict (exit 0)" \
+      "$([[ $code -eq 0 ]] && echo true || echo false)"
+  done
+done
+
+echo "  present-but-broken cases driven: $broken_cases ($adverse_scripts_seen runnable scripts, $broken_modes_n probe-failing modes, $answering_cases refusal positions)"
+echo "  probe calls per tool: $(for pt in $guard_probed_tools; do printf '%s=%s ' "$pt" "$(probe_calls_of "$pt")"; done)"
+# The probe-only stub is built around this number, so a measurement that came
+# back as zero would build a stub that refuses its own probe — every case would
+# still exit 3, for the wrong reason, and the mode would be testing nothing.
+probe_call_floor=1
+for pt in $guard_probed_tools; do
+  [[ "$(probe_calls_of "$pt")" -ge 1 ]] || probe_call_floor=0
+done
+assert_value "every probed tool is asked at least one question by require_tool, so the probe-only stub has a probe to answer" \
+  "$([[ "$probe_call_floor" -eq 1 ]] && echo true || echo false)"
+# The denominator, and it is an equality on purpose. `-ge 45` was written when
+# the product was 60, and a floor is not a denominator: the whole reason for
+# counting is that the product can shrink without anything else here noticing,
+# and 45 let it lose a quarter of itself and still say it had been enumerated.
+# Measured — `require_tool grep` deleted from one script, which is one pair and
+# four cases:
+#
+#   present-but-broken cases driven: 68
+#   PASS: the present-but-broken cross product was enumerated, not read as empty
+#   1232 passed, 0 failed
+#
+# Twenty-one assertions gone and the suite fully green. An exact count is a
+# number someone has to change deliberately, in the commit that changed the
+# product, which is the only moment anyone can say whether the change was
+# meant.
+#
+# The other floors in this file are not this shape and are left as they are:
+# each sits beside an exact comparison that does the real work — the readme's
+# list against the scripts' in both directions, the probed tools against the
+# required ones, the doc's rows against the headers — so the floor there is
+# only refusing an empty read. Nothing else counts these cases.
+BROKEN_CASES_EXPECTED=173
+assert_value "the present-but-broken cross product ran every one of its $BROKEN_CASES_EXPECTED cases" \
+  "$([[ "$broken_cases" -eq "$BROKEN_CASES_EXPECTED" ]] && echo true || echo false)"
+if [[ "$broken_cases" -ne "$BROKEN_CASES_EXPECTED" ]]; then
+  echo "  the cross product is $broken_cases cases, and this file says $BROKEN_CASES_EXPECTED"
+fi
+
+# --- What a probe that accepts any answer actually costs ------------------------
+#
+# The three assertions above say exit 3, no pass, and the right tool named. They
+# do not say where the answer went. `mktemp` was the one arm of tool_answers
+# that compared against nothing — it asked only that there *was* an answer —
+# and the answer is not a diagnostic: it is a path, which the drafter opens,
+# writes an audit into, reads back, and states in the draft as that draft's
+# provenance. So a mktemp answering `not-an-answer` at exit 0 passed the probe
+# and the drafter created a file called `not-an-answer` in whatever directory
+# the caller happened to be standing in, then published a draft at exit 0
+# naming it as the audit it was composed from.
+#
+# The case is driven from a directory of its own, because the defect is defined
+# by where the file lands. Running it from the repository root would put the
+# stray file in the repository.
+
+# run_in_dir <dir> <path> <cmd> [args...] — run_on_path, from a given cwd.
+run_in_dir() {
+  local dir="$1"
+  shift
+  local use_path="$1"
+  shift
+  local errfile="$mask_root/stderr"
+  code=0
+  output=$(cd "$dir" && PATH="$use_path" "$@" 2>"$errfile") || code=$?
+  errout="$(cat "$errfile")"
+}
+
+mktemp_answer="not-an-answer"
+mktemp_cwd="$mask_root/mktemp-caller-cwd"
+rm -rf "$mktemp_cwd"
+mkdir -p "$mktemp_cwd"
+mktemp_target="$(adverse_target)"
+DRAFT_ABS="$(CDPATH= cd -P -- skills/skill-rewrite/scripts && pwd -P)/draft-rewrite.sh"
+run_in_dir "$mktemp_cwd" "$(broken_tool_path mktemp wrong)" "$DRAFT_ABS" -t "$mktemp_target"
+
+assert_value "drafter, mktemp answers with a name it did not make: exits 3, not 0" \
+  "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "drafter, mktemp answers with a name it did not make: names mktemp on stderr" \
+  "$(echo "$errout" | grep -q 'mktemp' && echo true || echo false)"
+assert_value "drafter, mktemp answers with a name it did not make: no draft was written" \
+  "$([[ ! -f "$mktemp_target/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+assert_value "drafter, mktemp answers with a name it did not make: nothing is created in the caller's directory" \
+  "$([[ -z "$(ls -A "$mktemp_cwd")" ]] && echo true || echo false)"
+assert_value "drafter, mktemp answers with a name it did not make: no draft claims that answer as its provenance" \
+  "$(grep -rq "$mktemp_answer" "$mktemp_target" 2>/dev/null && echo false || echo true)"
+
+# The probe itself, asked directly, over every way a tool can answer wrongly.
+# Each of these satisfies "there is an answer" and none of them is one.
+mktemp_probe_cases=0
+for mcase in "wrong|an answer that is not a name it made" \
+             "silent|no answer at all" \
+             "erroring|a status instead of an answer"; do
+  mmode="${mcase%%|*}"
+  mwhy="${mcase#*|}"
+  mktemp_probe_cases=$((mktemp_probe_cases + 1))
+  run_on_path "$(broken_tool_path mktemp "$mmode")" \
+    /usr/bin/env bash -c 'source skills/skill-audit/scripts/verdict-guard.sh; tool_answers mktemp'
+  assert_value "the mktemp probe refuses $mwhy" \
+    "$([[ $code -ne 0 ]] && echo true || echo false)"
+done
+echo "  mktemp probe cases driven: $mktemp_probe_cases"
+assert_value "the mktemp probe cases were enumerated, not read as empty" \
+  "$([[ "$mktemp_probe_cases" -eq 3 ]] && echo true || echo false)"
+
+# The control: the real mktemp answers its own probe, so the cases above fail
+# because the probe now reads the answer and not because it refuses everything.
+run_on_path "$(working_tool_path mktemp)" \
+  /usr/bin/env bash -c 'source skills/skill-audit/scripts/verdict-guard.sh; tool_answers mktemp'
+assert_value "the mktemp probe accepts the real mktemp" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+
+# --- A temp directory the real mktemp cannot write in ---------------------------
+#
+# No stub is involved. The drafter asks mktemp for a file under `$TMPDIR`, and
+# `mktemp` exits 1 when it cannot make one there — a TMPDIR that does not exist,
+# or one it may not write to. Exit 1 is "usage or target error" in this script's
+# own contract, so a broken temp directory arrived as a statement about the
+# caller's command line, with no sentence naming mktemp and no "no draft was
+# written". The status was never read.
+#
+# Driven both ways round, because they fail at different depths: a directory
+# that is not there, and one that is there and refuses the write.
+mktemp_env_cases=0
+for tcase in "$mask_root/tmpdir-that-does-not-exist|a TMPDIR that does not exist" \
+             "$mask_root/tmpdir-unwritable|a TMPDIR that cannot be written to"; do
+  ttmp="${tcase%%|*}"
+  twhy="${tcase#*|}"
+  mktemp_env_cases=$((mktemp_env_cases + 1))
+  rm -rf "$ttmp"
+  case "$twhy" in
+    *"cannot be written"*) mkdir -p "$ttmp"; chmod 500 "$ttmp" ;;
+  esac
+  ttarget="$(adverse_target)"
+  code=0
+  errout="$(TMPDIR="$ttmp" "$DRAFT_ABS" -t "$ttarget" 2>&1 >/dev/null)" || code=$?
+  assert_value "drafter, $twhy: exits 3, not 1 — a broken temp directory is not the caller's usage" \
+    "$([[ $code -eq 3 ]] && echo true || echo false)"
+  assert_value "drafter, $twhy: names mktemp as the thing that could not answer" \
+    "$(echo "$errout" | grep -q 'mktemp' && echo true || echo false)"
+  # The sentence here is the guard's, not this script's: a tool precondition is
+  # refused by require_tool, which says "no verdict was computed" in the same
+  # words for all six callers and does not know that this one's product is a
+  # draft. Making that message caller-specific would put six spellings of one
+  # refusal back where the guard exists to hold one. What this path owes the
+  # caller is a refusal that names the tool and a target with no draft in it;
+  # the "no draft was written" sentence is asserted below, on the path that
+  # belongs to this script.
+  assert_value "drafter, $twhy: stated a refusal rather than dying silently" \
+    "$(echo "$errout" | grep -q 'ERROR:' && echo true || echo false)"
+  assert_value "drafter, $twhy: no draft was written" \
+    "$([[ ! -f "$ttarget/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+  [[ -d "$ttmp" ]] && chmod 700 "$ttmp"
+done
+echo "  mktemp temp-directory cases driven: $mktemp_env_cases"
+assert_value "the mktemp temp-directory cases were enumerated, not read as empty" \
+  "$([[ "$mktemp_env_cases" -eq 2 ]] && echo true || echo false)"
+
+# --- "No draft was written" has to be true of the draft, not of the reads -------
+#
+# The drafter says "no draft was written" on every path that refuses to finish,
+# and the sentence was not true. Composing a draft is eight writes, and the
+# checks that could stop it all ran before the first of them — which is a fine
+# ordering and is not the same statement. `-a` naming a file that exists and
+# cannot be read passes the `-f` test, so no temp audit is made; the header is
+# written; `cat` then fails on the audit; errexit spends exit 1, which this
+# contract reserves for the caller's own mistake; and a six-line REWRITE-DRAFT.md
+# is left in the caller's skill directory with a raw `Permission denied` as the
+# only thing said about it.
+#
+# This is the whole shape of it with real tools and no stub at all, which is why
+# it is driven here as well as through the cross product above.
+draft_unreadable_audit="$mask_root/unreadable-audit.md"
+printf '%s\n' 'an audit nobody can read' > "$draft_unreadable_audit"
+chmod 000 "$draft_unreadable_audit"
+# Under a user that bypasses file permissions there is nothing here to test, and
+# a case that quietly tests nothing is what this suite exists to refuse. So the
+# premise is asserted rather than assumed.
+assert_value "the unreadable audit report is genuinely unreadable to this user" \
+  "$([[ ! -r "$draft_unreadable_audit" ]] && echo true || echo false)"
+
+unreadable_target="$(adverse_target)"
+code=0
+errout="$("$DRAFT_ABS" -t "$unreadable_target" -a "$draft_unreadable_audit" 2>&1 >/dev/null)" || code=$?
+assert_value "drafter, an audit report it cannot read: exits 3, not 1 — an unreadable source is not the caller's usage" \
+  "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "drafter, an audit report it cannot read: exits inside the set its own header states" \
+  "$(states_exit skills/skill-rewrite/scripts/draft-rewrite.sh "$code" && echo true || echo false)"
+assert_value "drafter, an audit report it cannot read: names cat as the thing that could not answer" \
+  "$(echo "$errout" | grep -q 'cat' && echo true || echo false)"
+assert_value "drafter, an audit report it cannot read: says no draft was written" \
+  "$(echo "$errout" | grep -q 'no draft was written' && echo true || echo false)"
+assert_value "drafter, an audit report it cannot read: leaves no draft behind, not even a partial one" \
+  "$([[ ! -e "$unreadable_target/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+chmod 600 "$draft_unreadable_audit"
+
+# The control, and it is what makes the case above a case: the same invocation
+# with the same audit report readable writes the draft and exits 0. Without it,
+# a drafter that refused every `-a` would pass every assertion above.
+readable_target="$(adverse_target)"
+code=0
+output="$("$DRAFT_ABS" -t "$readable_target" -a "$draft_unreadable_audit" 2>/dev/null)" || code=$?
+assert_value "drafter, the same audit report readable: writes the draft and exits 0" \
+  "$([[ $code -eq 0 && -f "$readable_target/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+assert_value "drafter, the same audit report readable: the draft carries what the audit said" \
+  "$(grep -q 'an audit nobody can read' "$readable_target/REWRITE-DRAFT.md" && echo true || echo false)"
+
+# --- The call site, which the probe cannot stand in for -------------------------
+#
+# The probe now refuses a temp directory mktemp cannot write in, so the two
+# cases above are caught before the drafter asks for its file. That is one
+# layer, and it is the wrong one to rely on: a precondition is checked once, and
+# the directory can stop being writable between the check and the call. A
+# precondition proved earlier is not a status read later, and the status is what
+# the script's own exit is made of under errexit.
+#
+# So the call site is driven on its own, with the only stub that can reach it: a
+# mktemp that answers the probe correctly — it forwards `-u` to the real tool —
+# and fails the call that actually makes the file. Nothing else gets past
+# require_tool to the line under test.
+mktemp_late_dir="$mask_root/broken-mktemp-late"
+if [[ ! -d "$mktemp_late_dir" ]]; then
+  mkdir -p "$mktemp_late_dir"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf '# Answers the probe, refuses the real request.\n'
+    printf 'if [[ "${1:-}" == -u ]]; then exec %s "$@"; fi\n' "$(command -v mktemp)"
+    printf 'echo "mktemp: cannot create a file there" >&2\n'
+    printf 'exit 1\n'
+  } > "$mktemp_late_dir/mktemp"
+  chmod +x "$mktemp_late_dir/mktemp"
+fi
+
+# The stub is the control for itself: the probe must accept it, or the case
+# below would be testing require_tool over again rather than the call site.
+run_on_path "$mktemp_late_dir:$PATH" \
+  /usr/bin/env bash -c 'source skills/skill-audit/scripts/verdict-guard.sh; tool_answers mktemp'
+assert_value "the late-failing mktemp stub does answer the probe, so the case below reaches the call site" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+
+late_target="$(adverse_target)"
+run_on_path "$mktemp_late_dir:$PATH" "$DRAFT_ABS" -t "$late_target"
+assert_value "drafter, mktemp fails the call it passed the probe for: exits 3, not 1" \
+  "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "drafter, mktemp fails the call it passed the probe for: names mktemp" \
+  "$(echo "$errout" | grep -q 'mktemp' && echo true || echo false)"
+assert_value "drafter, mktemp fails the call it passed the probe for: says no draft was written" \
+  "$(echo "$errout" | grep -q 'no draft was written' && echo true || echo false)"
+assert_value "drafter, mktemp fails the call it passed the probe for: and none was" \
+  "$([[ ! -f "$late_target/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+assert_value "drafter, mktemp fails the call it passed the probe for: stdout carries no verdict" \
+  "$([[ -z "$output" ]] && echo true || echo false)"
+
+# And the other half of the same status: a mktemp that exits 0 saying nothing.
+# An empty answer is a path the shell would open as the empty string, so the
+# status alone is not the whole question the call site has to ask.
+mktemp_empty_dir="$mask_root/broken-mktemp-empty"
+if [[ ! -d "$mktemp_empty_dir" ]]; then
+  mkdir -p "$mktemp_empty_dir"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'if [[ "${1:-}" == -u ]]; then exec %s "$@"; fi\n' "$(command -v mktemp)"
+    printf 'exit 0\n'
+  } > "$mktemp_empty_dir/mktemp"
+  chmod +x "$mktemp_empty_dir/mktemp"
+fi
+empty_target="$(adverse_target)"
+run_on_path "$mktemp_empty_dir:$PATH" "$DRAFT_ABS" -t "$empty_target"
+assert_value "drafter, mktemp exits 0 naming no file: exits 3" \
+  "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "drafter, mktemp exits 0 naming no file: names mktemp" \
+  "$(echo "$errout" | grep -q 'mktemp' && echo true || echo false)"
+assert_value "drafter, mktemp exits 0 naming no file: no draft was written" \
+  "$([[ ! -f "$empty_target/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+
+# The control: a writable TMPDIR of its own, and the drafter reaches its verdict.
+mktemp_ok_tmp="$mask_root/tmpdir-writable"
+mkdir -p "$mktemp_ok_tmp"
+mktemp_ok_target="$(adverse_target)"
+code=0
+TMPDIR="$mktemp_ok_tmp" "$DRAFT_ABS" -t "$mktemp_ok_target" >/dev/null 2>&1 || code=$?
+assert_value "drafter, a writable TMPDIR: reaches its verdict (exit 0)" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "drafter, a writable TMPDIR: wrote the draft" \
+  "$([[ -f "$mktemp_ok_target/REWRITE-DRAFT.md" ]] && echo true || echo false)"
+assert_value "drafter, a writable TMPDIR: left no temporary audit behind in it" \
+  "$([[ -z "$(ls -A "$mktemp_ok_tmp")" ]] && echo true || echo false)"
+
+# --- The externals no require_tool covers -------------------------------------
+#
+# The same root as F1 and F2, in the three places the guard structurally cannot
+# reach. An external invoked outside require_tool's coverage leaks its own
+# status as the script's exit status under errexit, with no diagnostic and no
+# verdict — because it runs before the precondition is stated, or because it was
+# reasoned off the list on a premise that covers only its exit-0 failures.
+#
+# `date` was reasoned off: the comment says a clock that failed leaves a visibly
+# empty timestamp beside findings that are all still true. That is correct for
+# the exit-0 rows and says nothing about a nonzero exit, which is the row that
+# exists. `dirname` and `cat` cannot be routed through the guard at all —
+# `dirname` runs before the guard is loaded and `cat` before the arguments are
+# parsed — so each needs the explicit refusal the guard load-check three lines
+# below the first one already uses.
+
+# What the sweeps below prove, recorded as they prove it. A tool is a hard
+# precondition of these scripts when a script that cannot get an answer from it
+# refuses to run, names it, and exits inside its own stated set — which is the
+# readme's own criterion for listing one, and is exactly what each sweep here
+# drives. The readme's census reads this variable, so the two halves of
+# "required" — stated through require_tool, and stated by an explicit refusal
+# where require_tool cannot reach — are one list rather than one list and a
+# blind spot.
+unguarded_proved=""
+
+# One directory, one file, prepended to the real PATH. Nothing is mirrored,
+# replaced or uninstalled.
+unguarded_stub_path() {
+  local tool="$1"
+  local status="$2"
+  local dir="$mask_root/unguarded-$tool-$status"
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir"
+    printf '#!/usr/bin/env bash\nexit %s\n' "$status" > "$dir/$tool"
+    chmod +x "$dir/$tool"
+  fi
+  echo "$dir:$PATH"
+}
+
+# F4 — `date` in audit-report.sh. Its status was unread, so a nonzero clock
+# became this script's own exit: 2, which is outside the {0, 3} its header
+# states, with zero bytes of report and not one word on stderr.
+date_cases=0
+for dstatus in 1 2 127; do
+  date_cases=$((date_cases + 1))
+  run_on_path "$(unguarded_stub_path date "$dstatus")" \
+    "$SCRIPTS_DIR/audit-report.sh" tests/fixtures/f01/valid-full
+  assert_value "audit-report, date exits $dstatus: exits inside the set its own header states" \
+    "$(states_exit "$SCRIPTS_DIR/audit-report.sh" "$code" && echo true || echo false)"
+  assert_value "audit-report, date exits $dstatus: says which tool could not answer" \
+    "$(echo "$errout" | grep -q 'date' && echo true || echo false)"
+  assert_value "audit-report, date exits $dstatus: does not exit 0 without a report" \
+    "$([[ $code -eq 0 && -z "$output" ]] && echo false || echo true)"
+done
+echo "  unguarded date cases driven: $date_cases"
+assert_value "the unguarded date cases were enumerated, not read as empty" \
+  "$([[ "$date_cases" -eq 3 ]] && echo true || echo false)"
+# Recorded beside the assertions that are its proof, not written down again
+# somewhere the proof cannot be seen.
+unguarded_proved="$unguarded_proved date"
+
+# The control: the real clock, and the report carries a timestamp.
+run_on_path "$(working_tool_path date)" "$SCRIPTS_DIR/audit-report.sh" tests/fixtures/f01/valid-full
+assert_value "audit-report, the real date: reaches its report (exit 0)" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "audit-report, the real date: the report carries the timestamp it read" \
+  "$(echo "$output" | jq -e '.timestamp | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T")' >/dev/null 2>&1 && echo true || echo false)"
+
+# F5 — `dirname` in the `script_dir=` block of all six scripts. It runs before
+# the guard is loaded, so a broken one left every script exiting 1 with bash's
+# own `cd:` message and nothing else. For check-paths.sh that 1 is "path
+# failure" and for check-frontmatter.sh "spec failure" — a fabricated verdict;
+# for audit-report.sh and check-quality.sh it is outside the stated set
+# entirely, and check-quality.sh's block is new in this diff.
+dirname_cases=0
+for dscript in $ADVERSE_SCRIPTS; do
+  dname="$(basename "$dscript")"
+  dargs="$(adverse_args_of "$dname")"
+  dtarget="$(adverse_target)"
+  dirname_cases=$((dirname_cases + 1))
+  run_on_path "$(unguarded_stub_path dirname 1)" "$dscript" ${dargs//@target/$dtarget}
+  assert_value "$dname, dirname exits 1: exits inside the set its own header states" \
+    "$(states_exit "$dscript" "$code" && echo true || echo false)"
+  assert_value "$dname, dirname exits 1: says it could not resolve its own directory" \
+    "$(echo "$errout" | grep -q 'ERROR:' && echo true || echo false)"
+  assert_value "$dname, dirname exits 1: reports no verdict on stdout" \
+    "$(echo "$output" | grep -qE '"passed":[[:space:]]*true|frontmatter OK|Rewrite draft written' && echo false || echo true)"
+done
+echo "  unguarded dirname cases driven: $dirname_cases"
+assert_value "the unguarded dirname cases were enumerated, not read as empty" \
+  "$([[ "$dirname_cases" -eq 6 ]] && echo true || echo false)"
+unguarded_proved="$unguarded_proved dirname"
+
+# --- The readme's prerequisite list is the scripts' own ------------------------
+#
+# Placed here, below every sweep above, because that is where its evidence is.
+# The readme's criterion for listing a tool is behavioural — "a script that
+# cannot get an answer from one of them exits 3 and says which" — and this
+# derived the list from `require_tool` alone, which is a mechanism rather than
+# a criterion. Two tools meet the criterion outside that mechanism and were
+# therefore absent: `dirname`, which runs before the guard exists to announce
+# it, and `date`, which has no constant answer for a probe to compare against.
+# Both became hard preconditions in this branch, by the fix that gave each an
+# explicit refusal — so the very change that made them required is the change
+# that moved them out of sight of the list. The count was short by two.
+#
+# So the list is `require_tool` plus what the sweeps above proved, and "proved"
+# is meant literally: each name in `unguarded_proved` is recorded beside the
+# assertions that drove that tool broken and watched the script refuse, name it
+# and exit inside its own stated set. A name cannot be added to that variable
+# and stay true without those assertions holding.
+#
+# The boundary, stated rather than implied: this finds an unguarded tool that
+# something drove, not one nobody thought of. Closing that needs the set of
+# external command words in each script, which is a shell parser, and is not
+# what this suite does.
+#
+# The readme said "The skills shell out to three external tools" and listed
+# skill-validator, skillscore and jq. That was true when the only hard
+# preconditions were those three. This diff made seven more of them hard: every
+# tool a script now routes through require_tool exits 3 when it is absent or
+# present and not answering, which is the whole point of the change.
+#
+# The trade is honest in the code and stated in each script's header. The
+# user-facing table is where it went wrong, and it went wrong in the direction
+# that matters: a reader was told a tool was optional when a script now refuses
+# to run without it. So the claim is derived here rather than restated there —
+# the same mechanism as the rule-ID census and the exit table, for the same
+# reason, because a prose count is exactly the thing that drifts.
+#
+# The anchor is `^Required tools:` on its own line, holding every tool in
+# backticks. Both directions are checked: a tool a script requires and the
+# readme omits, and a tool the readme claims and nothing requires.
+# `|| true` on the extraction, not on the comparison: an anchor that is missing
+# entirely must reach the assertions as an empty set and fail them, rather than
+# taking the suite down under pipefail before it can report anything. The
+# "was read, not matched as an empty set" assertion below is what refuses the
+# empty reading.
+readme_anchor="$(sed -n 's/^Required tools:[[:space:]]*//p' README.md | head -1)"
+readme_required="$({ printf '%s' "$readme_anchor" | grep -oE '`[a-z][a-z-]*`' || true; } \
+  | tr -d '`' | sort -u)"
+
+scripts_required="$unguarded_proved"
+for pscript in "$SCRIPTS_DIR"/*.sh skills/skill-rewrite/scripts/*.sh; do
+  case "$pscript" in *verdict-guard.sh) continue ;; esac
+  scripts_required="$scripts_required $(tools_required_by "$pscript" | tr '\n' ' ')"
+done
+scripts_required="$({ printf '%s' "$scripts_required" | tr ' ' '\n' | grep -v '^$' || true; } | sort -u)"
+readme_required_n="$({ printf '%s' "$readme_required" | grep -c . || true; } | tr -d ' ')"
+
+readme_missing=""
+for ptool in $scripts_required; do
+  case "
+$readme_required
+" in *"
+$ptool
+"*) ;; *) readme_missing="$readme_missing $ptool" ;; esac
+done
+
+readme_stale=""
+for ptool in $readme_required; do
+  case "
+$scripts_required
+" in *"
+$ptool
+"*) ;; *) readme_stale="$readme_stale $ptool" ;; esac
+done
+
+echo "  tools the readme lists as prerequisites: $(printf '%s' "$readme_required" | tr '\n' ' ')"
+echo "  tools the scripts require: $(printf '%s' "$scripts_required" | tr '\n' ' ')"
+echo "  of those, required outside require_tool and proved so above:$unguarded_proved"
+# A census that silently lost its second half would read exactly like one that
+# never had it, and every assertion below would pass. The half is asserted.
+assert_value "the tools required outside require_tool were proved and carried into the census, not read as an empty set" \
+  "$([[ -n "$unguarded_proved" ]] && echo true || echo false)"
+assert_value "the readme's prerequisite list was read, not matched as an empty set" \
+  "$([[ "$readme_required_n" -ge 8 ]] && echo true || echo false)"
+assert_value "every tool a script requires is listed as a prerequisite in the readme" \
+  "$([[ -z "$readme_missing" ]] && echo true || echo false)"
+if [[ -n "$readme_missing" ]]; then
+  echo "  required by a script, absent from the readme:$readme_missing"
+fi
+assert_value "every prerequisite the readme lists is required by a script" \
+  "$([[ -z "$readme_stale" ]] && echo true || echo false)"
+if [[ -n "$readme_stale" ]]; then
+  echo "  claimed by the readme, required by nothing:$readme_stale"
+fi
+
+# The count written in the prose is the list's own length, so the sentence and
+# the list cannot disagree. This is the half that was wrong: the sentence said
+# three while the scripts required ten.
+readme_claimed_count="$(sed -n 's/^The skills shell out to \([a-z]*\) external tools.*/\1/p' README.md | head -1)"
+readme_count_expected="$(english_count "$readme_required_n")"
+assert_value "the readme's tool count is the number of tools it lists ($readme_required_n)" \
+  "$([[ -n "$readme_claimed_count" && "$readme_claimed_count" == "$readme_count_expected" ]] && echo true || echo false)"
+
+# The readme must not tell a reader that a script which now requires jq is
+# unaffected by its absence. check-frontmatter.sh has no --json mode at all and
+# requires jq; check-quality.sh required nothing at base and requires it now.
+assert_value "the readme does not claim text mode is unaffected by a missing jq" \
+  "$(grep -q 'Text mode needs no jq and is unaffected' README.md && echo false || echo true)"
+jq_requirers="$(grep -lE '^[[:space:]]*[^#]*require_tool[[:space:]]+jq' "$SCRIPTS_DIR"/*.sh | wc -l | tr -d ' ')"
+assert_value "the readme names every script that requires jq, and there are $jq_requirers of them" \
+  "$([[ "$jq_requirers" -eq 5 ]] && grep -qi 'all five .*scripts require jq' README.md && echo true || echo false)"
+
+# F6 — `usage()` in draft-rewrite.sh is a heredoc, and it runs on the
+# argument-parsing paths, before `require_tool cat`. A broken `cat` made `-h`
+# exit 2 and the no-argument and unknown-option paths exit 2 as well, where the
+# contract says 0 and 1. Nothing was printed on either channel.
+usage_cases=0
+for ucase in "0|-h|an explicitly requested help" \
+             "1||no argument at all" \
+             "1|--no-such-option|an unknown option"; do
+  uwant="${ucase%%|*}"; urest="${ucase#*|}"
+  uarg="${urest%%|*}"; uwhy="${urest#*|}"
+  usage_cases=$((usage_cases + 1))
+  if [[ -n "$uarg" ]]; then
+    run_on_path "$(unguarded_stub_path cat 2)" "$DRAFT_ABS" "$uarg"
+  else
+    run_on_path "$(unguarded_stub_path cat 2)" "$DRAFT_ABS"
+  fi
+  assert_value "drafter with a broken cat, $uwhy: exits $uwant, the status its contract states" \
+    "$([[ $code -eq "$uwant" ]] && echo true || echo false)"
+  assert_value "drafter with a broken cat, $uwhy: still prints the usage it was asked for" \
+    "$([[ -n "$output$errout" ]] && echo true || echo false)"
+done
+echo "  usage-path cases driven: $usage_cases"
+assert_value "the usage-path cases were enumerated, not read as empty" \
+  "$([[ "$usage_cases" -eq 3 ]] && echo true || echo false)"
+
+# The control: the same three paths on a healthy toolchain behave the same way,
+# so the cases above pin the usage paths rather than the broken cat.
+for ucase in "0|-h" "1|" "1|--no-such-option"; do
+  uwant="${ucase%%|*}"; uarg="${ucase#*|}"
+  if [[ -n "$uarg" ]]; then
+    run_present "$DRAFT_ABS" "$uarg"
+  else
+    run_present "$DRAFT_ABS"
+  fi
+  assert_value "drafter with a real cat, '${uarg:-no argument}': exits $uwant as well" \
+    "$([[ $code -eq "$uwant" ]] && echo true || echo false)"
+done
+
+# --- check-quality.sh, inside the guard with its four siblings -----------------
+#
+# It was the one script in the skill that sat outside the guard, and that is why
+# nothing here reached it. It sourced nothing, so a verdict-guard.sh that was
+# missing or malformed changed nothing about how it behaved while its four
+# siblings all refused to answer. It never checked that the directory it was
+# handed held a SKILL.md, so it relayed skillscore's exit 1 for "there is no
+# skill here" — a status its own contract does not enumerate. And it passed
+# skillscore's status straight through, so skillscore exiting 9 made it exit 9,
+# and skillscore exiting 0 having printed nothing made it exit 0 having printed
+# nothing: a report generator reporting success over no report.
+#
+# It also emitted no rule literal, so the rule-ID census contributed the empty
+# set for this file and passed vacuously over it — the reason a script with no
+# guard could sit here through two releases with every suite green.
+
+QUALITY_GUARD_MODES="missing malformed empty half"
+for qmode in $QUALITY_GUARD_MODES; do
+  qdir="$(guard_broken_tree "$qmode")"
+  run_present "$qdir/check-quality.sh" tests/fixtures/f01/valid-full
+  assert_value "quality, guard $qmode: exits 3, like its four siblings" \
+    "$([[ $code -eq 3 ]] && echo true || echo false)"
+  assert_value "quality, guard $qmode: stdout carries no report" \
+    "$([[ -z "$output" ]] && echo true || echo false)"
+  assert_value "quality, guard $qmode: says on stderr that it could not load the guard" \
+    "$(echo "$errout" | grep -q 'verdict-guard.sh' && echo true || echo false)"
+done
+
+# Absence: the one case the old script did handle, kept so the rewrite cannot
+# lose it.
+run_masked skillscore "$CHECK_QUALITY" tests/fixtures/f01/valid-full
+assert_value "quality, skillscore masked: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "quality, skillscore masked: names the missing tool" \
+  "$(echo "$errout" | grep -q 'skillscore' && echo true || echo false)"
+assert_value "quality, skillscore masked: stdout carries no report" \
+  "$([[ -z "$output" ]] && echo true || echo false)"
+
+# A target with no SKILL.md is not a skill this script scored badly.
+quality_empty_dir="$mask_root/quality-no-skill"
+mkdir -p "$quality_empty_dir"
+run_present "$CHECK_QUALITY" "$quality_empty_dir"
+assert_value "quality, a directory with no SKILL.md: exits 3, not the scorer's own status" \
+  "$([[ $code -eq 3 ]] && echo true || echo false)"
+assert_value "quality, a directory with no SKILL.md: says what it could not find" \
+  "$(echo "$errout" | grep -q 'SKILL.md' && echo true || echo false)"
+
+# Usage.
+run_present "$CHECK_QUALITY"
+assert_value "quality, no argument: exits 3" "$([[ $code -eq 3 ]] && echo true || echo false)"
+
+# Every way the scorer can fail to answer. Each of these used to become this
+# script's own exit status or its own empty report.
+quality_liar_cases=0
+for qcase in "9|boom|the scorer exits 9" \
+             "1||the scorer exits 1 saying nothing" \
+             "0||the scorer exits 0 saying nothing" \
+             "0|not a report at all|the scorer exits 0 with text that is not JSON" \
+             "0|7|the scorer exits 0 with a document that is not an object" \
+             "0|{\"overallScore\": 80}|the scorer exits 0 with a score that is not an object" \
+             "0|{\"overallScore\": {}}{\"overallScore\": {}}|the scorer answers with two documents"; do
+  qexit="${qcase%%|*}"; qrest="${qcase#*|}"
+  qsaid="${qrest%%|*}"; qwhy="${qrest#*|}"
+  quality_liar_cases=$((quality_liar_cases + 1))
+  qstub="$mask_root/quality-stub-$quality_liar_cases"
+  if [[ ! -d "$qstub" ]]; then
+    mkdir -p "$qstub"
+    printf '%s' "$qsaid" > "$qstub/said"
+    printf '#!/usr/bin/env bash\ncat "$(dirname "$0")/said"\nexit %s\n' "$qexit" > "$qstub/skillscore"
+    chmod +x "$qstub/skillscore"
+  fi
+  run_on_path "$qstub:$PATH" "$CHECK_QUALITY" tests/fixtures/f01/valid-full
+  assert_value "quality, $qwhy: exits 3, not the scorer's own status" \
+    "$([[ $code -eq 3 ]] && echo true || echo false)"
+  assert_value "quality, $qwhy: stdout carries no report" \
+    "$([[ -z "$output" ]] && echo true || echo false)"
+  assert_value "quality, $qwhy: names the scorer on stderr" \
+    "$(echo "$errout" | grep -q 'skillscore' && echo true || echo false)"
+done
+
+echo "  quality-source failure cases driven: $quality_liar_cases"
+assert_value "the quality-source failure cases were enumerated, not read as empty" \
+  "$([[ "$quality_liar_cases" -eq 7 ]] && echo true || echo false)"
+
+# The controls. A readable report is still relayed unchanged, and the shape the
+# guard proves is the shape audit-report.sh reads out of the same source — so a
+# report with no overallScore at all is read rather than refused.
+run_present "$CHECK_QUALITY" tests/fixtures/f01/valid-full
+assert_value "quality, a real scorer: exits 0" "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "quality, a real scorer: stdout is one readable report" \
+  "$(printf '%s' "$output" | jq -se 'length == 1 and (.[0].overallScore | type) == "object"' >/dev/null 2>&1 && echo true || echo false)"
+
+qstub_ok="$mask_root/quality-stub-noscore"
+mkdir -p "$qstub_ok"
+printf '#!/usr/bin/env bash\nprintf %s\n' "'{\"skillName\": \"x\"}\\n'" > "$qstub_ok/skillscore"
+chmod +x "$qstub_ok/skillscore"
+run_on_path "$qstub_ok:$PATH" "$CHECK_QUALITY" tests/fixtures/f01/valid-full
+assert_value "quality, a report carrying no overallScore: read, not refused (exit 0)" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+
 # PL003 — the line-count rule. No fixture was ever long enough to raise it.
 big_skill="$mask_root/over-the-line-limit"
 mkdir -p "$big_skill"
@@ -970,5 +2190,324 @@ assert_value "structure --json, SKILL.md over the line limit: exits 2 (policy fa
   "$([[ $code -eq 2 ]] && echo true || echo false)"
 assert_value "structure --json, SKILL.md over the line limit: the message names the count and the limit" \
   "$(echo "$output" | jq -e '.findings[] | select(.rule == "PL003") | select(.message | test("500"))' >/dev/null 2>&1 && echo true || echo false)"
+
+# --- The documented exit contract is the scripts' own ---------------------------
+#
+# SKILL.md asserted `0=pass, 1=spec/path failure, 2=policy failure, 3=execution
+# error` over five scripts that do not share one contract. audit-report.sh's own
+# header says `{0, 3}` and only that one is implemented; check-quality.sh said a
+# third thing and implemented none of it; check-paths.sh has no 2. The doc
+# restated rather than derived, which is why it drifted, and a caller following
+# it wrote `audit-report.sh "$skill" && echo PASS` and got PASS for a skill that
+# failed every check.
+#
+# So the doc carries a row per script, copied from that script's own header, and
+# the two are compared here — the same shape as the rule-ID census, for the same
+# reason. Both directions: every script has a row, and every row names a script.
+
+# exit_line_of and stated_exit_codes are defined above, beside the adverse
+# sweep that compares observed statuses against them. One definition serves both
+# halves of the derivation: what the doc says a script exits with, and what the
+# script can be made to exit with.
+
+# doc_exit_row_of <basename> — what SKILL.md says that script exits with.
+doc_exit_row_of() {
+  sed -n "s/^|[[:space:]]*\`$1\`[[:space:]]*|[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*|[[:space:]]*\$/\1/p" \
+    skills/skill-audit/SKILL.md | head -1
+}
+
+exit_documented=0
+exit_undocumented=""
+for escript in "$SCRIPTS_DIR"/*.sh; do
+  ename="$(basename "$escript")"
+  eline="$(exit_line_of "$escript")"
+  # verdict-guard.sh is sourced, never run, so it states no exit contract and
+  # needs no row. A runnable script with no `# Exit codes:` header is the thing
+  # this loop is watching for, and it is caught by the executable check below.
+  if [[ -z "$eline" ]]; then
+    if [[ -x "$escript" ]]; then
+      exit_undocumented="$exit_undocumented $ename"
+    fi
+    continue
+  fi
+  exit_documented=$((exit_documented + 1))
+  erow="$(doc_exit_row_of "$ename")"
+  assert_value "SKILL.md's exit table says for $ename exactly what $ename says" \
+    "$([[ -n "$erow" && "$erow" == "$eline" ]] && echo true || echo false)"
+  if [[ "$erow" != "$eline" ]]; then
+    echo "  $ename header: $eline"
+    echo "  $ename in doc : ${erow:-<no row>}"
+  fi
+done
+
+echo "  scripts whose exit contract was compared: $exit_documented"
+assert_value "the exit contracts were enumerated, not read as an empty set" \
+  "$([[ "$exit_documented" -ge 5 ]] && echo true || echo false)"
+assert_value "every runnable script states its own exit contract in its header" \
+  "$([[ -z "$exit_undocumented" ]] && echo true || echo false)"
+if [[ -n "$exit_undocumented" ]]; then
+  echo "  runnable with no exit contract stated:$exit_undocumented"
+fi
+
+# The other direction. A row for a script that no longer exists is a claim about
+# nothing, and it would sit there passing every case above.
+exit_rows_stale=""
+exit_rows_seen=0
+while IFS= read -r erow_name; do
+  [[ -z "$erow_name" ]] && continue
+  exit_rows_seen=$((exit_rows_seen + 1))
+  [[ -f "$SCRIPTS_DIR/$erow_name" ]] || exit_rows_stale="$exit_rows_stale $erow_name"
+done < <(sed -n 's/^|[[:space:]]*`\([a-z-]*\.sh\)`[[:space:]]*|.*|[[:space:]]*$/\1/p' skills/skill-audit/SKILL.md)
+
+echo "  exit-table rows read from SKILL.md: $exit_rows_seen"
+assert_value "SKILL.md's exit table was read, not matched as an empty set" \
+  "$([[ "$exit_rows_seen" -eq "$exit_documented" ]] && echo true || echo false)"
+assert_value "every row in SKILL.md's exit table names a script that exists" \
+  "$([[ -z "$exit_rows_stale" ]] && echo true || echo false)"
+if [[ -n "$exit_rows_stale" ]]; then
+  echo "  rows naming no script:$exit_rows_stale"
+fi
+
+# The sentence beside the table counts the table's own rows, so the two cannot
+# disagree. It said four house-policy checks carry their verdict in the exit
+# status; there are three, and the fourth and fifth rows are the two generators
+# the sentence above it names. An off-by-one prose count in the section whose
+# whole subject is a doc that drifted from the scripts — which is what a count
+# written as a word rather than derived does, every time.
+#
+# The criterion is the table's: a script that can exit with something other than
+# 0 or 3 is saying something about the skill in its exit status. 0 and 3 alone
+# say only "a document was produced" and "it was not".
+exit_verdict_carriers=0
+exit_generators=0
+for vscript in "$SCRIPTS_DIR"/*.sh; do
+  [[ -n "$(exit_line_of "$vscript")" ]] || continue
+  vcarries=false
+  for vcode in $(stated_exit_codes "$vscript"); do
+    case "$vcode" in
+      0|3) ;;
+      *) vcarries=true ;;
+    esac
+  done
+  if $vcarries; then
+    exit_verdict_carriers=$((exit_verdict_carriers + 1))
+  else
+    exit_generators=$((exit_generators + 1))
+  fi
+done
+echo "  scripts carrying a verdict in their exit status: $exit_verdict_carriers"
+echo "  scripts that are generators: $exit_generators"
+assert_value "the scripts were sorted into verdict-carriers and generators, not read as an empty set" \
+  "$([[ $((exit_verdict_carriers + exit_generators)) -eq "$exit_documented" && "$exit_verdict_carriers" -gt 0 ]] && echo true || echo false)"
+
+doc_carrier_word="$(sed -n 's/^The \([a-z][a-z]*\) house-policy checks do carry their verdict in the exit status.*/\1/p' \
+  skills/skill-audit/SKILL.md | head -1)"
+assert_value "SKILL.md's count of the checks that carry a verdict in the exit status is the table's own ($exit_verdict_carriers)" \
+  "$([[ -n "$doc_carrier_word" && "$doc_carrier_word" == "$(english_count "$exit_verdict_carriers")" ]] && echo true || echo false)"
+if [[ "$doc_carrier_word" != "$(english_count "$exit_verdict_carriers")" ]]; then
+  echo "  SKILL.md says: ${doc_carrier_word:-<no such sentence>}"
+  echo "  the table says: $(english_count "$exit_verdict_carriers")"
+fi
+
+# And the other half of the same sentence pair, so neither number can be right
+# only because the check reads one of them.
+doc_generators_named=0
+for gscript in "$SCRIPTS_DIR"/*.sh; do
+  [[ -n "$(exit_line_of "$gscript")" ]] || continue
+  gcarries=false
+  for gcode in $(stated_exit_codes "$gscript"); do
+    case "$gcode" in 0|3) ;; *) gcarries=true ;; esac
+  done
+  $gcarries && continue
+  grep -q "report a verdict in their output, not in their exit status" skills/skill-audit/SKILL.md \
+    && sed -n 's/^\*\*\(.*\)report a verdict in their output.*/\1/p' skills/skill-audit/SKILL.md \
+       | grep -qF -- "$(basename "$gscript")" \
+    && doc_generators_named=$((doc_generators_named + 1))
+done
+assert_value "SKILL.md names every generator as one, and there are $exit_generators of them" \
+  "$([[ "$doc_generators_named" -eq "$exit_generators" ]] && echo true || echo false)"
+
+# And the behaviour the table now tells the truth about. audit-report.sh exits 0
+# over a failing skill — deliberately, because 0 means a report was generated —
+# so the verdict has to be read out of the report, and the doc has to say so.
+run_present skills/skill-audit/scripts/audit-report.sh tests/fixtures/f01/frontmatter-bleed
+assert_value "audit-report over a failing skill: still exits 0, the contract its header states" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+assert_value "audit-report over a failing skill: the verdict is in summary.passed, and it is false" \
+  "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "false" ]] && echo true || echo false)"
+assert_value "SKILL.md tells a caller to read summary.passed rather than the exit status" \
+  "$(grep -q 'summary.passed' skills/skill-audit/SKILL.md && echo true || echo false)"
+assert_value "SKILL.md warns that the '&& echo PASS' shape prints PASS for a failing skill" \
+  "$(grep -q 'echo PASS' skills/skill-audit/SKILL.md && echo true || echo false)"
+
+# --- Where the frontmatter ends: one question, one answer ----------------------
+#
+# Four scripts used to answer it privately and they disagreed. Two exited at the
+# second `---` and were right. check-paths.sh ran a toggle, so a third `---` put
+# it back into frontmatter and one markdown horizontal rule ended every path
+# check after it. check-structure.sh never asked, so its whole house-policy
+# verdict was satisfiable out of frontmatter.
+#
+# These cases are pinned to the invariants, not to the primitive that now holds
+# them: a rule about the body is computed over the body, and frontmatter ends
+# once. A later repair is free to move the reading anywhere as long as both
+# still hold.
+
+BLEED=tests/fixtures/f01/frontmatter-bleed
+RULE_REFS=tests/fixtures/f01/rule-before-refs
+NO_RULE_REFS=tests/fixtures/f01/no-rule-before-refs
+
+# The bleed fixture's preconditions, asserted rather than assumed. Each policy
+# rule below has to be satisfiable from this file and unsatisfied by its body,
+# or the case that follows would pass over a fixture that no longer reproduces
+# anything — which is how a regression test quietly stops being one. Six
+# heading-shaped lines, two fence-shaped lines and two list-shaped lines are in
+# the file; none of them is in the body.
+assert_value "bleed fixture: its frontmatter still holds six heading-shaped lines" \
+  "$([[ "$(grep -cE '^#{2,6}[[:space:]]+' "$BLEED/SKILL.md" | tr -d '[:space:]')" -eq 6 ]] && echo true || echo false)"
+assert_value "bleed fixture: its frontmatter still holds a code fence" \
+  "$([[ "$(grep -cE '^[[:space:]]*```' "$BLEED/SKILL.md" | tr -d '[:space:]')" -ge 1 ]] && echo true || echo false)"
+assert_value "bleed fixture: its delimiters still read as list items" \
+  "$([[ "$(grep -cE '^[[:space:]]*[-*]' "$BLEED/SKILL.md" | tr -d '[:space:]')" -ge 1 ]] && echo true || echo false)"
+assert_value "bleed fixture: skill-validator passes it, so the toolchain is healthy" \
+  "$("$SV" validate structure -o json "$BLEED" >/dev/null 2>&1 && echo true || echo false)"
+
+# G1-01. Every rule about the body, reported missing from the body, while the
+# file that contains all of them sits right there.
+run_present "$CHECK_STRUCT" --json "$BLEED"
+assert_value "structure --json, body rules satisfied only in frontmatter: reports all six headings missing" \
+  "$([[ "$(echo "$output" | jq '[.findings[] | select(.rule == "PL002")] | length')" -eq 6 ]] && echo true || echo false)"
+assert_value "structure --json, body rules satisfied only in frontmatter: reports PL004, the body has no fence" \
+  "$(echo "$output" | jq -e '.findings[] | select(.rule == "PL004")' >/dev/null 2>&1 && echo true || echo false)"
+assert_value "structure --json, body rules satisfied only in frontmatter: reports PL005, the body has no list" \
+  "$(echo "$output" | jq -e '.findings[] | select(.rule == "PL005")' >/dev/null 2>&1 && echo true || echo false)"
+assert_value "structure --json, body rules satisfied only in frontmatter: never reports passed true" \
+  "$([[ "$(echo "$output" | jq -r '.passed')" == "false" ]] && echo true || echo false)"
+assert_value "structure --json, body rules satisfied only in frontmatter: exits 2 (policy failure)" \
+  "$([[ $code -eq 2 ]] && echo true || echo false)"
+
+# The headline command is the surface the defect was reported on, so it is the
+# surface the repair is confirmed on. A green unit case over the child proves a
+# branch runs; it does not prove audit-report.sh stopped issuing a clean bill of
+# health.
+run_present skills/skill-audit/scripts/audit-report.sh "$BLEED"
+assert_value "audit-report, body rules satisfied only in frontmatter: summary.passed is false" \
+  "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "false" ]] && echo true || echo false)"
+assert_value "audit-report, body rules satisfied only in frontmatter: counts every body rule it broke" \
+  "$([[ "$(echo "$output" | jq -r '.summary.policy_failures')" -ge 8 ]] && echo true || echo false)"
+assert_value "audit-report, body rules satisfied only in frontmatter: still exits 0, the report generated" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+
+# G1-02. The pair differs by one `---`. A frontmatter reading that re-enters
+# reads everything after that line as frontmatter and checks none of it.
+assert_value "rule fixture pair: they still differ by exactly one delimiter line" \
+  "$([[ "$(grep -c '^---$' "$RULE_REFS/SKILL.md" | tr -d '[:space:]')" -eq 3 && "$(grep -c '^---$' "$NO_RULE_REFS/SKILL.md" | tr -d '[:space:]')" -eq 2 ]] && echo true || echo false)"
+
+run_present "$CHECK_PATHS" --json "$RULE_REFS"
+rule_findings="$(echo "$output" | jq -S -c '.findings')"
+rule_code=$code
+run_present "$CHECK_PATHS" --json "$NO_RULE_REFS"
+no_rule_findings="$(echo "$output" | jq -S -c '.findings')"
+no_rule_code=$code
+
+# Parity on its own is not the invariant: two clean passes are also identical.
+# The pair has to agree *and* both have to be the failure the references are.
+assert_value "paths --json, a horizontal rule before the broken references: finds them anyway" \
+  "$([[ "$rule_code" -eq 1 ]] && echo true || echo false)"
+assert_value "paths --json, a horizontal rule before the broken references: same findings as without it" \
+  "$([[ "$rule_findings" == "$no_rule_findings" ]] && echo true || echo false)"
+assert_value "paths --json, a horizontal rule before the broken references: same exit as without it" \
+  "$([[ "$rule_code" -eq "$no_rule_code" ]] && echo true || echo false)"
+if [[ "$rule_findings" != "$no_rule_findings" ]]; then
+  echo "  with a rule   : $rule_findings"
+  echo "  without a rule: $no_rule_findings"
+fi
+
+# G1-03. PL003 is a limit on the body. Both skills here have a body under the
+# limit or over it by one line, and a *file* over it either way — so a count
+# taken over the whole file raises PL003 on the conforming one.
+for body_lines in 500 501; do
+  boundary_skill="$mask_root/pl003-body-$body_lines"
+  mkdir -p "$boundary_skill"
+  {
+    printf -- '---\nname: pl003-body-%s\ndescription: A skill whose body is %s lines long, in a file that is longer, so PL003 can be seen to count the body.\nlicense: MIT\n---\n' \
+      "$body_lines" "$body_lines"
+    i=1
+    while [[ $i -le $body_lines ]]; do printf 'body line %s\n' "$i"; i=$((i + 1)); done
+  } > "$boundary_skill/SKILL.md"
+  run_present "$CHECK_STRUCT" --json "$boundary_skill"
+  raised="$(echo "$output" | jq -e '.findings[] | select(.rule == "PL003")' >/dev/null 2>&1 && echo true || echo false)"
+  expected=false
+  [[ $body_lines -gt 500 ]] && expected=true
+  assert_value "structure --json, a $body_lines-line body in a longer file: PL003 raised is $expected" \
+    "$([[ "$raised" == "$expected" ]] && echo true || echo false)"
+  assert_value "structure --json, a $body_lines-line body: the file itself is over the limit, so the count is the body's" \
+    "$([[ "$(wc -l < "$boundary_skill/SKILL.md" | tr -d '[:space:]')" -gt 500 ]] && echo true || echo false)"
+done
+
+# And the class, not just the two instances. A script that scans for the
+# frontmatter delimiter itself holds a private answer to a question that has
+# one, and the next reader is back to choosing between copies.
+private_scanners="$(grep -lE '\^---\$|== "---"' skills/skill-audit/scripts/*.sh skills/skill-rewrite/scripts/*.sh \
+  | grep -v 'verdict-guard\.sh' || true)"
+assert_value "no script outside the shared primitive reads the frontmatter delimiter itself" \
+  "$([[ -z "$private_scanners" ]] && echo true || echo false)"
+if [[ -n "$private_scanners" ]]; then
+  echo "  private frontmatter scans: $(printf '%s' "$private_scanners" | tr '\n' ' ')"
+fi
+
+# The control. A check that can only ever say "nothing found" is the shape this
+# whole repository spent a cluster removing, so it is given something to find.
+scanner_control="$mask_root/private-scanner.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'awk '\''$0 == "---" { next }'\'' "$1"' > "$scanner_control"
+assert_value "the private-frontmatter-scan check fires on a script that has one" \
+  "$([[ -n "$(grep -lE '\^---\$|== "---"' "$scanner_control" || true)" ]] && echo true || echo false)"
+
+# --- What a script's header says, against what the script was seen to do -------
+#
+# The derivation above compares SKILL.md's table against each script's own
+# `# Exit codes:` header, and the adverse sweep compares every status it drove
+# against that header. Neither asks the question the other side of: whether
+# every status the header states is one the script can actually be made to
+# emit. Both sides moving together is uncaught — add a status a script can
+# never emit, or drop one it emits on every failure, and the suite stays fully
+# green. G4-01's original symptom was a stated code untrue of the script, so
+# the mechanism installed to close it does not detect its own shape.
+#
+# The witness is every run this suite made through the shared harness, which is
+# every run of a script it made at all. Both directions: a stated status nothing
+# produced is a claim about nothing, and a produced status nothing stated is a
+# script outside its own contract.
+exit_witness_unwitnessed=""
+exit_witness_unstated=""
+exit_witness_scripts=0
+for wscript in "$SCRIPTS_DIR"/*.sh skills/skill-rewrite/scripts/*.sh; do
+  wname="$(basename "$wscript")"
+  [[ -n "$(exit_line_of "$wscript")" ]] || continue
+  exit_witness_scripts=$((exit_witness_scripts + 1))
+  wseen="$(printf '%s\n' $exit_witness | sed -n "s/^$wname://p" | sort -u | tr '\n' ' ')"
+  echo "  $wname stated [$(stated_exit_codes "$wscript" | tr '\n' ' ')] seen [$wseen]"
+  for wcode in $(stated_exit_codes "$wscript"); do
+    case " $wseen " in
+      *" $wcode "*) ;;
+      *) exit_witness_unwitnessed="$exit_witness_unwitnessed $wname:$wcode" ;;
+    esac
+  done
+  for wcode in $wseen; do
+    states_exit "$wscript" "$wcode" || exit_witness_unstated="$exit_witness_unstated $wname:$wcode"
+  done
+done
+assert_value "the exit-status witness was collected, not read as an empty set" \
+  "$([[ "$exit_witness_scripts" -ge 6 && -n "$exit_witness" ]] && echo true || echo false)"
+assert_value "every status a script's header states is one this suite made it emit" \
+  "$([[ -z "$exit_witness_unwitnessed" ]] && echo true || echo false)"
+if [[ -n "$exit_witness_unwitnessed" ]]; then
+  echo "  stated but never emitted here:$exit_witness_unwitnessed"
+fi
+assert_value "every status this suite made a script emit is one its header states" \
+  "$([[ -z "$exit_witness_unstated" ]] && echo true || echo false)"
+if [[ -n "$exit_witness_unstated" ]]; then
+  echo "  emitted but not stated:$exit_witness_unstated"
+fi
 
 harness_summary

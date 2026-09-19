@@ -388,9 +388,20 @@ assert "a -a report that is there is not shadowed by a fresh audit" \
 # Read from the source rather than from a run, because the point is the whole
 # set: a behavioural sweep can only report the statuses the sweep happened to
 # provoke.
+#
+# Code lines only. A comment is where the script explains the statuses it used
+# to exit with and no longer does — `a broken cat made -h exit 2 where this
+# contract says 0` is a sentence about a repair, not a status the script can
+# reach — and counting those would demand the header register a status the code
+# cannot emit, which is the false header this assertion exists to refuse. It is
+# the distinction the registry above draws with backticks, made the other way
+# round: a paragraph may discuss what it does not declare. The narrowing gives
+# up nothing, because no `exit N` the script can take is on a line that begins
+# with `#`.
 statuses_emitted() {
-  { grep -hoE '(^|[^[:alnum:]_])exit[[:space:]]+[0-9]+' "$DRAFTER" || true; } \
-    | grep -oE '[0-9]+' | sort -u
+  { grep -vE '^[[:space:]]*#' "$DRAFTER" || true; } \
+    | { grep -hoE '(^|[^[:alnum:]_])exit[[:space:]]+[0-9]+' || true; } \
+    | { grep -oE '[0-9]+' || true; } | sort -u
 }
 
 statuses_registered() {
@@ -545,10 +556,17 @@ assert "a run with -a leaves no temp file behind either" test -z "$(left_behind)
 # prerequisite it does not have — and a declaration that is only ever too
 # generous still forces the documentation to say something untrue.
 #
-# The denominator is skill-audit's own `require_tool` calls: the set of tools
-# its scripts state a precondition on, and so the whole set that can stop this
-# skill for want of a tool. It is read rather than listed, so a tool added
-# there cannot fall out of this census.
+# The denominator is the `require_tool` calls in skill-audit's scripts *and* in
+# the drafter: the set of tools either states a precondition on, and so the
+# whole set that can stop this skill for want of a tool. It is read rather than
+# listed, so a tool added in either place cannot fall out of this census.
+#
+# The drafter is on that list because it now states preconditions of its own.
+# While it stated none, skill-audit's scripts were the whole set and reading
+# only them was the same answer; `awk`, `grep`, `cat` and `mktemp` are tools the
+# drafter computes with and two of them no sibling check asks for, so the
+# narrower denominator would now leave this skill free to require a tool its
+# documentation never names.
 #
 # verdict-guard.sh is skipped, for the reason tests/lib/audit-suites.sh is
 # never run over tests/lib/harness.sh: it is where `require_tool` is defined
@@ -556,7 +574,7 @@ assert "a run with -a leaves no temp file behind either" test -z "$(left_behind)
 # parameter name and the names of its sibling guards as if they were tools.
 candidate_tools() {
   local f
-  for f in skills/skill-audit/scripts/*.sh; do
+  for f in skills/skill-audit/scripts/*.sh "$DRAFTER"; do
     case "${f##*/}" in verdict-guard.sh) continue ;; esac
     { grep -hoE 'require_tool[[:space:]]+[a-z][a-z0-9-]*' "$f" || true; }
   done | awk '{print $NF}' | sort -u
@@ -661,20 +679,26 @@ for script in $(masked_status_claims | awk '{print $1}'); do
     test "$code" -eq "$(claimed_status_of "$script")"
 done
 
-# The rest of that paragraph, about the path that does not refuse: the drafter
-# drafts anyway, and the check's diagnostic becomes the draft's own `Current
-# state` rather than reaching stderr — which is also why the inventory below
-# describes `Current state` as a merged stream and not as the checks' output
-# verbatim.
+# The rest of that paragraph, which used to be about the path that did not
+# refuse: the drafter drafted anyway, and the check's diagnostic became the
+# draft's own `Current state` rather than reaching stderr. Both halves were
+# written in the present tense so that they would go red when cluster C3
+# brought the drafter inside the guard, rather than leave the paragraph
+# describing a behaviour the skill no longer has. C3 has landed and they did,
+# so they are asserted the other way round here and the paragraph now says the
+# drafter refuses — which is also why the inventory below no longer describes
+# `Current state` as a merged stream.
 #
-# Asserted in the present tense, so that when cluster C3 brings the drafter
-# inside the guard these go red and the paragraph has to be rewritten, rather
-# than being left describing a behaviour the skill no longer has.
+# Still two assertions, because "it refuses" is two claims: that the reader is
+# told which tool is missing, and that nothing was left in their skill
+# directory. A drafter that printed the refusal and kept the partial draft
+# would satisfy one of them, and that partial draft is what the trap in the
+# drafter exists to remove.
 run_without_validator draft-rewrite.sh
-assert "without skill-validator the drafter writes a draft anyway, as the SKILL.md warns it does" \
-  test -f "$no_validator_target/REWRITE-DRAFT.md"
-assert "without skill-validator the check's diagnostic is the draft's Current state, as the SKILL.md warns" \
-  test -n "$(current_state_of "$no_validator_target" | grep -F 'required tool not found: skill-validator' || true)"
+assert "without skill-validator the drafter writes no draft, as the SKILL.md says it does not" \
+  test ! -f "$no_validator_target/REWRITE-DRAFT.md"
+assert "without skill-validator the missing tool is named on stderr, as the SKILL.md says" \
+  test -n "$(printf '%s\n' "$errout" | grep -F 'required tool not found: skill-validator' || true)"
 
 # --- the sibling skill this one is not without --------------------------------
 #
@@ -718,9 +742,17 @@ documented_bundled_scripts() {
     | { grep -E '^\$\{?skill_root\}?/scripts/' || true; } \
     | sed -e 's|.*/||' | sort -u
 }
+# verdict-guard.sh is skipped here for the reason candidate_tools above skips
+# it. The drafter names it under the same `$skill_audit_root/scripts/` prefix as
+# the two checks, but it sources the guard rather than running it — that is how
+# it refuses in the guard's own words — and a library it loads is not a check it
+# runs. Counted as one, this census would require the SKILL.md to show a reader
+# invoking the guard, which is not a command anybody invokes. The dependency
+# itself is held two assertions down, by removing the guard from a copy of both
+# skills and watching the drafter stop.
 sibling_checks_the_drafter_runs() {
   { grep -hoE '\$\{?skill_audit_root\}?/scripts/[A-Za-z0-9_.-]+\.sh' "$DRAFTER" || true; } \
-    | sed -e 's|.*/||' | sort -u
+    | sed -e 's|.*/||' | { grep -vxF 'verdict-guard.sh' || true; } | sort -u
 }
 documented_sibling_checks() {
   doc_referenced_paths "$SKILL" \

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -26,21 +27,35 @@ func main() {
 		cmdCapture(os.Args[2:])
 	case "version":
 		fmt.Println("profiler " + profiler.AdapterVersion)
+	case "-h", "--help", "help":
+		// Help that was asked for is not a usage error. It used to reach
+		// `default` and exit 1 with it, because both were the same path.
+		usage()
 	default:
 		usage()
 		os.Exit(1)
 	}
 }
 
-// parseFlags parses a subcommand's flags and exits 1 if they do not.
+// parseFlags parses a subcommand's flags, exiting 0 on a requested help and 1
+// if they do not parse.
 //
 // ContinueOnError rather than ExitOnError, because ExitOnError exits 2 — the
 // status capture uses for "this capture read nothing", which is the one a
 // wrapping script is meant to act on. A mistyped flag and an unusable export
 // behind the same number is a status nobody can branch on, so the CLI picks its
 // own: 1 for anything the caller can fix by retyping the command.
+//
+// ContinueOnError also returns flag.ErrHelp for `-h` and `--help`, and having
+// printed the flag defaults it was asked for. Reading that as "the flags do not
+// parse" is what made every subcommand's help exit 1. The two errors are
+// separated here rather than at each call site, because both subcommands ask
+// the same question and one of them would eventually be the copy that forgot.
 func parseFlags(fs *flag.FlagSet, args []string) {
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
 		os.Exit(1)
 	}
 }
@@ -176,6 +191,7 @@ commands:
   probe     Probe environment and report capabilities
   capture   Capture a session profile
   version   Print version
+  help      Print this help (also -h, --help)
 
 examples:
   profiler probe --harness claude_code --otel-file ./otel-export.json
