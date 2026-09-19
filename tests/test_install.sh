@@ -371,12 +371,21 @@ path_resolves_inside() {
 # inert in a path. A destination that needs more than this is refused, and the
 # refusal names what it could not account for.
 #
-# Kept to one command on purpose: `the_destination_expansion_uses_no_shell`
-# reads this body and requires that it reaches no interpreter, so anything here
-# that forks a shell — including a command substitution to tidy the output — is
-# a control failure rather than a style question.
+# And it cannot reach an interpreter, which is a property of how it is run and
+# not of what is written in it. Process creation is made impossible before awk
+# starts, and awk then replaces that shell rather than being started by it, so
+# `system()`, an output pipe, a command into `getline` and every other way out
+# of awk fail for want of a process to be — whatever they are spelled like, and
+# whoever writes one here next. That is the whole argument, and it is measured
+# in both directions on every run by the control below. What it does not claim:
+# awk needs no process to write a file, so this says nothing about a write the
+# awk program itself performs. The destination text cannot cause one, because
+# the text arrives in the environment and is never program text.
 expanded_destination() {
-  DESTINATION_TEXT="$2" DESTINATION_HOME="$1/home" awk '
+  (
+    ulimit -u 1 2>/dev/null
+    export DESTINATION_TEXT="$2" DESTINATION_HOME="$1/home"
+    exec awk '
     function refuse(why) {
       printf "the destination is not one this suite can expand without a shell: %s\n", why \
         > "/dev/stderr"
@@ -387,6 +396,11 @@ expanded_destination() {
       home = ENVIRON["DESTINATION_HOME"]
       n = length(text)
       if (n == 0) refuse("there is nothing to expand")
+      # A length no filesystem could hold is not a destination, and accepting
+      # one is what costs: this builds its result a character at a time, so
+      # what it accepts it pays for quadratically. 4096 is PATH_MAX on the more
+      # generous of the two platforms this runs on; macOS stops at 1024.
+      if (n > 4096) refuse("it is " n " characters long, and no path may be longer than 4096")
       out = ""
       i = 1
       # A tilde, and only at the front of the word. Further in, a shell expands
@@ -425,7 +439,8 @@ expanded_destination() {
       print out
       exit 0
     }
-  ' </dev/null
+    ' </dev/null
+  )
 }
 
 # <run dir> <destination text> — the absolute, resolved path the block would
@@ -477,9 +492,17 @@ destination_resolves_inside_the_scratch_root() {
 # shell: the shape pass had to refuse a substitution before the resolution
 # reached it, and for one revision it did not, and a substitution written into
 # the README ran on the machine doing the verifying. The expansion cannot run
-# anything now, so the second and third fences are safe to reach in any order,
-# and the shape pass is first because reporting the broadest failure first is
-# the more useful diagnostic.
+# anything now, so the fences are safe to reach in any order.
+#
+# What decides the order instead is cost. The shape pass builds its result a
+# character at a time and is therefore quadratic in what it accepts, and it has
+# no bound of its own; the expansion does. Taking the destination first means
+# an input too long to be a path is refused by the bound before anything
+# quadratic walks it, which is what keeps a pathological document from ending
+# this suite in a CI timeout with no summary printed. The shape pass used to be
+# first because the broadest failure is the more useful diagnostic; a
+# destination refusal names its own cause just as precisely, so nothing was
+# lost.
 #
 # A block with no destination assignment is refused rather than waved through.
 # There is then nothing to resolve, and "nothing to resolve" is not a licence
@@ -488,13 +511,13 @@ containment_verdict() {
   local dir block dest
   dir="$1"
   block="$2"
-  printf '%s\n' "$block" | text_names_nothing_outside_a_redirected_home || return 1
   dest="$(printf '%s\n' "$block" | first_assignment_value)"
   if [ -z "$dest" ]; then
     echo "the block assigns no destination, so there is nothing to resolve" >&2
     return 1
   fi
   destination_resolves_inside_the_scratch_root "$dir" "$dest" || return 1
+  printf '%s\n' "$block" | text_names_nothing_outside_a_redirected_home || return 1
   return 0
 }
 
