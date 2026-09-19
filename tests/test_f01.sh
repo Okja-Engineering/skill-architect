@@ -2074,6 +2074,146 @@ for ucase in "0|-h" "1|" "1|--no-such-option"; do
     "$([[ $code -eq "$uwant" ]] && echo true || echo false)"
 done
 
+# --- The Stage 2 preflight refuses what the commands it gates refuse -----------
+#
+# SKILL.md's Stage 2 opens with a preflight — `command -v` guards a reader is
+# told to run before the commands underneath them. Its entire purpose is that a
+# reader who passes it does not then get an execution error out of the commands
+# it gates.
+#
+# It was a written-down list of two tools exiting 1, and it drifted exactly the
+# way the exit table and the rule-ID line drifted before they were derived. `jq`
+# became an unconditional precondition of two of the three commands and never
+# reached the list, so the preflight passed and `check-frontmatter.sh` then
+# exited 3 with nothing on stdout: the outcome the preflight exists to prevent,
+# produced by following the document. The 1 was wrong on its own terms as well —
+# a missing dependency is DEP001, an execution error, and 1 in this skill's own
+# exit table is a spec or path failure, so a preflight that exited 1 published a
+# verdict about the skill it had not computed.
+#
+# So neither the list nor the status is compared against anything written down
+# here. Each candidate tool is masked in turn, the commands the block documents
+# are run, and the preflight is required to refuse exactly when one of them
+# refuses and with the status it refused with. A tool that becomes a
+# precondition of any of those commands fails this rather than reaching a
+# reader, and a tool the preflight names that none of them needs fails it too.
+#
+# The block and the commands inside it are read out of the document, so the
+# question is about what a reader would run and not about a copy of it kept
+# here. The split between the preflight and what it gates is made on what the
+# lines do — the preflight is everything above the first line that runs a
+# bundled script — so it survives the preflight being rewritten in another
+# shape.
+#
+# The boundary, stated rather than implied: the candidates are the tools these
+# commands state as preconditions plus the two proved above to be required
+# outside `require_tool`. A tool no sweep in this file has driven is not in the
+# walk, for the same reason the readme census says so.
+SKILL_MD=skills/skill-audit/SKILL.md
+PREFLIGHT_TARGET=tests/fixtures/f01/valid-full
+
+stage2_block() {
+  awk '/^### Stage 2: Run structural checks$/ { found = 1; next }
+       found && /^```bash$/ { in_block = 1; next }
+       in_block && /^```$/ { exit }
+       in_block { print }' "$SKILL_MD"
+}
+stage2_preflight() {
+  stage2_block | awk '/\$skill_root\/scripts\// { exit } { print }'
+}
+stage2_gated_scripts() {
+  stage2_block | sed -n 's|.*\$skill_root/scripts/\([a-z][a-z-]*\.sh\).*|\1|p' | sort -u
+}
+
+preflight_file="$mask_root/stage2-preflight"
+stage2_preflight > "$preflight_file"
+
+stage2_scripts=""
+for s2name in $(stage2_gated_scripts); do
+  stage2_scripts="$stage2_scripts $SCRIPTS_DIR/$s2name"
+done
+stage2_script_n="$({ printf '%s' "$stage2_scripts" | tr ' ' '\n' | grep -c . || true; } | tr -d ' ')"
+
+preflight_candidates="$unguarded_proved"
+for s2script in $stage2_scripts; do
+  preflight_candidates="$preflight_candidates $(tools_required_by "$s2script" | tr '\n' ' ')"
+done
+preflight_candidates="$({ printf '%s' "$preflight_candidates" | tr ' ' '\n' | grep -v '^$' || true; } | sort -u)"
+preflight_candidate_n="$({ printf '%s' "$preflight_candidates" | grep -c . || true; } | tr -d ' ')"
+
+# The walk. For each candidate: what the gated commands do without it, then what
+# the preflight does without it. Every gated command is run rather than stopping
+# at the first refusal, so two commands refusing with different statuses is a
+# disagreement this can see rather than one it steps over.
+preflight_walked=0
+preflight_needed=""
+preflight_ignored=""
+preflight_disagree=""
+for ptool in $preflight_candidates; do
+  preflight_walked=$((preflight_walked + 1))
+  gated_statuses=""
+  for s2script in $stage2_scripts; do
+    run_masked "$ptool" "$s2script" "$PREFLIGHT_TARGET"
+    if [[ $code -ne 0 ]]; then
+      case " $gated_statuses " in
+        *" $code "*) ;;
+        *) gated_statuses="$gated_statuses $code" ;;
+      esac
+    fi
+  done
+  gated_statuses="${gated_statuses# }"
+  if [[ -z "$gated_statuses" ]]; then
+    preflight_ignored="$preflight_ignored $ptool"
+    gated_want=0
+  else
+    preflight_needed="$preflight_needed $ptool"
+    gated_want="$gated_statuses"
+  fi
+  run_masked "$ptool" bash "$preflight_file"
+  if [[ "$code" != "$gated_want" ]]; then
+    preflight_disagree="$preflight_disagree $ptool(preflight:$code gated:${gated_want:-0})"
+  fi
+done
+
+echo "  Stage 2 commands read from SKILL.md: $(stage2_gated_scripts | tr '\n' ' ')"
+echo "  preflight candidate tools walked: $(printf '%s' "$preflight_candidates" | tr '\n' ' ')"
+echo "  of those, a Stage 2 command refuses without:$preflight_needed"
+echo "  of those, no Stage 2 command needs:$preflight_ignored"
+
+assert_value "SKILL.md's Stage 2 preflight was read, not matched as an empty set" \
+  "$([[ -s "$preflight_file" ]] && echo true || echo false)"
+assert_value "SKILL.md's Stage 2 names the commands the preflight gates, and there are $stage2_script_n of them" \
+  "$([[ "$stage2_script_n" -gt 0 ]] && echo true || echo false)"
+assert_value "the preflight's candidate tools were derived from those commands, not read as an empty set" \
+  "$([[ "$preflight_candidate_n" -ge 6 && "$preflight_walked" -eq "$preflight_candidate_n" ]] && echo true || echo false)"
+# Both halves of the walk have to be populated, or the invariant below is true
+# of a question nobody asked: with nothing in `needed` it says only "the
+# preflight passes", and with nothing in `ignored` it would be satisfied by a
+# preflight that refused unconditionally.
+assert_value "the walk drove a tool a Stage 2 command refuses without, so the invariant is not only about passing" \
+  "$([[ -n "$preflight_needed" ]] && echo true || echo false)"
+assert_value "the walk drove a tool no Stage 2 command needs, so a preflight refusing everything would fail" \
+  "$([[ -n "$preflight_ignored" ]] && echo true || echo false)"
+assert_value "the Stage 2 preflight refuses exactly when a command it gates refuses, and with that command's status" \
+  "$([[ -z "$preflight_disagree" ]] && echo true || echo false)"
+if [[ -n "$preflight_disagree" ]]; then
+  echo "  preflight and the commands it gates disagree:$preflight_disagree"
+fi
+
+# The control: on the real PATH the preflight passes and every command it gates
+# reaches a verdict, so the walk above pins the masked tool rather than a
+# preflight or a fixture that was broken all along.
+run_present bash "$preflight_file"
+assert_value "on the real PATH the Stage 2 preflight passes" \
+  "$([[ $code -eq 0 ]] && echo true || echo false)"
+preflight_control_ok=true
+for s2script in $stage2_scripts; do
+  run_present "$s2script" "$PREFLIGHT_TARGET"
+  [[ $code -eq 0 ]] || preflight_control_ok=false
+done
+assert_value "on the real PATH every command the preflight gates reaches a verdict" \
+  "$($preflight_control_ok && echo true || echo false)"
+
 # --- check-quality.sh, inside the guard with its four siblings -----------------
 #
 # It was the one script in the skill that sat outside the guard, and that is why
