@@ -1265,9 +1265,29 @@ fi
 # nothing drove the drafter. A list of names has to be edited by whoever adds a
 # script, who is the person least likely to notice it needs editing — the same
 # reason the tool list above is read off the scripts rather than restated.
-ADVERSE_SCRIPTS="$SCRIPTS_DIR/check-structure.sh $SCRIPTS_DIR/check-paths.sh
-$SCRIPTS_DIR/check-frontmatter.sh $SCRIPTS_DIR/check-quality.sh
-$SCRIPTS_DIR/audit-report.sh skills/skill-rewrite/scripts/draft-rewrite.sh"
+#
+# That paragraph was written above a list of six names. It was three lines of
+# argument for deriving the list, followed by the list. The coverage assertion
+# below held the literal to the tree, so the set was right; what was wrong was
+# that the next reader would believe the comment instead of reading the three
+# lines under it, and would add a script expecting it to be picked up.
+#
+# It is read off the tree now. A script arriving in either skill enters the
+# cross product the day it lands, and the half of the coverage check that
+# compared the literal against the tree is gone with the literal, because an
+# assertion that cannot fail is the thing this suite exists to refuse. The half
+# that remains is the one still capable of failing: a script driven here with
+# no invocation that reaches a verdict.
+#
+# Runnable is the criterion, as it was for the coverage check: verdict-guard.sh
+# is sourced rather than run, and a file without the executable bit is not
+# something a caller invokes.
+ADVERSE_SCRIPTS=""
+for ascript in "$SCRIPTS_DIR"/*.sh skills/skill-rewrite/scripts/*.sh; do
+  case "$ascript" in *verdict-guard.sh) continue ;; esac
+  [[ -x "$ascript" ]] || continue
+  ADVERSE_SCRIPTS="$ADVERSE_SCRIPTS $ascript"
+done
 
 # --- What a script can be made to exit with, against what it says ---------------
 #
@@ -1329,31 +1349,31 @@ assert_value "a status inside a stated set is accepted, so the check is not refu
 adverse_args_of() {
   case "$1" in
     check-structure.sh|check-paths.sh) echo "--json @target" ;;
-    check-frontmatter.sh|check-quality.sh|audit-report.sh) echo "@target" ;;
+    check-frontmatter.sh|check-quality.sh|audit-report.sh|check-extra.sh) echo "@target" ;;
     draft-rewrite.sh) echo "-t @target" ;;
     *) return 1 ;;
   esac
 }
 
-# Coverage, both directions: every runnable script in both skills is driven
-# here, and every script driven here exists.
+# Every script the cross product will drive has an invocation that reaches a
+# verdict. Membership is no longer a question — the list is the tree — so what
+# is asked here is the half that can still be answered no: a script with no
+# entry in adverse_args_of would be driven with no arguments, reach its usage
+# path, and prove nothing about a broken tool.
 adverse_uncovered=""
-for ascript in "$SCRIPTS_DIR"/*.sh skills/skill-rewrite/scripts/*.sh; do
-  case "$ascript" in *verdict-guard.sh) continue ;; esac
-  [[ -x "$ascript" ]] || continue
-  # Unquoted, so the list's newlines collapse to single spaces and a path at the
-  # start or end of a line is still surrounded by them.
-  case " $(echo $ADVERSE_SCRIPTS) " in
-    *" $ascript "*) ;;
-    *) adverse_uncovered="$adverse_uncovered $(basename "$ascript")" ;;
-  esac
+adverse_scripts_seen=0
+for ascript in $ADVERSE_SCRIPTS; do
+  adverse_scripts_seen=$((adverse_scripts_seen + 1))
   adverse_args_of "$(basename "$ascript")" >/dev/null \
     || adverse_uncovered="$adverse_uncovered $(basename "$ascript")(no-invocation)"
 done
-assert_value "every runnable script in both skills is driven against a broken tool" \
+echo "  runnable scripts read off the tree: $adverse_scripts_seen"
+assert_value "the runnable scripts were read off the tree, not matched as an empty set" \
+  "$([[ "$adverse_scripts_seen" -eq 6 ]] && echo true || echo false)"
+assert_value "every runnable script in both skills has an invocation that reaches a verdict" \
   "$([[ -z "$adverse_uncovered" ]] && echo true || echo false)"
 if [[ -n "$adverse_uncovered" ]]; then
-  echo "  runnable but never driven against a broken tool:$adverse_uncovered"
+  echo "  driven against a broken tool with no invocation to drive:$adverse_uncovered"
 fi
 
 # A fresh target per case. `draft-rewrite.sh` writes its draft into the target
@@ -1372,7 +1392,12 @@ adverse_target() {
 broken_cases=0
 for bscript in $ADVERSE_SCRIPTS; do
   bname="$(basename "$bscript")"
-  bargs="$(adverse_args_of "$bname")"
+  # A script with no invocation is reported by the coverage assertion above; it
+  # is skipped rather than driven with no arguments, and rather than taking the
+  # suite down at this assignment under errexit before it can report anything.
+  bargs=""
+  bargs="$(adverse_args_of "$bname")" || bargs=""
+  [[ -n "$bargs" ]] || continue
   for btool in $(tools_required_by "$bscript"); do
     # Only the tools the guard has a probe for; the rest are proven at their read.
     case "
