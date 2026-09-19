@@ -2,7 +2,7 @@
 name: skill-audit
 description: Evaluate an Agent Skill directory against the Agent Skills spec, Anthropic best practices, and the Interpretable Context Methodology (ICM). Use when reviewing a SKILL.md before release, after a major edit, or when a skill is not triggering or executing reliably.
 license: MIT
-compatibility: POSIX shell (bash 3.2+ or zsh), git.
+compatibility: bash 3.2+.
 metadata:
   version: "0.2.0"
 ---
