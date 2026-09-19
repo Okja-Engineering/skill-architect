@@ -2480,6 +2480,59 @@ assert_value "SKILL.md tells a caller to read summary.passed rather than the exi
 assert_value "SKILL.md warns that the '&& echo PASS' shape prints PASS for a failing skill" \
   "$(grep -q 'echo PASS' skills/skill-audit/SKILL.md && echo true || echo false)"
 
+# --- The bundled file no documented command names ------------------------------
+#
+# Every script in this skill loads scripts/verdict-guard.sh and refuses to
+# compute a verdict without it -- driven four scripts x four break modes above,
+# and for the fifth by the check-quality sweep. Nothing a reader runs names it:
+# it is sourced, not invoked, so it appears in no command block, and to a reader
+# of the document it looked like a file nothing used. An installer that copies
+# what the commands name, or a pruner removing what looks unreferenced, takes
+# out every check in the skill. The document did not mention the file at all.
+#
+# The sibling document's first attempt at this sentence was itself false: it
+# said no other file referenced the guard by name, and a recursive grep found
+# the name in twelve. So nothing here is an absence. Two things are held, both
+# positive and both derived: that the document names the file, and that the
+# number it gives is the number of scripts that load it.
+#
+# The set is `$SCRIPTS_DIR` minus the guard, which is the same denominator the
+# exit table above is held to, so a script added to this skill is in this census
+# on the day it lands.
+loads_the_guard() {
+  grep -qF 'verdict-guard.sh' "$1" \
+    && grep -qE '^[[:space:]]*(\.|source)[[:space:]]' "$1"
+}
+guard_loaders=""
+guard_nonloaders=""
+for glscript in "$SCRIPTS_DIR"/*.sh; do
+  case "$glscript" in *verdict-guard.sh) continue ;; esac
+  if loads_the_guard "$glscript"; then
+    guard_loaders="$guard_loaders ${glscript##*/}"
+  else
+    guard_nonloaders="$guard_nonloaders ${glscript##*/}"
+  fi
+done
+guard_loader_n="$({ printf '%s' "$guard_loaders" | tr ' ' '\n' | grep -c . || true; } | tr -d ' ')"
+
+echo "  scripts loading verdict-guard.sh:$guard_loaders"
+echo "  scripts not loading it:${guard_nonloaders:- none}"
+
+assert_value "the scripts were sorted by whether they load the guard, not read as an empty set" \
+  "$([[ "${guard_loader_n:-0}" -gt 0 ]] && echo true || echo false)"
+assert_value "every script in this skill other than the guard loads it" \
+  "$([[ -z "$guard_nonloaders" ]] && echo true || echo false)"
+assert_value "SKILL.md names verdict-guard.sh, the file every one of them refuses to run without" \
+  "$(grep -qF 'verdict-guard.sh' skills/skill-audit/SKILL.md && echo true || echo false)"
+guard_doc_word="$(sed -n 's/^All \([a-z][a-z]*\) of the scripts above load .*verdict-guard\.sh.*/\1/p' \
+  skills/skill-audit/SKILL.md | head -1)"
+assert_value "SKILL.md's count of the scripts that load the guard is the number that do ($guard_loader_n)" \
+  "$([[ -n "$guard_doc_word" && "$guard_doc_word" == "$(english_count "$guard_loader_n")" ]] && echo true || echo false)"
+if [[ "$guard_doc_word" != "$(english_count "$guard_loader_n")" ]]; then
+  echo "  SKILL.md says: ${guard_doc_word:-<no such sentence>}"
+  echo "  the scripts say: $(english_count "$guard_loader_n")"
+fi
+
 # --- Where the frontmatter ends: one question, one answer ----------------------
 #
 # Four scripts used to answer it privately and they disagreed. Two exited at the
