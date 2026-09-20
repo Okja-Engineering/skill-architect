@@ -774,59 +774,11 @@ assert "the sibling checks the drafter runs are the ones the SKILL.md shows it r
 assert "every check this skill runs loads verdict-guard.sh, as the SKILL.md says both of them do" \
   every_check_it_runs_loads_the_guard
 
-# A claim about the rest of the repository is decidable against the rest of the
-# repository, and this one was not decided. The document called
-# verdict-guard.sh a file "which no other file references by name"; a recursive
-# grep finds the name in twelve files, including four of skill-audit's own
-# scripts, the readme, two suites and the drafter. The assertion covering the
-# sentence only checked that the filename appeared *in the document*, so it
-# passed over the falsehood — a string where there should have been a claim.
-#
-# Read as a claim and not as a phrase: a backticked filename with, in the same
-# sentence, a denial that anything else names it.
-unreferenced_claims_in() {
-  tr '\n' ' ' < "$1" \
-    | { grep -oE '`[A-Za-z0-9_.-]+\.(sh|md)`[^.]*(no other file|no other script|nothing else|referenced nowhere|unreferenced)[^.]*' || true; } \
-    | { grep -oE '^`[^`]+`' || true; } | tr -d '`' | sort -u
-}
-
-# Every file in the repository that names <1>, other than <2>. `.git` is not
-# part of the repository's text, and the leading `./` is dropped because not
-# every grep prints it.
-files_naming_other_than() {
-  { grep -rlF "$1" --exclude-dir=.git . || true; } \
-    | sed -e 's|^\./||' | { grep -vxF "$2" || true; } | sort -u
-}
-
-unreferenced_claims_hold_in() {
-  local doc="$1" f others bad=0
-  for f in $(unreferenced_claims_in "$doc"); do
-    others="$(files_naming_other_than "$f" "$doc")"
-    if [ -n "$others" ]; then
-      echo "  $doc says nothing else names $f; these files do: $(printf '%s' "$others" | tr '\n' ' ')" >&2
-      bad=$((bad + 1))
-    fi
-  done
-  [ "$bad" -eq 0 ]
-}
-
-assert "no claim in the SKILL.md that a file is named nowhere else survives a grep of the repository" \
-  unreferenced_claims_hold_in "$SKILL"
-
-# The control, which is the sentence as it was written, in a document of its
-# own. Once the claim is gone the assertion above has nothing to decide, and a
-# reader that found no claim would look exactly the same — so the reader is
-# held to finding this one, and to refusing it.
-control_claim_doc="$work/control-unreferenced.md"
-printf 'It borrows every check from `$audit_root/scripts/`, including `verdict-guard.sh`, which no other file references by name and which every one of those scripts refuses to compute a verdict without.\n' \
-  > "$control_claim_doc"
-assert "the claim reader finds the claim in the sentence this document carried" \
-  test "$(unreferenced_claims_in "$control_claim_doc")" = "verdict-guard.sh"
-control_claim_is_refused() {
-  ! unreferenced_claims_hold_in "$control_claim_doc" 2>/dev/null
-}
-assert "a document claiming verdict-guard.sh is named nowhere else is refused" \
-  control_claim_is_refused
+# The compatibility line this skill declares, and the refusal of any claim that
+# a file is named nowhere else, both used to live here reading this SKILL.md
+# alone. Both are claims every shipped skill makes, so both moved to
+# tests/test_skill.sh and are walked over `skills/*/`: held here, skill-audit's
+# identical compatibility line was un-held and went on being false.
 
 # --- the draft the SKILL.md describes -----------------------------------------
 #
@@ -983,97 +935,5 @@ assert "the built target's heading only begins with Examples, so the probe has t
   grep -qE '^## Examples of what not to do$' "$examples_prefix_target/SKILL.md"
 assert "a heading that only begins with Examples does not suppress the Examples template" \
   grep -qE '^#{3,6} Examples$' "$examples_prefix_target/REWRITE-DRAFT.md"
-
-# --- the compatibility the skill actually has ---------------------------------
-#
-# A `compatibility:` line is a promise to whoever is deciding whether to install
-# the skill, and it is the one claim in the frontmatter nothing was checking.
-# Three ways to break it, so three checks, each decidable everywhere rather than
-# only on the machine the suite happens to run on.
-compatibility_line() {
-  { grep -m1 -E '^compatibility:' "$SKILL" || true; }
-}
-
-# "POSIX shell" is read as a claim of `sh`, because that is what it means to
-# whoever is deciding whether to install: the word does not have to appear for
-# the claim to have been made, and check (3) below is where it is answered.
-claimed_interpreters_in() {
-  {
-    printf '%s\n' "$1" \
-      | { grep -oE '(^|[^a-z-])(sh|bash|zsh|ksh|dash|fish)([^a-z-]|$)' || true; } \
-      | { grep -oE '(sh|bash|zsh|ksh|dash|fish)' || true; }
-    if printf '%s\n' "$1" | grep -qi 'POSIX'; then echo sh; fi
-  } | sort -u
-}
-claimed_interpreters() { claimed_interpreters_in "$(compatibility_line)"; }
-
-# The commands named on the line that are not interpreters: a compatibility
-# line that names a tool is stating a dependency on it.
-claimed_commands_in() {
-  local w out=""
-  for w in $(printf '%s\n' "$1" | tr -cs 'a-zA-Z0-9_-' ' '); do
-    case " $(claimed_interpreters_in "$1" | tr '\n' ' ') " in *" $w "*) continue ;; esac
-    if command -v "$w" >/dev/null 2>&1; then
-      out="$out$w
-"
-    fi
-  done
-  printf '%s' "$out" | sort -u
-}
-claimed_commands() { claimed_commands_in "$(compatibility_line)"; }
-
-# (1) Behavioural: every interpreter the line claims runs the drafter to a
-# draft that carries the audit. Not merely "exits 0" — under zsh the drafter
-# exits 0 having written a draft whose Current state is two file-not-found
-# lines, and an exit-status check would call that compatibility.
-runs_the_drafter() {
-  local interp="$1" target
-  command -v "$interp" >/dev/null 2>&1 || return 1
-  target="$(target_from tests/fixtures/rewrite/all-sections "under-$interp")"
-  "$interp" "$DRAFTER" -t "$target" >/dev/null 2>&1 || return 1
-  [ -f "$target/REWRITE-DRAFT.md" ] || return 1
-  grep -qF 'frontmatter OK' "$target/REWRITE-DRAFT.md"
-}
-
-assert "the compatibility line names an interpreter at all" \
-  test -n "$(claimed_interpreters)"
-for interp in $(claimed_interpreters); do
-  assert "the skill works under $interp, which its compatibility line claims" \
-    runs_the_drafter "$interp"
-done
-
-# (2) Every tool the line names is a tool the skill needs. `git` was on it and
-# no script in either skill runs git.
-for tool in $(claimed_commands); do
-  assert "the compatibility line's $tool is a tool this skill actually needs" \
-    tool_is_required "$tool"
-done
-# The control for the command extractor, which reads nothing once the line is
-# corrected. Without it, "every tool named is needed" would be true of a line
-# naming anything at all.
-assert "the compatibility-line reader finds a tool named on such a line" \
-  test "$(claimed_commands_in 'compatibility: POSIX shell (bash 3.2+ or zsh), git.')" = "git"
-
-# (3) Declarative: the line claims the interpreter the bundled script's shebang
-# names, and no other family. This is what makes "POSIX shell" answerable — a
-# behavioural `sh` run cannot answer it, because /bin/sh is bash in sh mode on
-# macOS and dash on Linux, so the same assertion passes here and fails there.
-shebang_interpreter() {
-  sed -n '1s|^#!.*[/ ]\([a-z]*sh\)[[:space:]]*$|\1|p' "$DRAFTER"
-}
-assert "the bundled script's shebang names an interpreter" \
-  test -n "$(shebang_interpreter)"
-assert "the compatibility line claims the shebang's interpreter and no other family" \
-  test "$(claimed_interpreters)" = "$(shebang_interpreter)"
-if [ "$(claimed_interpreters)" != "$(shebang_interpreter)" ]; then
-  echo "  claimed: $(claimed_interpreters | tr '\n' ' ')"
-  echo "  shebang: $(shebang_interpreter)"
-fi
-
-# The version half of the claim, pinned where it can be pinned. CI runs one
-# Linux job with one bash, so "3.2+" is a claim no run verifies; what a run can
-# verify is that the script uses nothing bash 3.2 lacks.
-assert "the drafter uses no construct bash 3.2 does not have" \
-  test -z "$(grep -nE 'declare -A|mapfile|readarray|local -n|wait -n|globstar|\$\{[A-Za-z_][A-Za-z_0-9]*,,\}|\$\{[A-Za-z_][A-Za-z_0-9]*\^\^\}' "$DRAFTER" || true)"
 
 harness_summary
