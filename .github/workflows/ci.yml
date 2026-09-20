@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install skill-validator
+        run: |
+          curl -sSL https://github.com/agent-ecosystem/skill-validator/releases/download/v1.6.1/skill-validator_1.6.1_linux_amd64.tar.gz \
+            | tar xz -C /usr/local/bin skill-validator
+          skill-validator --version
+      - name: Install skillscore
+        run: npm install -g skillscore
+      - name: Run skill layout tests
+        run: tests/test_skill.sh
+      - name: Run end-to-end walk tests
+        run: tests/test_walk.sh
+      - name: Run F01 format/policy separation tests
+        run: tests/test_f01.sh
+      - name: Run F02 unified audit report tests
+        run: tests/test_f02.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+      - name: Run profiler + skillgate tests
+        run: |
+          (cd profiler && go test ./...)
+          (cd skillgate && go test ./...)
