@@ -21,3 +21,9 @@ Before building a custom solution, check whether an existing, maintained tool al
 - Repository fact — from this repository's files or history
 - Design decision — a choice made by the project maintainers
 - Local hypothesis — an unverified claim that needs testing
+
+## Operating principles
+- **Human-in-the-loop is the product contract.** Tools produce evidence and recommendations; a human approves every change to an audited artifact. A verdict is never a certification.
+- **60/30/10 applies to our own skills.** Deterministic scripts carry mechanical work; `SKILL.md` carries orchestration; judgment stays explicit and small. Skills that drift get rewritten, not excused.
+- **Dogfooding is a release gate.** Run skill-architect's own tools on its own skills before each release and record the numbers.
+- **Honest measurement.** Every number carries a basis — measured, estimated, inferred, or billed. Estimates are never rendered as dollars.

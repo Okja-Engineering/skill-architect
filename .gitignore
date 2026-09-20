@@ -1,2 +1,18 @@
+# Local scratch and virtualenvs. `.venv*/` rather than `.venv/` because the
+# skillspector work creates `.venv-skillspector/`, which is 15k files.
 tmp/
-.venv/
+.venv*/
+
+# The Scuba control plane. It is mirrored to its own `scuba-state/...` branch,
+# deliberately, so that plans and records stay visible without entering `main`'s
+# history. Committing it here would fork the mirror.
+.scuba/
+
+# The skillgate program is 0.6.0. These paths exist in the working tree today
+# and must not reach `main` with 0.5.0. They are ignored rather than merely
+# avoided so that the boundary is enforced by the tool instead of remembered by
+# the author: a `git add -A` cannot stage what git will not see.
+go.work
+go.work.sum
+skillgate/
+skills/skill-gate/
