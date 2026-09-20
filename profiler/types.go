@@ -270,8 +270,8 @@ const ProfileSchema = "skill-architect/profile/v1"
 
 // AdapterVersion is the current adapter implementation version. It is
 // recorded in every CapabilityReport, so it is bumped whenever the adapter
-// changes what a profile contains for the same input — as 0.4.1 and 0.4.2 both did.
-const AdapterVersion = "0.4.2"
+// changes what a profile contains for the same input — as 0.4.1, 0.4.2 and 0.4.3 all did.
+const AdapterVersion = "0.4.3"
 
 // MarshalJSON for Profile ensures the schema field is always set.
 func (p Profile) MarshalJSON() ([]byte, error) {

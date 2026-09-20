@@ -52,7 +52,7 @@ cd profiler && go build -o profiler ./cmd/
 ```
 
 `version` prints the adapter version that every profile records in
-`capability.adapter_version` — `profiler 0.4.2` at this release. It tracks what
+`capability.adapter_version` — `profiler 0.4.3` at this release. It tracks what
 the adapter captures, so profiles produced by different adapter versions stay
 distinguishable. It is not the plugin version, though the two match here.
 
@@ -421,7 +421,7 @@ claude plugin marketplace add Okja-Engineering/skill-architect
 claude plugin install skill-architect@skill-architect
 ```
 
-`claude plugin list` then shows `skill-architect@skill-architect` at version 0.4.2.
+`claude plugin list` then shows `skill-architect@skill-architect` at version 0.4.3.
 
 Every row below carries the status of the route as **executed in this release**, not as
 described by a vendor's documentation. Routes marked verified were run against a clean

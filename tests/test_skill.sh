@@ -41,7 +41,7 @@ import json, sys
 with open(sys.argv[1]) as f:
     data = json.load(f)
 assert data['name'] == 'skill-architect', 'name mismatch'
-assert data['version'] == '0.4.2', 'version mismatch'
+assert data['version'] == '0.4.3', 'version mismatch'
 assert 'skills' in data, 'missing skills'
 PY
 }
@@ -55,7 +55,7 @@ assert data['name'] == 'skill-architect', 'marketplace name mismatch'
 plugins = data['plugins']
 assert len(plugins) == 1, 'expected exactly one plugin entry'
 assert plugins[0]['name'] == 'skill-architect', 'plugin entry name mismatch'
-assert plugins[0]['version'] == '0.4.2', 'plugin entry version mismatch'
+assert plugins[0]['version'] == '0.4.3', 'plugin entry version mismatch'
 assert plugins[0]['source'] == './', 'plugin entry source mismatch'
 PY
 }
@@ -93,14 +93,14 @@ done
 # release that bumps the four plugin.json files and forgets this one advertises
 # the previous release to anyone installing by name.
 assert ".claude-plugin/marketplace.json exists" test -f .claude-plugin/marketplace.json
-assert ".claude-plugin/marketplace.json is valid and at 0.4.2" quietly marketplace_is_valid
+assert ".claude-plugin/marketplace.json is valid and at 0.4.3" quietly marketplace_is_valid
 
 # The profiler records its own version in every profile it writes, and it is the
 # sixth surface carrying this release's number. It is asserted here beside the
 # manifests so one place shows all of them, and in Go by
 # TestAdapterVersionIsThisRelease.
-assert "profiler AdapterVersion is 0.4.2" \
-  grep -q 'AdapterVersion = "0.4.2"' profiler/types.go
+assert "profiler AdapterVersion is 0.4.3" \
+  grep -q 'AdapterVersion = "0.4.3"' profiler/types.go
 
 # The denominator itself, asserted before anything is walked over it. A glob
 # that matched nothing would make every per-skill check below vacuously true,

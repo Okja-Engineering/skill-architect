@@ -443,9 +443,9 @@ func TestProfileSchemaField(t *testing.T) {
 // The adapter version is a release surface: it goes into every profile, and
 // tests/test_skill.sh asserts the same number beside the five plugin manifests.
 // Pinning the literal here is what makes a forgotten bump fail rather than
-// quietly ship a 0.4.2 profile labelled as something else.
+// quietly ship a 0.4.3 profile labelled as something else.
 func TestAdapterVersionIsThisRelease(t *testing.T) {
-	const want = "0.4.2"
+	const want = "0.4.3"
 	if AdapterVersion != want {
 		t.Errorf("AdapterVersion = %q, want %q", AdapterVersion, want)
 	}
