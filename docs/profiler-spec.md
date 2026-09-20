@@ -147,6 +147,47 @@ type CaptureOpts struct {
 }
 ```
 
+## Adapter contract
+
+Implementing `ProfilerAdapter` is not only satisfying the method set. Three
+obligations hold for every adapter, and an adapter that breaks any of them
+produces a profile that claims a measurement nobody made.
+
+1. **A capture names one session.** `Capture("")` returns
+   `SessionIDRequiredError(Name())`. A capture reads only the records carrying
+   the session it was asked for, so an empty id is not a session that matched
+   nothing — it is no assertion, and a profile stamped with it could only report
+   every session the export happens to carry. The CLI requires `--session`
+   before it gets that far; the adapter's refusal is what makes the rule true
+   for a library caller too, and the two say the same thing deliberately.
+
+2. **Probe and capture answer the same question, in both directions** (AC9).
+   Every signal the capability report advertises from a source other than `none`
+   is `present` in the capture of a session the export carries, with that source
+   and with the value that was read; every signal it marks `none` is not
+   `present`. The forward direction refuses an adapter that advertises a
+   capability its capture cannot deliver. The reverse refuses one that reports a
+   value it never claimed a source for. The capability report is the
+   denominator, so it must enumerate every signal the profile carries: an
+   adapter cannot satisfy this by advertising nothing.
+
+3. **A count that was not read has no key.** Every `TokenCounts` field is
+   `*int`, and a token result built from an export carrying only cache counts
+   has no `input` and no `output` key at all — not a zero. "The export said
+   nothing about this" and "the export said zero" are different answers, and
+   arithmetic on a value field turns the first into the second. An adapter that
+   advertises no token signal is exempt from the second half, and only that
+   adapter.
+
+These are enforced, not documented. `profiler/adapter_contract_test.go` holds a
+registry of every adapter the package ships and asserts all three over each one;
+registering an adapter means naming an export it reads and an export carrying
+only cache counts, so an adapter with no input for which its own claims hold
+cannot be registered. The registry is checked against the package's own source
+for types implementing `ProfilerAdapter`, so an adapter cannot be added without
+entering the table. The table's ability to fail is asserted on every run,
+against stub adapters built to break one obligation each.
+
 ## Serialized profile format
 
 The profile is a JSON document carrying the caller-supplied snapshot id. It is the integration point for F04.

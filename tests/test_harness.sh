@@ -493,4 +493,125 @@ fi
 assert "the control's own scratch directory is not left behind" \
   lacks_dir "$stuck_scratch"
 
+# --- The repository boundary, and whether anything holds it -------------------
+#
+# This file is about enforcement that cannot report. `.gitignore` is the
+# enforcement the 0.5.0 release rests on: a body of 0.6.0 work lives in the
+# working tree beside it, and the entries below are what stop `git add -A` from
+# seeing it. They were landed with nothing asserting them, so a later change
+# could delete one and every suite would still print the same verdict — the
+# boundary would be gone and the only thing that would notice is a reviewer
+# reading a diff.
+#
+# That is the shape this file exists to refuse, one level up: a guard whose
+# removal is invisible. So the entries are asserted here.
+#
+# The list is written down rather than derived, and that is deliberate. Every
+# other count in this file is read out of a second place that already holds it;
+# this one has no second place, because the boundary's only statement of itself
+# *is* `.gitignore`, and deriving the list from the file under test would make
+# deleting an entry delete the check for it. Writing it down is what makes the
+# deletion visible.
+#
+# Asked of `git check-ignore` rather than of the file's text, so each assertion
+# is about the effect an entry has and not about how it is spelled: reordering,
+# recommenting or rewriting `.venv/` as `.venv*/` leaves these alone, and
+# removing the enforcement does not.
+#
+# `--no-index` is load-bearing and was not obvious. Without it check-ignore
+# consults the index first and reports every *tracked* path as not ignored,
+# whatever the patterns say — so the second direction below, asked of files that
+# are all tracked, answered "still stageable" for an over-broad pattern that
+# would have hidden every file added under it from then on. The question worth
+# asking is about the patterns, not about what happens to be tracked today: a
+# path already in the index is safe either way, and the file that is about to be
+# written beside it is the one that disappears.
+
+# ignored_in <dir> <path> — the tree's boundary matches this path.
+ignored_in() {
+  local dir="$1"
+  local path="$2"
+  git -C "$dir" check-ignore --no-index -q -- "$path"
+}
+
+# stageable_in <dir> <path> — the tree's boundary does not match this path.
+#
+# Written as its own function rather than as `! ignored_in`, because
+# check-ignore answers "not ignored" and "I could not answer" with 1 and 128,
+# and a negation reads both as the reassuring one.
+stageable_in() {
+  local dir="$1"
+  local path="$2"
+  local status=0
+  git -C "$dir" check-ignore --no-index -q -- "$path" || status=$?
+  [ "$status" -eq 1 ]
+}
+
+# The 0.6.0 work and the local scratch, which must not reach `main` with 0.5.0.
+# `.venv-skillspector/` is named as well as `.venv/`: the widening from
+# `.venv/` to `.venv*/` is what keeps a 15,000-file virtualenv out, and an
+# entry narrowed back would pass a check that only asked about `.venv/`.
+boundary_ignored="tmp/ .venv/ .venv-skillspector/ .scuba/ go.work go.work.sum skillgate/ skills/skill-gate/"
+
+# The other direction, and it is not a formality: an over-broad pattern is the
+# more expensive mistake. It blocks a later slice silently, and the release has
+# several left. Every path here is one a remaining slice has to be able to
+# stage.
+boundary_stageable="README.md AGENTS.md .gitignore .out-of-scope.md docs/profiler-spec.md .github/workflows/ci.yml profiler/types.go profiler/claude_code.go profiler/cmd/main.go skills/skill-audit/SKILL.md skills/skill-rewrite/SKILL.md tests/test_harness.sh"
+
+for path in $boundary_ignored; do
+  assert "the boundary hides $path" ignored_in . "$path"
+done
+
+for path in $boundary_stageable; do
+  assert "the boundary leaves $path stageable" stageable_in . "$path"
+done
+
+# --- Controls: both directions of the boundary check can report ---------------
+#
+# Each half above can only ever say the reassuring thing — "still ignored" and
+# "still stageable" are also what a check that had stopped consulting anything
+# would say. So both predicates are run against trees carrying this
+# repository's boundary with one deliberate defect in it.
+#
+# Real git repositories rather than a grep over text, because `check-ignore` is
+# the thing under control and a control that exercises something else proves
+# nothing about it.
+
+# boundary_tree <dir> — an empty repository for a boundary to be written into.
+boundary_tree() {
+  local dir="$1"
+  mkdir -p "$dir"
+  quietly git -C "$dir" init
+}
+
+# A boundary missing one of its entries: the change a later slice could make
+# without anything noticing, which is why these assertions exist.
+missing_entry="$fixtures/boundary-without-skillgate"
+require "the tree for the missing-entry control is a repository" \
+  boundary_tree "$missing_entry"
+grep -vFx 'skills/skill-gate/' .gitignore > "$missing_entry/.gitignore"
+
+require "the missing-entry control is this repository's boundary minus one line" \
+  test "$(wc -l < "$missing_entry/.gitignore")" \
+    -eq "$(( $(wc -l < .gitignore) - 1 ))"
+
+assert "the boundary check reports an entry that was removed" \
+  stageable_in "$missing_entry" skills/skill-gate/
+assert "the missing-entry control keeps the rest of the boundary" \
+  ignored_in "$missing_entry" skillgate/
+
+# A boundary with one pattern too wide: the other mistake, and the one that
+# fails silently — it hides every file added under the path from then on.
+too_wide="$fixtures/boundary-too-wide"
+require "the tree for the over-broad control is a repository" \
+  boundary_tree "$too_wide"
+cat .gitignore > "$too_wide/.gitignore"
+echo 'profiler/' >> "$too_wide/.gitignore"
+
+assert "the boundary check reports a pattern that hides a path a slice needs" \
+  ignored_in "$too_wide" profiler/types.go
+assert "the over-broad control leaves the paths it did not widen alone" \
+  stageable_in "$too_wide" README.md
+
 harness_summary
