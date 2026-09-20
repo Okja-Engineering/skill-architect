@@ -94,6 +94,12 @@ func TestMetricResultSerialization_Error(t *testing.T) {
 // testdata/otlp/README.md.
 func fixture(name string) string { return filepath.Join("testdata", "otlp", name) }
 
+// fixtureSession is the session.id every export under testdata/otlp carries.
+// A capture reads only the records that carry the session it was asked for, so
+// a test reading a fixture's numbers has to ask for the session that produced
+// them.
+const fixtureSession = "00000000-0000-4000-8000-000000000001"
+
 func TestCapabilityReport_ClaudeCode_WithOtel(t *testing.T) {
 	adapter := ClaudeCodeAdapter{OtelExportFile: fixture("full_export.ndjson")}
 	cap := adapter.Probe()
@@ -153,7 +159,7 @@ func TestCapabilityReport_ClaudeCode_NoOtlpEnvelope(t *testing.T) {
 func TestCapture_ClaudeCode_WithOtelData(t *testing.T) {
 	adapter := ClaudeCodeAdapter{OtelExportFile: fixture("full_export.ndjson")}
 	opts := CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"}
-	profile, err := adapter.Capture("session-001", opts)
+	profile, err := adapter.Capture(fixtureSession, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +244,7 @@ func assertToolCalls(t *testing.T, got, want []ToolCallEntry) {
 func TestCapture_ClaudeCode_WithoutOtel(t *testing.T) {
 	adapter := ClaudeCodeAdapter{}
 	opts := CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"}
-	profile, err := adapter.Capture("session-001", opts)
+	profile, err := adapter.Capture(fixtureSession, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +315,7 @@ func TestCapture_TheHarnessLevelReasonsAreTheSpecsWordForWord(t *testing.T) {
 	}
 	// And with no export configured at all.
 	adapter := ClaudeCodeAdapter{}
-	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +330,7 @@ func TestCapture_TheHarnessLevelReasonsAreTheSpecsWordForWord(t *testing.T) {
 // profile that looks like missing telemetry.
 func TestCapture_ClaudeCode_RefusesAnExportFileItCannotRead(t *testing.T) {
 	adapter := ClaudeCodeAdapter{OtelExportFile: fixture("full_export.ndjson")}
-	_, err := adapter.Capture("session-001", CaptureOpts{
+	_, err := adapter.Capture(fixtureSession, CaptureOpts{
 		ExportFile:   "/var/tmp/session.atif.json",
 		SnapshotHash: "abc123",
 		SkillDir:     "/skills/my-skill",
@@ -340,12 +346,44 @@ func TestCapture_ClaudeCode_RefusesAnExportFileItCannotRead(t *testing.T) {
 	}
 }
 
+// A present tool_calls result carries no reason, so an export captured mid-run
+// lists the calls whose results were written and has nowhere to say how many
+// accepts it passed over. That is a stated schema v1 gap, not a reason the
+// profile withholds — and it is pinned here because the comment above
+// extractToolCalls once claimed the reason said so in every case, which sent a
+// reader looking for a channel that does not exist.
+func TestToolCalls_APendingAcceptBesideAResultIsNotReported(t *testing.T) {
+	profile := capturedProfile(t, "accept_then_result.json")
+
+	if profile.ToolCalls.State != MetricPresent {
+		t.Fatalf("tool_calls state = %q (%s), want present — one result was written",
+			profile.ToolCalls.State, profile.ToolCalls.Reason)
+	}
+	if got, want := toolCallNames(profile.ToolCalls.Value), []string{"Read"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("tool_calls = %v, want %v — an accept is not an entry; its outcome comes from its result", got, want)
+	}
+	if profile.ToolCalls.Reason != "" {
+		t.Errorf("tool_calls reason = %q on a present result: schema v1 has no reason on present, "+
+			"so this would be a field consumers cannot rely on", profile.ToolCalls.Reason)
+	}
+
+	// The same counter does reach a reader on the path where nothing was read,
+	// which is the case the reason exists for.
+	pending := capturedProfile(t, "accepts_no_results.json")
+	if pending.ToolCalls.State != MetricUnknown {
+		t.Fatalf("tool_calls state = %q, want unknown — no result was written", pending.ToolCalls.State)
+	}
+	if want := "2 accepted " + otelToolDecisionLog + " events"; !strings.Contains(pending.ToolCalls.Reason, want) {
+		t.Errorf("tool_calls reason = %q, want it to name %q", pending.ToolCalls.Reason, want)
+	}
+}
+
 // --- Acceptance criterion 6: Profile JSON round-trips ---
 
 func TestProfileRoundTrip(t *testing.T) {
 	adapter := ClaudeCodeAdapter{OtelExportFile: fixture("full_export.ndjson")}
 	opts := CaptureOpts{SnapshotHash: "sha123", SkillDir: "/skills/test"}
-	profile, err := adapter.Capture("sess-1", opts)
+	profile, err := adapter.Capture(fixtureSession, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +531,12 @@ func TestNoAttributionValueInJSONForUnknown(t *testing.T) {
 //  2. Probe and Capture apply the same predicate, per signal. Every capability
 //     the report marks available is "present" in the profile with that source;
 //     every capability it marks "none" is not present, carries a reason, and
-//     carries no value.
+//     carries no value. Probe is not given a session and so answers for the
+//     export as a whole; every case below therefore captures the session its
+//     fixture belongs to, which is the comparison that has a meaning. The
+//     divergence the two signals can have — probe "otel" against a capture of a
+//     session the export does not contain — is pinned in provenance_test.go
+//     instead, where it is the point rather than a confound.
 //
 // Both are pinned to the contract rather than to any particular gating,
 // detection, or parsing implementation, so a rewrite of the adapter's internals
@@ -530,6 +573,17 @@ type captureCase struct {
 	missingFile  bool         // adapter points at a path that does not exist
 	present      []MetricName // signals that must be "present"
 	absent       MetricState  // state required of tokens/tool_calls/timing when not present
+	// session is the identity to capture under, for a fixture that does not
+	// carry the shared fixtureSession. Empty means fixtureSession.
+	session string
+}
+
+// sessionID is the identity this case captures under.
+func (tc captureCase) sessionID() string {
+	if tc.session != "" {
+		return tc.session
+	}
+	return fixtureSession
 }
 
 var captureCases = []captureCase{
@@ -571,6 +625,8 @@ var captureCases = []captureCase{
 		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "two series told apart by a non-string attribute", fixture: "array_attribute_series.ndjson",
 		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "one series whose map attribute arrives in two member orders", fixture: "kvlist_attribute_series.ndjson",
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "two resources' cumulative series", fixture: "multi_resource_cumulative.json",
 		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "the same two resources under delta", fixture: "multi_resource_delta.json",
@@ -605,6 +661,12 @@ var captureCases = []captureCase{
 		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "log records spread over several resources and scopes", fixture: "log_record_shapes.json",
 		present: []MetricName{MetricToolCalls}, absent: MetricUnknown},
+	{name: "two sessions in one export", fixture: "two_sessions.ndjson", session: sessionA,
+		present: []MetricName{MetricTokens, MetricToolCalls, MetricTiming}, absent: MetricUnknown},
+	{name: "two sessions inside one metric's data points", fixture: "two_sessions_one_metric.json", session: sessionA,
+		present: []MetricName{MetricTokens}, absent: MetricUnknown},
+	{name: "another product exporting to the same port", fixture: "foreign_scope.json", session: sessionA,
+		present: []MetricName{MetricTokens, MetricToolCalls, MetricTiming}, absent: MetricUnknown},
 
 	// Exports that parse but carry nothing readable for any signal.
 	{name: "token.usage arrives as a gauge", fixture: "gauge_not_sum.json", absent: MetricUnknown},
@@ -676,7 +738,7 @@ func TestCaptureDeliversEverySignalProbeAdvertises(t *testing.T) {
 			}
 
 			report := adapter.Probe()
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(tc.sessionID(), CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -869,7 +931,7 @@ func TestCapture_ReasonNamesWhatTheExportActuallyCarried(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.fixture+"/"+string(tc.metric), func(t *testing.T) {
 			adapter := ClaudeCodeAdapter{OtelExportFile: fixture(tc.fixture)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -925,7 +987,7 @@ func TestCapture_UnusableExport_IsDiagnosable(t *testing.T) {
 				path = fixture(tc.fixture)
 			}
 			adapter := ClaudeCodeAdapter{OtelExportFile: path}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -955,7 +1017,7 @@ func TestCapture_UnusableExport_IsDiagnosable(t *testing.T) {
 // however the exporter ordered them — across batches as well as within one.
 func TestTimingIsASpanNotFileOrder(t *testing.T) {
 	adapter := ClaudeCodeAdapter{OtelExportFile: fixture("out_of_order.ndjson")}
-	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -981,7 +1043,7 @@ func TestTimingIsASpanNotFileOrder(t *testing.T) {
 // not an absence.
 func TestTiming_SingleRequestIsAZeroLengthSpan(t *testing.T) {
 	adapter := ClaudeCodeAdapter{OtelExportFile: fixture("timing_only.json")}
-	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1000,7 +1062,7 @@ func TestTiming_SingleRequestIsAZeroLengthSpan(t *testing.T) {
 // has nowhere to report the points that were skipped.
 func TestTokens_OnlyReadableMetricsAreCounted(t *testing.T) {
 	adapter := ClaudeCodeAdapter{OtelExportFile: fixture("as_double_rounding.json")}
-	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1048,7 +1110,7 @@ func TestTokens_TemporalityDecidesSumOrSupersede(t *testing.T) {
 // they emit. Both must read.
 func TestOTLP_NumbersAndStringsBothDecode(t *testing.T) {
 	adapter := ClaudeCodeAdapter{OtelExportFile: fixture("number_string_variants.json")}
-	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1113,7 +1175,7 @@ func TestToolCalls_EntriesRecordExecutionOutcomes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := ClaudeCodeAdapter{OtelExportFile: fixture(tc.fixture)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1138,7 +1200,7 @@ func TestTokens_EveryResourceAndScopeIsWalked(t *testing.T) {
 // behind the contract test above.
 func TestCapture_ClaudeCode_PartialExport_KeepsToolCallsAndTiming(t *testing.T) {
 	adapter := ClaudeCodeAdapter{OtelExportFile: fixture("partial_no_tokens.json")}
-	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1169,7 +1231,7 @@ func TestCapture_ClaudeCode_PartialExport_KeepsToolCallsAndTiming(t *testing.T) 
 func capturedProfile(t *testing.T, name string) Profile {
 	t.Helper()
 	adapter := ClaudeCodeAdapter{OtelExportFile: fixture(name)}
-	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 	if err != nil {
 		t.Fatal(err)
 	}

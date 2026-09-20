@@ -28,11 +28,19 @@ func writeExport(t *testing.T, content string) string {
 	return path
 }
 
+// The data point carries fixtureSession, because a capture reads only the
+// records carrying the session it was asked for: an export whose points name no
+// session is one no producer writes, and pinning a format-layer behaviour to it
+// would test the format layer against an input the reader is right to refuse.
 const metricsBatch = `{"resourceMetrics":[{"scopeMetrics":[{"metrics":[{"name":"claude_code.token.usage",` +
-	`"sum":{"aggregationTemporality":1,"dataPoints":[{"attributes":[{"key":"type","value":{"stringValue":"input"}}],` +
+	`"sum":{"aggregationTemporality":1,"dataPoints":[{"attributes":[` +
+	`{"key":"session.id","value":{"stringValue":"%SESSION%"}},` +
+	`{"key":"type","value":{"stringValue":"input"}}],` +
 	`"timeUnixNano":"1789332596272000000","asDouble":%VALUE%}]}}]}]}]}`
 
-func metricsBatchWith(value string) string { return strings.ReplaceAll(metricsBatch, "%VALUE%", value) }
+func metricsBatchWith(value string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(metricsBatch, "%SESSION%", fixtureSession), "%VALUE%", value)
+}
 
 // An editor, a shell redirect, or a Windows tool can leave a UTF-8 byte-order
 // mark at the head of a capture file. It is not JSON, and it must not cost the
@@ -40,7 +48,7 @@ func metricsBatchWith(value string) string { return strings.ReplaceAll(metricsBa
 func TestOTLP_LeadingByteOrderMarkIsStripped(t *testing.T) {
 	path := writeExport(t, "\xef\xbb\xbf"+metricsBatchWith("1523"))
 	adapter := ClaudeCodeAdapter{OtelExportFile: path}
-	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +65,7 @@ func TestOTLP_LeadingByteOrderMarkIsStripped(t *testing.T) {
 func TestOTLP_ConcatenatedObjectsNeedNoNewline(t *testing.T) {
 	path := writeExport(t, metricsBatchWith("100")+metricsBatchWith("200"))
 	adapter := ClaudeCodeAdapter{OtelExportFile: path}
-	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +119,7 @@ func TestOTLP_ATailThatIsNotABatchFailsTheWholeFile(t *testing.T) {
 
 			// At the adapter: what the person holding the file is told.
 			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, content)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -153,7 +161,7 @@ func TestOTLP_ABatchAfterAnUnreadableTailIsNotReadPast(t *testing.T) {
 	}
 
 	adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, content)}
-	profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+	profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +202,7 @@ func TestOTLP_AFileEndsAtItsLastBatchOrTheWhitespaceAfterIt(t *testing.T) {
 				t.Fatalf("read %d batches, want %d", len(export), tc.batches)
 			}
 			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, tc.content)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -224,7 +232,7 @@ func TestOTLP_TopLevelValueThatIsNotAnObject(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, tc.content)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -265,7 +273,7 @@ func TestOTLP_ANullEnvelopeIsNoEnvelope(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, tc.content)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -312,7 +320,7 @@ func TestOTLP_ASchemaMismatchNamesAFieldPathOnlyWhenThereIsOne(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, tc.content)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -771,6 +779,199 @@ func seriesIDs(t *testing.T, name string, batches ...string) []seriesID {
 	return ids
 }
 
+// --- Series identity: a map is not an ordered list ---
+
+// A kvlistValue attribute is a map, and the OTel common data model says two
+// maps are equal irrespective of the order their members arrive in. Giving such
+// an attribute an order-sensitive identity makes one time series read as two,
+// and under cumulative temporality two running totals *add* — so the profile
+// reports more tokens than any point in the export ever did. That is the one
+// direction the product's own claim forbids: a number it never read.
+//
+// An arrayValue is the opposite case and is here to hold the line: an array's
+// member order is part of its value, so it stays ordered — but a map nested
+// inside one is still a map, which is why the fixture carries both shapes.
+func TestSeriesIdentity_AMapAttributeIsEqualWhateverItsMemberOrder(t *testing.T) {
+	profile := capturedProfile(t, "kvlist_attribute_series.ndjson")
+
+	// Two series, not four: one holding a cumulative 100 under a two-member
+	// map, one holding 50 under an array carrying that map. Each pair arrives
+	// with its members in opposite order, so a reader that orders map members
+	// counts every one of them twice and reports 300.
+	assertTokenJSON(t, profile.Tokens.Value, `{"input":150}`)
+}
+
+// Order-insensitivity must not go so far as to erase the difference between two
+// maps. These pairs differ in their content, not their order, and each pair must
+// stay two series — otherwise the repair above would merge series that are
+// genuinely distinct and report a session's tokens as a fraction of themselves,
+// which is the same defect in the other direction.
+func TestSeriesIdentity_MapsThatDifferAreStillDifferentSeries(t *testing.T) {
+	const attrs = `[{"key":"k","value":%s}]`
+	for _, tc := range []struct{ name, a, b string }{
+		{"a different value under the same key",
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}}]}}`,
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"2"}}]}}`},
+		{"a different key carrying the same value",
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}}]}}`,
+			`{"kvlistValue":{"values":[{"key":"y","value":{"stringValue":"1"}}]}}`},
+		{"one member against two",
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}}]}}`,
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}},{"key":"y","value":{"stringValue":"2"}}]}}`},
+		{"the keys and values swapped between two members",
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"y"}}]}}`,
+			`{"kvlistValue":{"values":[{"key":"y","value":{"stringValue":"x"}}]}}`},
+		{"an empty map against no value of any kind",
+			`{"kvlistValue":{"values":[]}}`, `{}`},
+		{"an empty map against an empty array",
+			`{"kvlistValue":{"values":[]}}`, `{"arrayValue":{"values":[]}}`},
+		{"a map against the array of its members",
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}}]}}`,
+			`{"arrayValue":{"values":[{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}}]}}]}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ids := seriesIDs(t, "m",
+				batch("", "", fmt.Sprintf(attrs, tc.a)),
+				batch("", "", fmt.Sprintf(attrs, tc.b)))
+			if ids[0] == ids[1] {
+				t.Errorf("two maps that differ share one series identity %q", ids[0])
+			}
+		})
+	}
+}
+
+// And the pairs that are one series, stated as identity rather than through a
+// total, so the reason a total is right is pinned too. Nesting is included
+// because a map inside a map inside an array is where a shallow fix stops.
+func TestSeriesIdentity_MapsThatAreEqualShareOneSeries(t *testing.T) {
+	const attrs = `[{"key":"k","value":%s}]`
+	for _, tc := range []struct{ name, a, b string }{
+		{"two members in opposite order",
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}},{"key":"y","value":{"stringValue":"2"}}]}}`,
+			`{"kvlistValue":{"values":[{"key":"y","value":{"stringValue":"2"}},{"key":"x","value":{"stringValue":"1"}}]}}`},
+		{"a map nested inside a map",
+			`{"kvlistValue":{"values":[{"key":"o","value":{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}},{"key":"y","value":{"stringValue":"2"}}]}}}]}}`,
+			`{"kvlistValue":{"values":[{"key":"o","value":{"kvlistValue":{"values":[{"key":"y","value":{"stringValue":"2"}},{"key":"x","value":{"stringValue":"1"}}]}}}]}}`},
+		{"a map nested inside an array",
+			`{"arrayValue":{"values":[{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}},{"key":"y","value":{"stringValue":"2"}}]}}]}}`,
+			`{"arrayValue":{"values":[{"kvlistValue":{"values":[{"key":"y","value":{"stringValue":"2"}},{"key":"x","value":{"stringValue":"1"}}]}}]}}`},
+		{"pretty-printed against compact",
+			`{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}}]}}`,
+			`{"kvlistValue": { "values": [ { "key": "x", "value": { "stringValue": "1" } } ] }}`},
+		// ProtoJSON reads a JSON null as the field's default, so a members list
+		// written null and one written [] are two encodings of one empty map.
+		// The envelope's resourceMetrics/resourceLogs are the deliberate
+		// exception, and for a different question: there, absent and empty
+		// decide whether the file is an export at all.
+		{"a null members list against an empty one",
+			`{"kvlistValue":{"values":null}}`, `{"kvlistValue":{"values":[]}}`},
+		{"a null array members list against an empty one",
+			`{"arrayValue":{"values":null}}`, `{"arrayValue":{"values":[]}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ids := seriesIDs(t, "m",
+				batch("", "", fmt.Sprintf(attrs, tc.a)),
+				batch("", "", fmt.Sprintf(attrs, tc.b)))
+			if ids[0] != ids[1] {
+				t.Errorf("two equal maps are two series:\n  %q\n  %q", ids[0], ids[1])
+			}
+		})
+	}
+}
+
+// A map carrying one key twice is input OTLP does not define: nothing says
+// which member wins. The reader does not pick one — both members stay in the
+// identity, so such a map is neither of its single-member readings — and it
+// does not make arrival order meaningful for a duplicate key when it is
+// meaningless for every other map, so the two orders are one series.
+//
+// That is the map rule applied whole rather than a special case for input the
+// data model leaves open, and it is pinned because it is a choice: under a
+// last-one-wins reading these two would be {x:2} and {x:1}, and the profile
+// would hold two running totals where a reader sees one attribute set.
+func TestSeriesIdentity_ADuplicateKeyKeepsBothMembersAndNoOrder(t *testing.T) {
+	const attrs = `[{"key":"k","value":%s}]`
+	const (
+		dup      = `{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"1"}},{"key":"x","value":{"stringValue":"2"}}]}}`
+		reversed = `{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"2"}},{"key":"x","value":{"stringValue":"1"}}]}}`
+		single   = `{"kvlistValue":{"values":[{"key":"x","value":{"stringValue":"2"}}]}}`
+	)
+
+	ids := seriesIDs(t, "m",
+		batch("", "", fmt.Sprintf(attrs, dup)),
+		batch("", "", fmt.Sprintf(attrs, reversed)))
+	if ids[0] != ids[1] {
+		t.Errorf("one duplicate-key map in two member orders is two series:\n  %q\n  %q", ids[0], ids[1])
+	}
+
+	ids = seriesIDs(t, "m",
+		batch("", "", fmt.Sprintf(attrs, dup)),
+		batch("", "", fmt.Sprintf(attrs, single)))
+	if ids[0] == ids[1] {
+		t.Errorf("a duplicate-key map shares one series identity %q with the map holding one of its members: a member was dropped",
+			ids[0])
+	}
+}
+
+// A kind written as JSON null is the kind unset, not the kind holding its zero
+// value — so such an attribute is an AnyValue of no kind, which is the answer
+// the table above pins an empty map against.
+//
+// This is the same rule the envelope is read by ({"resourceMetrics":null} says
+// nothing about metrics) and the same one that makes a null members list the
+// empty list: ProtoJSON reads a null as the field being unset, so nothing is
+// there to identify. Checked against the reference implementation over the real
+// AnyValue: protojson.Unmarshal leaves the oneof unset for every kind written
+// null, scalars included, and re-marshals each of them as {}.
+//
+// Two encodings, two answers, and the direction matters: reading a null-written
+// kind as that kind's empty value merges an attribute nobody set with one
+// somebody set empty, which merges two series into one and reports a session's
+// tokens as a fraction of themselves. The pointer kinds got this right for
+// free, because encoding/json reads a null into a nil pointer; the five kinds
+// held as raw JSON had to be told.
+func TestSeriesIdentity_AKindWrittenNullIsNoKindAtAll(t *testing.T) {
+	const attrs = `[{"key":"k","value":%s}]`
+	for _, tc := range []struct{ kind, null, zero string }{
+		{"kvlistValue", `{"kvlistValue":null}`, `{"kvlistValue":{"values":[]}}`},
+		{"arrayValue", `{"arrayValue":null}`, `{"arrayValue":{"values":[]}}`},
+		{"intValue", `{"intValue":null}`, `{"intValue":"0"}`},
+		{"doubleValue", `{"doubleValue":null}`, `{"doubleValue":0}`},
+		{"bytesValue", `{"bytesValue":null}`, `{"bytesValue":""}`},
+		{"stringValue", `{"stringValue":null}`, `{"stringValue":""}`},
+		{"boolValue", `{"boolValue":null}`, `{"boolValue":false}`},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			same := seriesIDs(t, "m",
+				batch("", "", fmt.Sprintf(attrs, tc.null)),
+				batch("", "", fmt.Sprintf(attrs, `{}`)))
+			if same[0] != same[1] {
+				t.Errorf("%s written null is not the AnyValue of no kind:\n  %q\n  %q", tc.kind, same[0], same[1])
+			}
+
+			differ := seriesIDs(t, "m",
+				batch("", "", fmt.Sprintf(attrs, tc.null)),
+				batch("", "", fmt.Sprintf(attrs, tc.zero)))
+			if differ[0] == differ[1] {
+				t.Errorf("%s written null shares one series identity %q with the same kind written empty",
+					tc.kind, differ[0])
+			}
+		})
+	}
+}
+
+// An array's member order *is* part of its value, and the repair above must not
+// take that with it.
+func TestSeriesIdentity_AnArrayKeepsItsMemberOrder(t *testing.T) {
+	const attrs = `[{"key":"k","value":{"arrayValue":{"values":%s}}}]`
+	ids := seriesIDs(t, "m",
+		batch("", "", fmt.Sprintf(attrs, `[{"stringValue":"a"},{"stringValue":"b"}]`)),
+		batch("", "", fmt.Sprintf(attrs, `[{"stringValue":"b"},{"stringValue":"a"}]`)))
+	if ids[0] == ids[1] {
+		t.Errorf("two arrays differing only in member order share one series identity %q", ids[0])
+	}
+}
+
 // --- Byte offsets ---
 //
 // A failure reason points at a byte so the person holding the capture can open
@@ -810,7 +1011,7 @@ func TestOTLP_AnOffsetNamesTheOffendingByteInTheFile(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := ClaudeCodeAdapter{OtelExportFile: writeExport(t, tc.content)}
-			profile, err := adapter.Capture("session-001", CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
+			profile, err := adapter.Capture(fixtureSession, CaptureOpts{SnapshotHash: "abc123", SkillDir: "/skills/my-skill"})
 			if err != nil {
 				t.Fatal(err)
 			}
