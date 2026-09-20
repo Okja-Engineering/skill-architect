@@ -20,10 +20,13 @@ package profiler
 // "unknown" on every path that could reach a capture. Nothing mechanical stood
 // between that adapter and a profile claiming it had measured something.
 //
-// So the rules are a table over the registry below, and registering an adapter
-// means supplying an export it reads. That is the part that refuses: an adapter
-// with no input for which capture delivers what probe advertised cannot be
-// registered without turning this file red.
+// So the rules are a table over the production registry in adapters.go — the
+// one the CLI resolves `--harness` through — and being in it means supplying an
+// export the adapter reads. That is the part that refuses: an adapter with no
+// input for which capture delivers what probe advertised cannot ship without
+// turning this file red. The adapters are not listed again here; only their
+// inputs are, because an adapter this file did not know about is exactly what
+// a second list produces.
 //
 // This is the adapter denominator. The export-shape denominator — one adapter
 // over every fixture under testdata/otlp — is captureCases in profiler_test.go.
@@ -74,20 +77,56 @@ type adapterEntry struct {
 	cacheOnlyExport string
 }
 
-// adapterRegistry is every adapter this package ships.
+// contractFixture is the inputs one registered adapter's claims are asserted
+// over. It is keyed by harness name in contractFixtures below; the adapters
+// themselves come from the production registry.
+type contractFixture struct {
+	export          string
+	session         string
+	cacheOnlyExport string
+}
+
+// contractFixtures is an entry per harness in adapterRegistry — the production
+// one, in adapters.go, which is what `profiler --harness` resolves through.
 //
-// It is not a list anyone is asked to remember: TestEveryAdapterIsInTheRegistry
-// reads the package's own source for types implementing ProfilerAdapter and
-// requires each to be here. An adapter the CLI can dispatch is a type in this
-// package, so an adapter that escapes this table cannot be reached at all.
-var adapterRegistry = []adapterEntry{
-	{
-		name:            "claude_code",
-		newAdapter:      func(export string) ProfilerAdapter { return ClaudeCodeAdapter{OtelExportFile: export} },
+// Keyed by name rather than listed as adapters, so this file cannot hold a
+// harness the CLI does not ship or miss one it does: contractEntries walks the
+// production registry and fails on any harness with nothing here. That closes
+// the gap a test-local registry left open, where an adapter could be
+// dispatchable and unasserted at the same time.
+var contractFixtures = map[string]contractFixture{
+	"claude_code": {
 		export:          fixture("full_export.ndjson"),
 		session:         fixtureSession,
 		cacheOnlyExport: fixture("cache_only.json"),
 	},
+}
+
+// contractEntries pairs every registered adapter with its fixtures.
+//
+// A registered harness with no fixtures is a failure and not a skip: an adapter
+// the CLI can dispatch and this file cannot assert anything over is the state
+// the contract exists to refuse, and skipping it would report the suite green.
+func contractEntries(t *testing.T) []adapterEntry {
+	t.Helper()
+	entries := make([]adapterEntry, 0, len(adapterRegistry))
+	for _, registered := range adapterRegistry {
+		f, ok := contractFixtures[registered.name]
+		if !ok {
+			t.Errorf("%q is in the production registry and has no contract fixtures: the CLI "+
+				"can dispatch it and its three obligations are asserted over nothing",
+				registered.name)
+			continue
+		}
+		entries = append(entries, adapterEntry{
+			name:            registered.name,
+			newAdapter:      registered.new,
+			export:          f.export,
+			session:         f.session,
+			cacheOnlyExport: f.cacheOnlyExport,
+		})
+	}
+	return entries
 }
 
 // contractOpts are the capture options every check below uses. Neither field
@@ -306,9 +345,9 @@ func tokenCountKeys(tc TokenCounts) (map[string]string, error) {
 // all three rules.
 func TestAdapterContract(t *testing.T) {
 	if len(adapterRegistry) == 0 {
-		t.Fatal("the registry is empty, so every rule below holds over nothing")
+		t.Fatal("the production registry is empty, so every rule below holds over nothing")
 	}
-	for _, e := range adapterRegistry {
+	for _, e := range contractEntries(t) {
 		t.Run(e.name, func(t *testing.T) {
 			for _, violation := range adapterContractViolations(e) {
 				t.Error(violation)
@@ -369,19 +408,51 @@ func TestEveryAdapterIsInTheRegistry(t *testing.T) {
 
 	registered := make(map[string]bool, len(adapterRegistry))
 	for _, e := range adapterRegistry {
-		registered[concreteTypeName(e.newAdapter(""))] = true
+		registered[concreteTypeName(e.new(""))] = true
 	}
 
 	for _, name := range defined {
 		if !registered[name] {
 			t.Errorf("%s implements ProfilerAdapter and is not in adapterRegistry: "+
-				"its probe/capture agreement, its session-id refusal and its token "+
-				"counts are asserted nowhere", name)
+				"the CLI cannot dispatch it, and its probe/capture agreement, its "+
+				"session-id refusal and its token counts are asserted nowhere", name)
 		}
 	}
 	if len(registered) != len(defined) {
 		t.Errorf("%d types registered, %d adapters defined in the package: an entry names "+
 			"something the package does not define", len(registered), len(defined))
+	}
+}
+
+// TestNoAdapterEscapesIntoTheCommand closes the gap the scan above cannot see.
+//
+// The scan makes this package's source the denominator, which is sound only
+// while every dispatchable adapter is a type in this package. An adapter
+// defined in the command's own package would be dispatchable and invisible
+// here — a `package profiler` test cannot import `package main` to enumerate
+// its types. It can read its source, though, and the answer for any adapter
+// found there is the same one: it belongs in this package, registered, where
+// the contract reaches it.
+//
+// With the registry owning construction there is no switch in the command to
+// add a case to, so this is the remaining way an adapter could get in.
+func TestNoAdapterEscapesIntoTheCommand(t *testing.T) {
+	sources, err := packageSources("cmd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) == 0 {
+		t.Fatal("no sources found under cmd/, so this check reads nothing")
+	}
+
+	defined, err := adapterTypesIn(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range defined {
+		t.Errorf("%s implements ProfilerAdapter and is defined in the command's package, "+
+			"where adapterRegistry and this table cannot reach it: an adapter belongs in "+
+			"package profiler and in the registry, which is what makes it dispatchable", name)
 	}
 }
 
@@ -570,20 +641,32 @@ func (s stubAdapter) Capture(sessionID string, _ CaptureOpts) (Profile, error) {
 	}, nil
 }
 
+// advertising is a capability report covering every signal a profile carries,
+// claiming the named ones from a source and marking the rest "none".
+//
+// Derived from SignalStates rather than written out, because a stub's report is
+// required to enumerate every signal the profile has: a hand-written map here
+// would fall one signal behind the profile the first time one was added, and
+// every stub below would then be refused for a reason none of them is about.
+func advertising(sources map[MetricName]MetricSource) map[MetricName]MetricSource {
+	capabilities := map[MetricName]MetricSource{}
+	for metric := range (Profile{}).SignalStates() {
+		capabilities[metric] = SourceNone
+	}
+	for metric, source := range sources {
+		capabilities[metric] = source
+	}
+	return capabilities
+}
+
 // honestStub keeps all three rules: it refuses an empty session, advertises
 // exactly the one signal it delivers, and reports no count it did not read.
 func honestStub() stubAdapter {
 	return stubAdapter{
-		harness: "stub",
-		capabilities: map[MetricName]MetricSource{
-			MetricTokens:          SourceOtel,
-			MetricToolCalls:       SourceNone,
-			MetricSkillActivation: SourceNone,
-			MetricTiming:          SourceNone,
-			MetricAttribution:     SourceNone,
-		},
-		tokens:      PresentTokenResult(TokenCounts{Input: Count(10), Output: Count(5)}, string(SourceOtel)),
-		cacheTokens: PresentTokenResult(TokenCounts{CacheRead: Count(7)}, string(SourceOtel)),
+		harness:      "stub",
+		capabilities: advertising(map[MetricName]MetricSource{MetricTokens: SourceOtel}),
+		tokens:       PresentTokenResult(TokenCounts{Input: Count(10), Output: Count(5)}, string(SourceOtel)),
+		cacheTokens:  PresentTokenResult(TokenCounts{CacheRead: Count(7)}, string(SourceOtel)),
 	}
 }
 
@@ -609,13 +692,7 @@ func TestTheContractTableCanFail(t *testing.T) {
 	overAdvertising.tokens = UnknownTokenResult("schema not yet verified; token fields are unmapped")
 
 	underAdvertising := honestStub()
-	underAdvertising.capabilities = map[MetricName]MetricSource{
-		MetricTokens:          SourceNone,
-		MetricToolCalls:       SourceNone,
-		MetricSkillActivation: SourceNone,
-		MetricTiming:          SourceNone,
-		MetricAttribution:     SourceNone,
-	}
+	underAdvertising.capabilities = advertising(nil)
 
 	acceptsAnySession := honestStub()
 	acceptsAnySession.acceptsNoSession = true
@@ -655,9 +732,13 @@ func TestTheContractTableCanFail(t *testing.T) {
 			want:  `the cache-only export carries no input count and the profile reports "input": 0`,
 		},
 		{
-			name:  "advertises nothing at all",
+			name: "advertises nothing at all",
+			// The count is the profile's own, not a literal: the message must
+			// stay true when a signal is added, and a written-down number here
+			// would pass the case for the wrong reason or fail it for one.
 			entry: stubEntry("advertises-nothing", advertisesNothing),
-			want:  "the capability report covers 0 signals and the profile carries 5",
+			want: fmt.Sprintf("the capability report covers 0 signals and the profile carries %d",
+				len((Profile{}).SignalStates())),
 		},
 		{
 			name:  "answers to a name other than the one it is registered under",
@@ -695,13 +776,7 @@ func TestTheContractTableAcceptsAnHonestAdapter(t *testing.T) {
 // no cache-only export, and one that advertises tokens may not.
 func TestAnAdapterWithNoTokenSignalNeedsNoCacheExport(t *testing.T) {
 	noTokens := honestStub()
-	noTokens.capabilities = map[MetricName]MetricSource{
-		MetricTokens:          SourceNone,
-		MetricToolCalls:       SourceNone,
-		MetricSkillActivation: SourceNone,
-		MetricTiming:          SourceNone,
-		MetricAttribution:     SourceNone,
-	}
+	noTokens.capabilities = advertising(nil)
 	noTokens.tokens = UnknownTokenResult("this harness exports no token counts")
 
 	exempt := stubEntry("no-token-signal", noTokens)

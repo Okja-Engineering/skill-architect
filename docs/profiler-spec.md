@@ -27,7 +27,7 @@ const (
 type RawMetricResult struct {
     State  MetricState `json:"state"`
     Reason string      `json:"reason,omitempty"` // present when State != "present"
-    Source string      `json:"source,omitempty"` // "otel" | "hooks" | "session_data" | "server_api" | "sqlite"
+    Source string      `json:"source,omitempty"` // "otel" | "hooks" | "hooks_estimated" | "session_data" | "server_api" | "sqlite"
 }
 
 // One wrapper per metric category. Value is a pointer wherever the payload is a
@@ -56,14 +56,20 @@ type AttributionResult struct {
     RawMetricResult
     Value *AttributionData `json:"value,omitempty"`
 }
+
+type EstimatedTokensResult struct {
+    RawMetricResult
+    Value *EstimatedTokens `json:"value,omitempty"`
+}
 ```
 
 Adapters build results through the constructors rather than setting `State` by
 hand. The three OTel signals have all three constructors —
 `PresentTokenResult`/`UnknownTokenResult`/`ErrorTokenResult`, and the same for
-tool calls and timing. `ActivationResult` and `AttributionResult` have only
-`Present…` and `Unknown…`: they are a property of the harness and of the
-adapter, not of any export, so no export can fail them.
+tool calls and timing. `ActivationResult`, `AttributionResult` and
+`EstimatedTokensResult` have only `Present…` and `Unknown…`: they are a property
+of the harness and of the adapter, not of any export, so no export can fail
+them.
 
 **Rules:**
 - `State == "present"` → `Value` must be populated, `Reason` must be empty.
@@ -79,11 +85,12 @@ Declared upfront by each adapter after probing its environment:
 type MetricName string
 
 const (
-    MetricTokens          MetricName = "tokens"
-    MetricToolCalls       MetricName = "tool_calls"
-    MetricSkillActivation MetricName = "skill_activation"
-    MetricTiming          MetricName = "timing"
-    MetricAttribution     MetricName = "attribution"
+    MetricTokens                 MetricName = "tokens"
+    MetricToolCalls              MetricName = "tool_calls"
+    MetricSkillActivation        MetricName = "skill_activation"
+    MetricTiming                 MetricName = "timing"
+    MetricAttribution            MetricName = "attribution"
+    MetricEstimatedContextTokens MetricName = "estimated_context_tokens"
 )
 
 type CapabilityReport struct {
@@ -96,14 +103,20 @@ type CapabilityReport struct {
 type MetricSource string
 
 const (
-    SourceOtel       MetricSource = "otel"
-    SourceHooks      MetricSource = "hooks"
-    SourceSessionData MetricSource = "session_data"
-    SourceServerAPI  MetricSource = "server_api"
-    SourceSQLite     MetricSource = "sqlite"
-    SourceNone       MetricSource = "none"
+    SourceOtel           MetricSource = "otel"
+    SourceHooks          MetricSource = "hooks"
+    SourceHooksEstimated MetricSource = "hooks_estimated"  // estimated over hook payloads, never measured
+    SourceSessionData    MetricSource = "session_data"
+    SourceServerAPI      MetricSource = "server_api"
+    SourceSQLite         MetricSource = "sqlite"
+    SourceNone           MetricSource = "none"
 )
 ```
+
+`hooks_estimated` is a source of its own rather than a note on `hooks` because
+an estimate and a measurement must not pool. A reader grouping profiles by
+source has to be able to exclude derived numbers without knowing which signal
+they came from.
 
 **Capability vs result:** `CapabilityReport` says what the adapter can produce for the input it was given; a metric result says what it did produce. For an adapter whose capability is derived from one resolution of one input — which is what the Claude Code adapter does, and what AC9 requires — the two cannot disagree: a capability is `otel` exactly when that signal is `present` with that source, and `none` exactly when it is `unknown` or `error`. An adapter that probed one thing and captured another is free to differ, and that is the defect AC9 exists to catch, not a licence.
 
@@ -179,14 +192,23 @@ produces a profile that claims a measurement nobody made.
    advertises no token signal is exempt from the second half, and only that
    adapter.
 
-These are enforced, not documented. `profiler/adapter_contract_test.go` holds a
-registry of every adapter the package ships and asserts all three over each one;
-registering an adapter means naming an export it reads and an export carrying
-only cache counts, so an adapter with no input for which its own claims hold
-cannot be registered. The registry is checked against the package's own source
-for types implementing `ProfilerAdapter`, so an adapter cannot be added without
-entering the table. The table's ability to fail is asserted on every run,
-against stub adapters built to break one obligation each.
+These are enforced, not documented. `profiler/adapters.go` holds
+`adapterRegistry`, the one list of harnesses the profiler ships;
+`profiler.NewAdapter` is how the CLI resolves `--harness`, and
+`profiler.HarnessNames` is where its help text and its refusal both get the set
+they name. `profiler/adapter_contract_test.go` walks that registry and asserts
+all three obligations over every entry, pairing each with the exports its claims
+are asserted over — one the adapter reads, and one carrying only cache counts —
+so an adapter with no input for which its own claims hold cannot ship.
+
+Three checks keep the denominator honest. A registered harness with no fixtures
+is a failure, not a skip. The registry is checked against the package's own
+source for types implementing `ProfilerAdapter`, so an adapter cannot be added
+without entering it. And the command's package is scanned for adapter types too:
+an adapter defined there would be dispatchable and unreachable by the contract,
+so it is refused — adapters live in `package profiler` and in the registry,
+which is what makes them dispatchable at all. The table's ability to fail is
+asserted on every run, against stub adapters built to break one obligation each.
 
 ## Serialized profile format
 
@@ -207,6 +229,12 @@ type Profile struct {
     SkillActivation ActivationResult  `json:"skill_activation"`
     Timing          TimingResult      `json:"timing"`
     Attribution     AttributionResult `json:"attribution"`
+
+    // A pointer, so a profile that estimated nothing has no key at all.
+    // `omitempty` does nothing on a struct: held by value this would put
+    // `"estimated_context_tokens":{"state":""}` on every profile, and `""` is
+    // not a member of the state vocabulary.
+    EstimatedContextTokens *EstimatedTokensResult `json:"estimated_context_tokens,omitempty"`
 }
 
 // Each count is a pointer: a count the export said nothing about has no key in
@@ -224,6 +252,9 @@ type ToolCallEntry struct {
     Name      string `json:"name"`
     Timestamp string `json:"timestamp"`
     Success   bool   `json:"success"`
+    ErrorType string `json:"error_type,omitempty"`  // the source's classification of a failure
+    Count     int    `json:"count,omitempty"`       // aggregate for a delta metric; absent = one call
+    ID        string `json:"id,omitempty"`          // tool_use_id when the source supplies one
 }
 
 type ActivationEntry struct {
@@ -245,14 +276,33 @@ type AttributionData struct {
 }
 
 type Attribution struct {
-    Target    string `json:"target"`     // tool call ID or output identifier
-    SkillName string `json:"skill_name"`
+    Target        string `json:"target"`     // tool call ID or output identifier
+    SkillName     string `json:"skill_name"`
+    Category      string `json:"category,omitempty"`        // skill | mcp | cli | subagent | tool
+    Detail        string `json:"detail,omitempty"`          // how it was derived, e.g. "file" for a path-inferred link
+    OperationName string `json:"operation_name,omitempty"`  // the source's operation, e.g. "execute_tool"
+    Confidence    string `json:"confidence,omitempty"`      // inferred | observed
+}
+
+// A chars/4 estimate over the payload bytes a hook carried. A relative signal,
+// comparable between two runs of the same harness, and never a billed count.
+// It is its own signal rather than a field inside TokenCounts, because
+// TokenCounts is what was measured: folded in there it would be averaged with
+// measurements, and `tokens` could no longer stay honestly "unknown" on a
+// harness that exposes only hook payloads.
+type EstimatedTokens struct {
+    Total int64 `json:"total"`
 }
 ```
 
+`Confidence` is the honesty field on an attribution: a link derived from a file
+path a skill happens to own is `inferred`, and one read from telemetry naming
+the skill is `observed`. A reader that cannot tell them apart has to treat every
+attribution as a guess, which makes the whole signal unusable.
+
 **Serialization rules:**
 - Profile is JSON. Pretty-printed for human readability, but parsing is canonical.
-- `schema: "skill-architect/profile/v1"` is required. Future versions bump the suffix.
+- `schema: "skill-architect/profile/v1"` is required. Future versions bump the suffix. The rule for bumping it: v1 stays while a v1 reader is merely *ignorant* of a new key, and v2 is required when a v1 reader would be *wrong*. Every key 0.5.0 adds — `error_type`, `count`, `id`, the four attribution fields, `estimated_context_tokens` — is optional and absent when it was not read, so a v1 reader skips what it does not know and is right about everything it does. A signal that serialized an empty result on every profile would break that, because its `state` would be outside the vocabulary a v1 reader walks; that is why the estimate is a pointer.
 - `snapshot_hash` is whatever the caller passed to `--snapshot`, copied into the profile verbatim. The profiler neither hashes nor validates `--skill-dir` against it; the caller owns that correspondence. F04 is expected to compare only profiles carrying the same `snapshot_hash`.
 - A profile with all metrics `unknown` is valid — it honestly reports that no telemetry was available.
 - A profile must round-trip: `Marshal → Unmarshal → Marshal` produces identical JSON (modulo key ordering).

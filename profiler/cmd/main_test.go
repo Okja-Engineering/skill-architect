@@ -112,8 +112,8 @@ func TestCapture_ExitStatusSaysWhetherAnythingWasRead(t *testing.T) {
 // is what a second source is — so the mixed profile is pinned here, over a
 // synthetic profile, where it can be reached at all.
 func TestCaptureExitCode_TwoMeansNothingWasReadAndSomethingFailed(t *testing.T) {
-	// In SignalStates order: tokens, tool calls, skill activation, timing,
-	// attribution.
+	// In profile field order: tokens, tool calls, skill activation, timing,
+	// attribution, estimated context tokens.
 	profileWith := func(states ...profiler.MetricState) profiler.Profile {
 		t.Helper()
 		var p profiler.Profile
@@ -122,6 +122,11 @@ func TestCaptureExitCode_TwoMeansNothingWasReadAndSomethingFailed(t *testing.T) 
 		p.SkillActivation.State = states[2]
 		p.Timing.State = states[3]
 		p.Attribution.State = states[4]
+		// The estimate is the one signal a profile can leave out entirely. It
+		// is given a result here so that every state below is reachable for
+		// it; the absent shape is a case of its own.
+		p.EstimatedContextTokens = &profiler.EstimatedTokensResult{}
+		p.EstimatedContextTokens.State = states[5]
 		if got := len(p.SignalStates()); got != len(states) {
 			t.Fatalf("the profile carries %d signals and these cases set %d — a new signal must be set here too",
 				got, len(states))
@@ -133,23 +138,35 @@ func TestCaptureExitCode_TwoMeansNothingWasReadAndSomethingFailed(t *testing.T) 
 		unknown = profiler.MetricUnknown
 		failed  = profiler.MetricError
 	)
+
+	// What every claude_code capture actually looks like: the estimate was
+	// never made, so the key is absent rather than carrying a state somebody
+	// assigned. An absent estimate must count as unknown and not as a failure,
+	// or a capture that read nothing would exit 2 for the wrong reason.
+	noEstimate := profileWith(failed, failed, unknown, failed, unknown, unknown)
+	noEstimate.EstimatedContextTokens = nil
+
 	for _, tc := range []struct {
 		name  string
 		p     profiler.Profile
 		want  int
 		about string
 	}{
-		{"every signal failed", profileWith(failed, failed, failed, failed, failed), 2,
+		{"every signal failed", profileWith(failed, failed, failed, failed, failed, failed), 2,
 			"nothing was read and the export was supplied"},
-		{"the OTel signals failed and the rest are unknown", profileWith(failed, failed, unknown, failed, unknown), 2,
+		{"the OTel signals failed and the rest are unknown", profileWith(failed, failed, unknown, failed, unknown, unknown), 2,
 			"the shape a claude_code capture takes when its export cannot be used"},
-		{"one signal read, one failed", profileWith(present, failed, unknown, unknown, unknown), 0,
+		{"the OTel signals failed and no estimate was ever made", noEstimate, 2,
+			"an estimate nobody made is unknown, not a signal that failed"},
+		{"one signal read, one failed", profileWith(present, failed, unknown, unknown, unknown, unknown), 0,
 			"the capture produced something, so a wrapper must not treat it as a dead run"},
-		{"one signal read, the rest unknown", profileWith(unknown, present, unknown, unknown, unknown), 0,
+		{"one signal read, the rest unknown", profileWith(unknown, present, unknown, unknown, unknown, unknown), 0,
 			"a signal was read"},
-		{"every signal read", profileWith(present, present, present, present, present), 0,
+		{"only the estimate was read", profileWith(unknown, unknown, unknown, unknown, unknown, present), 0,
+			"an estimate is a reading — a capture that produced one is not a dead run"},
+		{"every signal read", profileWith(present, present, present, present, present, present), 0,
 			"nothing failed"},
-		{"every signal unknown", profileWith(unknown, unknown, unknown, unknown, unknown), 0,
+		{"every signal unknown", profileWith(unknown, unknown, unknown, unknown, unknown, unknown), 0,
 			"no telemetry was configured — an answer about the session, not a failed run"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -297,8 +314,13 @@ func TestProbe_SaysOnStderrWhyACapabilityIsNone(t *testing.T) {
 			if err := json.Unmarshal(out, &report); err != nil {
 				t.Fatalf("stdout is not a capability report: %v\n%s", err, out)
 			}
-			if len(report.Capabilities) != 5 {
-				t.Errorf("report covers %d capabilities, want 5", len(report.Capabilities))
+			// One capability per signal a profile carries, asked of the profile
+			// rather than written down: the report is the denominator the
+			// probe/capture agreement is walked over, and a literal here would
+			// stop noticing a report that fell behind.
+			if want := len(profiler.Profile{}.SignalStates()); len(report.Capabilities) != want {
+				t.Errorf("report covers %d capabilities, want %d — one per signal the profile carries",
+					len(report.Capabilities), want)
 			}
 
 			noise := strings.TrimSpace(stderr.String())

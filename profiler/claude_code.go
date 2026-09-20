@@ -186,6 +186,12 @@ func (a ClaudeCodeAdapter) capabilityReport(sig otelSignals) CapabilityReport {
 			// activation or attribution signal whatever the OTel configuration.
 			MetricSkillActivation: SourceNone,
 			MetricAttribution:     SourceNone,
+			// An estimate is derived from hook payloads, and this adapter reads
+			// an OTel export. It has nothing to estimate over, so it says so
+			// rather than leaving the signal out: the report enumerates every
+			// signal a profile carries, and a signal nobody advertised is one
+			// no caller can tell was considered.
+			MetricEstimatedContextTokens: SourceNone,
 		},
 	}
 }

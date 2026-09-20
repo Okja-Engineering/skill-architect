@@ -25,30 +25,43 @@ const (
 type RawMetricResult struct {
 	State  MetricState `json:"state"`
 	Reason string      `json:"reason,omitempty"` // present when State != "present"
-	Source string      `json:"source,omitempty"` // "otel" | "hooks" | "session_data" | "server_api" | "sqlite"
+	Source string      `json:"source,omitempty"` // "otel" | "hooks" | "hooks_estimated" | "session_data" | "server_api" | "sqlite"
 }
 
 // MetricName identifies a runtime signal category.
 type MetricName string
 
+// Each name is also the profile's json key for that signal, so a capability
+// report and a profile name the same signal the same way.
 const (
 	MetricTokens          MetricName = "tokens"
 	MetricToolCalls       MetricName = "tool_calls"
 	MetricSkillActivation MetricName = "skill_activation"
 	MetricTiming          MetricName = "timing"
 	MetricAttribution     MetricName = "attribution"
+	// MetricEstimatedContextTokens is kept apart from MetricTokens because an
+	// estimate is not a count: it is derived from payload sizes, never billed,
+	// and a comparison that averaged the two together would report a number
+	// with no unit.
+	MetricEstimatedContextTokens MetricName = "estimated_context_tokens"
 )
 
 // MetricSource identifies where a metric value came from.
 type MetricSource string
 
 const (
-	SourceOtel        MetricSource = "otel"
-	SourceHooks       MetricSource = "hooks"
-	SourceSessionData MetricSource = "session_data"
-	SourceServerAPI   MetricSource = "server_api"
-	SourceSQLite      MetricSource = "sqlite"
-	SourceNone        MetricSource = "none"
+	SourceOtel  MetricSource = "otel"
+	SourceHooks MetricSource = "hooks"
+	// SourceHooksEstimated marks a value derived by estimation over hook
+	// payloads — chars/4 over what a hook carried — and never a measured or
+	// billed count. It is a distinct source rather than a note on the reason
+	// so that a reader grouping profiles by source cannot pool an estimate
+	// with a measurement.
+	SourceHooksEstimated MetricSource = "hooks_estimated"
+	SourceSessionData    MetricSource = "session_data"
+	SourceServerAPI      MetricSource = "server_api"
+	SourceSQLite         MetricSource = "sqlite"
+	SourceNone           MetricSource = "none"
 )
 
 // CapabilityReport declares what an adapter can produce after probing its environment.
@@ -162,10 +175,25 @@ type TokenCounts struct {
 func Count(n int) *int { return &n }
 
 // ToolCallEntry records a single tool invocation.
+//
+// The three optional fields are absent when the source did not carry them, so
+// a reader can tell "this harness does not report why a call failed" from "this
+// call failed for no reason". Failure itself is Success, which every source can
+// answer; ErrorType is the classification only some of them add.
 type ToolCallEntry struct {
 	Name      string `json:"name"`
 	Timestamp string `json:"timestamp"`
 	Success   bool   `json:"success"`
+	// ErrorType classifies a failure the way the source did (e.g. "timeout"),
+	// and is empty for a call that succeeded or a source that does not say.
+	ErrorType string `json:"error_type,omitempty"`
+	// Count carries the aggregate when the source is a delta-aggregated metric
+	// rather than one record per call. Absent means one call, which is what
+	// every per-record source reports.
+	Count int `json:"count,omitempty"`
+	// ID is the source's own identifier for the call (Claude Code's
+	// tool_use_id), which is what an attribution targets.
+	ID string `json:"id,omitempty"`
 }
 
 // ActivationEntry records a skill activation event.
@@ -188,9 +216,19 @@ type AttributionData struct {
 }
 
 // Attribution links a target (tool call ID or output) to a skill.
+//
+// Confidence is the honesty field: an attribution derived from a file path a
+// skill happens to own is a guess, and one read from telemetry that names the
+// skill is not. A reader that cannot tell them apart has to treat every
+// attribution as either, which makes the whole signal unusable. It is optional
+// because a source that only ever produces one kind has nothing to qualify.
 type Attribution struct {
-	Target    string `json:"target"`
-	SkillName string `json:"skill_name"`
+	Target        string `json:"target"`
+	SkillName     string `json:"skill_name"`
+	Category      string `json:"category,omitempty"`       // "skill" | "mcp" | "cli" | "subagent" | "tool"
+	Detail        string `json:"detail,omitempty"`         // how it was derived, e.g. "file" for a path-inferred link
+	OperationName string `json:"operation_name,omitempty"` // the source's operation, e.g. "execute_tool"
+	Confidence    string `json:"confidence,omitempty"`     // "inferred" | "observed"
 }
 
 // TokenResult is the metric result for token counts.
@@ -232,6 +270,43 @@ type AttributionResult struct {
 	Value *AttributionData `json:"value,omitempty"`
 }
 
+// EstimatedTokens is a chars/4 estimate over the payload bytes a hook carried.
+// It is a relative signal — comparable between two runs of the same harness —
+// and never a billed count.
+type EstimatedTokens struct {
+	Total int64 `json:"total"`
+}
+
+// EstimatedTokensResult is the metric result for an estimate.
+//
+// It is a signal of its own rather than a field inside TokenCounts, because
+// TokenCounts is what was measured. An estimate folded in there would be
+// averaged with measurements by anything reading the profile, and the result
+// would be a number with no unit. Keeping it out is what lets `tokens` stay
+// "unknown" on a harness that only exposes hook payloads, which is the true
+// answer about that harness.
+type EstimatedTokensResult struct {
+	RawMetricResult
+	Value *EstimatedTokens `json:"value,omitempty"`
+}
+
+// noEstimateReason is what an absent estimate says for itself.
+const noEstimateReason = "no context-token estimate was made for this session"
+
+// orAbsent is the result an estimate reports when none was made at all.
+//
+// Profile.EstimatedContextTokens is a pointer, so "nothing was estimated" is an
+// absent key rather than a result — and a nil pointer has no state to read.
+// Resolving it here, once, is what keeps the signal inside the closed
+// {present, unknown, error} vocabulary instead of giving every caller a fourth
+// case spelled "the pointer was nil".
+func (r *EstimatedTokensResult) orAbsent() EstimatedTokensResult {
+	if r == nil {
+		return UnknownEstimatedTokensResult(noEstimateReason)
+	}
+	return *r
+}
+
 // Profile is the serialized artifact that F04 reads. SnapshotHash is the
 // caller-supplied id labelling the skill version; it is recorded verbatim and
 // is not derived from, or validated against, SkillDir.
@@ -249,12 +324,25 @@ type Profile struct {
 	SkillActivation ActivationResult  `json:"skill_activation"`
 	Timing          TimingResult      `json:"timing"`
 	Attribution     AttributionResult `json:"attribution"`
+
+	// EstimatedContextTokens is a pointer, and that is load-bearing rather than
+	// stylistic: `omitempty` does nothing on a struct, so a value here would
+	// put `"estimated_context_tokens":{"state":""}` on every profile ever
+	// written — including every profile of a harness that estimates nothing —
+	// and `""` is not a member of the state vocabulary. A v1 reader walking
+	// the states would then be wrong rather than merely ignorant of a new key,
+	// which is the one thing that would force schema v2.
+	EstimatedContextTokens *EstimatedTokensResult `json:"estimated_context_tokens,omitempty"`
 }
 
 // SignalStates is the state of every signal in the profile, keyed by the name
-// the capability report uses. It is the one place the profile's five results
+// the capability report uses. It is the one place the profile's six results
 // are enumerated together, so a caller asking "did this capture read anything"
-// cannot walk four of them and believe it walked the set.
+// cannot walk five of them and believe it walked the set.
+//
+// Every result field on Profile appears here, and a test derives that set from
+// the struct by reflection and requires this map to equal it — so the list
+// below cannot be the one that was forgotten when a seventh signal arrives.
 func (p Profile) SignalStates() map[MetricName]MetricState {
 	return map[MetricName]MetricState{
 		MetricTokens:          p.Tokens.State,
@@ -262,6 +350,9 @@ func (p Profile) SignalStates() map[MetricName]MetricState {
 		MetricSkillActivation: p.SkillActivation.State,
 		MetricTiming:          p.Timing.State,
 		MetricAttribution:     p.Attribution.State,
+		// An estimate nobody made is "unknown", the same answer an export that
+		// carried nothing gives for every other signal.
+		MetricEstimatedContextTokens: p.EstimatedContextTokens.orAbsent().State,
 	}
 }
 
@@ -271,7 +362,12 @@ const ProfileSchema = "skill-architect/profile/v1"
 // AdapterVersion is the current adapter implementation version. It is
 // recorded in every CapabilityReport, so it is bumped whenever the adapter
 // changes what a profile contains for the same input — as 0.4.1, 0.4.2 and 0.4.3 all did.
-const AdapterVersion = "0.4.3"
+//
+// 0.5.0 is set once, here, for the whole release rather than per change:
+// several of the release's slices change what a profile contains, and a value
+// bumped by each of them would make adapter_version un-interpretable — a reader
+// could no longer tell which set of behaviours produced a profile.
+const AdapterVersion = "0.5.0"
 
 // MarshalJSON for Profile ensures the schema field is always set.
 func (p Profile) MarshalJSON() ([]byte, error) {
@@ -369,4 +465,26 @@ func PresentAttributionResult(v AttributionData, source string) AttributionResul
 // UnknownAttributionResult creates an AttributionResult with state "unknown".
 func UnknownAttributionResult(reason string) AttributionResult {
 	return AttributionResult{RawMetricResult: RawMetricResult{State: MetricUnknown, Reason: reason}}
+}
+
+// --- EstimatedTokensResult constructors ---
+//
+// There is no Error constructor, for the same reason ActivationResult has
+// none: an estimate is derived from payloads already in hand, so there is no
+// separate source that can fail it. A payload that could not be read fails the
+// signal that reads it.
+
+// PresentEstimatedTokensResult creates an EstimatedTokensResult with state
+// "present". The source names the estimation, not a meter: an adapter passing
+// anything other than SourceHooksEstimated here is claiming a measurement.
+func PresentEstimatedTokensResult(v EstimatedTokens, source string) EstimatedTokensResult {
+	return EstimatedTokensResult{
+		RawMetricResult: RawMetricResult{State: MetricPresent, Source: source},
+		Value:           &v,
+	}
+}
+
+// UnknownEstimatedTokensResult creates an EstimatedTokensResult with state "unknown".
+func UnknownEstimatedTokensResult(reason string) EstimatedTokensResult {
+	return EstimatedTokensResult{RawMetricResult: RawMetricResult{State: MetricUnknown, Reason: reason}}
 }

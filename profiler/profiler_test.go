@@ -2,8 +2,11 @@ package profiler
 
 import (
 	"encoding/json"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -144,8 +147,12 @@ func TestCapabilityReport_ClaudeCode_NoOtlpEnvelope(t *testing.T) {
 	adapter := ClaudeCodeAdapter{OtelExportFile: fixture("no_envelope.json")}
 	cap := adapter.Probe()
 
-	if len(cap.Capabilities) != 5 {
-		t.Fatalf("capability report covers %d signals, want 5", len(cap.Capabilities))
+	// The profile's own signal count is the denominator, not a literal: the
+	// rule is that a report covers every signal a profile carries, and a
+	// written-down number stops asserting that the moment one is added.
+	if want := len((Profile{}).SignalStates()); len(cap.Capabilities) != want {
+		t.Fatalf("capability report covers %d signals, want %d — one per signal the profile carries",
+			len(cap.Capabilities), want)
 	}
 	for metric, source := range cap.Capabilities {
 		if source != SourceNone {
@@ -441,11 +448,19 @@ func TestProfileSchemaField(t *testing.T) {
 }
 
 // The adapter version is a release surface: it goes into every profile, and
-// tests/test_skill.sh asserts the same number beside the five plugin manifests.
-// Pinning the literal here is what makes a forgotten bump fail rather than
-// quietly ship a 0.4.3 profile labelled as something else.
+// tests/test_skill.sh asserts the same literal. Pinning it here is what makes a
+// forgotten bump fail rather than quietly ship a profile labelled as something
+// else.
+//
+// It moves once per release, in the first slice that changes what a profile
+// contains — which is this one — rather than in the release slice at the end.
+// A value bumped by each slice that changed the profile would make
+// adapter_version un-interpretable, and one bumped only at the end would label
+// every profile built during the release as the previous one. The five plugin
+// manifests are a different surface and move at the release; they do not have
+// to agree with this until then.
 func TestAdapterVersionIsThisRelease(t *testing.T) {
-	const want = "0.4.3"
+	const want = "0.5.0"
 	if AdapterVersion != want {
 		t.Errorf("AdapterVersion = %q, want %q", AdapterVersion, want)
 	}
@@ -542,6 +557,18 @@ func TestNoAttributionValueInJSONForUnknown(t *testing.T) {
 // detection, or parsing implementation, so a rewrite of the adapter's internals
 // still has to satisfy them.
 
+// otelBackedSignals are the signals the Claude Code adapter reads out of the
+// OTel export, and so the only ones an unusable export can turn into an error.
+// Every other signal is a property of the harness and of this adapter: no
+// export can fail a signal nothing tried to read in it, so it is unknown for
+// every input. A signal added here without a read behind it fails the cases
+// below rather than passing them, which is the safe direction for a list.
+var otelBackedSignals = map[MetricName]bool{
+	MetricTokens:    true,
+	MetricToolCalls: true,
+	MetricTiming:    true,
+}
+
 // capturedSignal is one signal's state paired with whether the profile actually
 // carries a value for it, so the contract can be checked over every capability
 // the report enumerates instead of a hand-maintained subset.
@@ -551,12 +578,17 @@ type capturedSignal struct {
 }
 
 func capturedSignals(p Profile) map[MetricName]capturedSignal {
+	estimate := p.EstimatedContextTokens.orAbsent()
 	return map[MetricName]capturedSignal{
 		MetricTokens:          {p.Tokens.RawMetricResult, p.Tokens.Value != nil},
 		MetricToolCalls:       {p.ToolCalls.RawMetricResult, len(p.ToolCalls.Value) > 0},
 		MetricSkillActivation: {p.SkillActivation.RawMetricResult, len(p.SkillActivation.Value) > 0},
 		MetricTiming:          {p.Timing.RawMetricResult, p.Timing.Value != nil},
 		MetricAttribution:     {p.Attribution.RawMetricResult, p.Attribution.Value != nil},
+		// The estimate is the one signal a profile can omit entirely, so its
+		// state is read through the same nil-aware accessor SignalStates uses
+		// rather than being re-derived here with a second rule.
+		MetricEstimatedContextTokens: {estimate.RawMetricResult, estimate.Value != nil},
 	}
 }
 
@@ -744,9 +776,12 @@ func TestCaptureDeliversEverySignalProbeAdvertises(t *testing.T) {
 			}
 
 			// The capability report is the denominator: every signal the
-			// adapter knows about is walked, none assumed.
-			if len(report.Capabilities) != 5 {
-				t.Fatalf("capability report covers %d signals, want 5", len(report.Capabilities))
+			// adapter knows about is walked, none assumed. Its size is the
+			// profile's own, so a report that fell a signal behind the profile
+			// fails here rather than narrowing the walk below.
+			if want := len(profile.SignalStates()); len(report.Capabilities) != want {
+				t.Fatalf("capability report covers %d signals, want %d — one per signal the profile carries",
+					len(report.Capabilities), want)
 			}
 
 			signals := capturedSignals(profile)
@@ -796,11 +831,14 @@ func TestCaptureDeliversEverySignalProbeAdvertises(t *testing.T) {
 				if got.raw.Reason == "" {
 					t.Errorf("%s: state %q must carry a reason", metric, got.raw.State)
 				}
-				// Skill activation and attribution are a property of the
-				// harness, not of this export, so they are always unknown.
-				want := tc.absent
-				if metric == MetricSkillActivation || metric == MetricAttribution {
-					want = MetricUnknown
+				// Only a signal this adapter reads out of the export can be
+				// failed by one. The rest are properties of the harness and of
+				// this adapter — nothing tried to read them in the file, so an
+				// unusable file is not their failure — and they stay unknown
+				// whatever the input.
+				want := MetricUnknown
+				if otelBackedSignals[metric] {
+					want = tc.absent
 				}
 				if got.raw.State != want {
 					t.Errorf("%s: state = %q, want %q", metric, got.raw.State, want)
@@ -1528,4 +1566,390 @@ func TestToolCalls_TheBodyNamesTheEventAndEveryScopeIsWalked(t *testing.T) {
 func TestTokens_AsDoubleIsReadBeforeAsInt(t *testing.T) {
 	profile := capturedProfile(t, "as_double_wins_over_as_int.json")
 	assertTokenJSON(t, profile.Tokens.Value, `{"input":1523}`)
+}
+
+// --- The 0.5.0 profile surface ------------------------------------------------
+//
+// 0.5.0 widens what a profile can carry: per-call error types and ids, a
+// category and confidence on an attribution, and an estimated context-token
+// count read from hook payloads rather than measured. The schema stays
+// `profile/v1` because each addition is optional and absent when unmeasured, so
+// a v1 reader is ignorant of them rather than wrong about them.
+//
+// "Absent when unmeasured" is the whole of that argument, and it is one
+// character away from being false — which is what the four tests below hold.
+
+// TestAProfileThatEstimatedNothingHasNoEstimateKey is the load-bearing one.
+//
+// `omitempty` does nothing on a struct in Go, so an EstimatedTokensResult held
+// by value would put `"estimated_context_tokens":{"state":""}` on every profile
+// ever written, including every profile of a harness that estimates nothing.
+// `""` is not a member of {present, unknown, error}: a v1 reader walking the
+// state vocabulary would be wrong rather than ignorant, and the schema would
+// have to go to v2 in the same release that first ships the tool whose job is
+// reading stored v1 profiles.
+//
+// Both directions are asserted. Absence alone is also what a profile with no
+// such field at all reports, so the key must appear when an estimate was made.
+func TestAProfileThatEstimatedNothingHasNoEstimateKey(t *testing.T) {
+	const key = "estimated_context_tokens"
+
+	t.Run("a capture that estimated nothing", func(t *testing.T) {
+		// A real capture, not a literal: the rule is about what this adapter
+		// writes, and a zero value cannot show that it left the field alone.
+		profile := capturedProfile(t, "full_export.ndjson")
+		if _, ok := profileKeys(t, profile)[key]; ok {
+			t.Errorf("a profile carrying no estimate still has a %q key: "+
+				"an empty result is a state outside {present, unknown, error}", key)
+		}
+	})
+
+	t.Run("a profile of nothing at all", func(t *testing.T) {
+		if _, ok := profileKeys(t, Profile{})[key]; ok {
+			t.Errorf("the zero profile has a %q key, so every profile does", key)
+		}
+	})
+
+	t.Run("a capture that did estimate", func(t *testing.T) {
+		// Without this, deleting the field outright passes the two above.
+		estimated := PresentEstimatedTokensResult(EstimatedTokens{Total: 4096}, string(SourceHooksEstimated))
+		profile := Profile{EstimatedContextTokens: &estimated}
+		raw, ok := profileKeys(t, profile)[key]
+		if !ok {
+			t.Fatalf("a profile carrying an estimate has no %q key: the estimate is unreadable", key)
+		}
+		if !strings.Contains(raw, `"total":4096`) {
+			t.Errorf("%s = %s, want it to carry the estimated total", key, raw)
+		}
+		if !strings.Contains(raw, `"source":"hooks_estimated"`) {
+			t.Errorf("%s = %s, want the estimate labelled as an estimate and not as a measurement", key, raw)
+		}
+	})
+}
+
+// profileKeys is the profile's own view of itself: the top-level keys a reader
+// of the JSON finds. Asked of the serialized form because absence is expressed
+// by omitempty, and a nil pointer and a zero struct are the same field until
+// they are marshalled.
+func profileKeys(t *testing.T, p Profile) map[string]string {
+	t.Helper()
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatal(err)
+	}
+	keys := make(map[string]string, len(raw))
+	for k, v := range raw {
+		keys[k] = string(v)
+	}
+	return keys
+}
+
+// TestSignalStatesCoversEveryResultFieldOnTheProfile derives the signal set
+// from the profile's own fields and requires SignalStates to be exactly it.
+//
+// SignalStates exists, by its own comment, so that a caller asking "did this
+// capture read anything" cannot walk four signals and believe it walked the
+// set. A test that compared it against a written-down list of six would
+// recreate that defect one field later: the list and the struct would be two
+// places, and the next field would be added to one of them.
+//
+// The derivation is structural — a field is a signal when its type, or the type
+// it points at, embeds RawMetricResult — so it also pins the json tag to the
+// MetricName constant, which is the agreement the capability report is keyed by.
+func TestSignalStatesCoversEveryResultFieldOnTheProfile(t *testing.T) {
+	profile := capturedProfile(t, "full_export.ndjson")
+
+	derived := resultSignalStates(profile)
+	if len(derived) == 0 {
+		t.Fatal("the derivation found no result field on Profile, so this check reads nothing")
+	}
+	if !reflect.DeepEqual(profile.SignalStates(), derived) {
+		t.Errorf("SignalStates() and the profile's own result fields disagree.\n"+
+			"SignalStates(): %v\nfields:         %v\n"+
+			"every result field on Profile is a signal, and a caller that walks "+
+			"SignalStates must not be walking a subset of them",
+			profile.SignalStates(), derived)
+	}
+
+	// The same over a profile that read nothing, because the nil estimate is
+	// the case a value-typed field would silently change.
+	empty := Profile{}
+	if !reflect.DeepEqual(empty.SignalStates(), resultSignalStates(empty)) {
+		t.Errorf("SignalStates() and the result fields disagree on a profile of nothing.\n"+
+			"SignalStates(): %v\nfields:         %v", empty.SignalStates(), resultSignalStates(empty))
+	}
+}
+
+// resultSignalStates is every signal a profile-shaped value carries, derived
+// from its fields rather than from any list.
+//
+// A field is a signal when its type — or, for an optional signal, the type it
+// points at — embeds RawMetricResult. The signal's name is its json tag, which
+// is what a reader of the profile and the capability report both key by. A nil
+// optional result is "unknown": nothing was read for that signal, which is
+// exactly what the absent key says.
+func resultSignalStates(v any) map[MetricName]MetricState {
+	raw := reflect.TypeOf(RawMetricResult{})
+	rv := reflect.ValueOf(v)
+	rt := rv.Type()
+
+	states := map[MetricName]MetricState{}
+	for i := range rt.NumField() {
+		field := rt.Field(i)
+		value := rv.Field(i)
+
+		absent := false
+		if field.Type.Kind() == reflect.Pointer {
+			absent = value.IsNil()
+			if !absent {
+				value = value.Elem()
+			}
+		}
+
+		embedded, ok := embeddedField(derefType(field.Type), raw)
+		if !ok {
+			continue
+		}
+
+		name := MetricName(strings.Split(field.Tag.Get("json"), ",")[0])
+		if absent {
+			states[name] = MetricUnknown
+			continue
+		}
+		states[name] = value.FieldByIndex(embedded.Index).Interface().(RawMetricResult).State
+	}
+	return states
+}
+
+func derefType(t reflect.Type) reflect.Type {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t
+}
+
+// embeddedField finds an anonymous field of exactly this type, matching on the
+// type rather than on a field name: a result type is one that embeds
+// RawMetricResult, and renaming nothing about it should change that answer.
+func embeddedField(in, want reflect.Type) (reflect.StructField, bool) {
+	if in.Kind() != reflect.Struct {
+		return reflect.StructField{}, false
+	}
+	for i := range in.NumField() {
+		f := in.Field(i)
+		if f.Anonymous && f.Type == want {
+			return f, true
+		}
+	}
+	return reflect.StructField{}, false
+}
+
+// TestTheSignalDerivationFindsResultFields is the control for the derivation
+// above, which can only ever report "they agree" and would report exactly that
+// if it stopped recognising result fields — including if it recognised none.
+//
+// It is handed a shape carrying one of each thing the derivation must decide
+// about: a field that is not a result, a struct that is not one either, a
+// result held by value, an optional result that is present, and an optional
+// result that is absent.
+func TestTheSignalDerivationFindsResultFields(t *testing.T) {
+	estimate := PresentEstimatedTokensResult(EstimatedTokens{Total: 1}, string(SourceHooksEstimated))
+	shape := struct {
+		Harness    string                 `json:"harness"`
+		Capability CapabilityReport       `json:"capability"`
+		Tokens     TokenResult            `json:"tokens"`
+		Estimate   *EstimatedTokensResult `json:"estimated_context_tokens"`
+		Timing     *TimingResult          `json:"timing"`
+	}{
+		Tokens:   ErrorTokenResult("the export could not be read"),
+		Estimate: &estimate,
+	}
+
+	want := map[MetricName]MetricState{
+		MetricTokens:                 MetricError,
+		MetricEstimatedContextTokens: MetricPresent,
+		MetricTiming:                 MetricUnknown,
+	}
+	if got := resultSignalStates(shape); !reflect.DeepEqual(got, want) {
+		t.Errorf("the derivation found %v, want %v: a field is a signal when it embeds "+
+			"RawMetricResult, a nil optional signal is unknown, and nothing else counts", got, want)
+	}
+}
+
+// TestProfileRoundTripsEveryKeyTheSurfaceAdds is AC6 over the widened profile.
+// The keys 0.5.0 adds are optional, which means a round trip that does not
+// carry them proves nothing about them.
+func TestProfileRoundTripsEveryKeyTheSurfaceAdds(t *testing.T) {
+	estimate := PresentEstimatedTokensResult(EstimatedTokens{Total: 128000}, string(SourceHooksEstimated))
+	attribution := AttributionData{Attributions: []Attribution{{
+		Target:        "toolu_01",
+		SkillName:     "skill-audit",
+		Category:      "skill",
+		Detail:        "file",
+		OperationName: "execute_tool",
+		Confidence:    "inferred",
+	}}}
+	profile := Profile{
+		ProfiledAt:   "2026-09-20T00:00:00Z",
+		Harness:      "claude_code",
+		SessionID:    fixtureSession,
+		SnapshotHash: "sha123",
+		SkillDir:     "/skills/my-skill",
+		Capability: CapabilityReport{
+			Harness:    "claude_code",
+			AdapterVer: AdapterVersion,
+			ProbedAt:   "2026-09-20T00:00:00Z",
+			Capabilities: map[MetricName]MetricSource{
+				MetricTokens: SourceOtel, MetricToolCalls: SourceOtel,
+				MetricSkillActivation: SourceNone, MetricTiming: SourceOtel,
+				MetricAttribution: SourceNone, MetricEstimatedContextTokens: SourceHooksEstimated,
+			},
+		},
+		Tokens: PresentTokenResult(TokenCounts{
+			Input: Count(10), Output: Count(5), CacheRead: Count(20480),
+			CacheCreation: Count(0), Reasoning: Count(3),
+		}, string(SourceOtel)),
+		ToolCalls: PresentToolCallResult([]ToolCallEntry{{
+			Name: "Bash", Timestamp: "2026-09-20T00:00:01Z", Success: false,
+			ErrorType: "timeout", Count: 3, ID: "toolu_01",
+		}}, string(SourceOtel)),
+		SkillActivation: PresentActivationResult([]ActivationEntry{{
+			SkillName: "skill-audit", Timestamp: "2026-09-20T00:00:02Z", Trigger: "skill_tool",
+		}}, string(SourceOtel)),
+		Timing: PresentTimingResult(TimingData{
+			StartTime: "2026-09-20T00:00:00Z", EndTime: "2026-09-20T00:00:10Z", TotalMs: 10000,
+		}, string(SourceOtel)),
+		Attribution:            PresentAttributionResult(attribution, string(SourceOtel)),
+		EstimatedContextTokens: &estimate,
+	}
+
+	first, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The round trip is vacuous over a key the document does not carry, so the
+	// document is checked for each one before it is reparsed.
+	for _, key := range []string{
+		`"error_type":"timeout"`, `"count":3`, `"id":"toolu_01"`,
+		`"category":"skill"`, `"detail":"file"`, `"operation_name":"execute_tool"`,
+		`"confidence":"inferred"`,
+		`"estimated_context_tokens"`, `"total":128000`, `"source":"hooks_estimated"`,
+		`"cache_read":20480`, `"cache_creation":0`, `"reasoning":3`,
+	} {
+		if !strings.Contains(string(first), key) {
+			t.Fatalf("the profile under test does not carry %s, so round-tripping it proves "+
+				"nothing about that key:\n%s", key, first)
+		}
+	}
+
+	var reparsed Profile
+	if err := json.Unmarshal(first, &reparsed); err != nil {
+		t.Fatal(err)
+	}
+	second, err := json.Marshal(reparsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Errorf("round-trip mismatch:\nfirst:  %s\nsecond: %s", first, second)
+	}
+}
+
+// TestTheDroppedTokenKeyRenameHasNotReturned holds a decision that is
+// invisible in the code it constrains.
+//
+// The unlanded 0.5.0 work renamed TokenCounts.CacheCreation, and its
+// `cache_creation` key, to a "cache write" spelling borrowed from another
+// harness's admin API. The user decided against it: the wire value this
+// harness emits is the name we already have, and a profile that renames it
+// reports a key no export ever carried. Nothing in the source says "that name
+// was considered and refused", so re-applying the rename from the same prior
+// art would look like progress. This is what says otherwise.
+//
+// Neither the needles nor this comment spell the refused name: the scan covers
+// the tree this file sits in, so a test that named what it refuses would refuse
+// itself. That is not a workaround — it is the scan proving it reads its own
+// directory, and TestTheRenameScanSeesTheRename proves it can still see a hit.
+func TestTheDroppedTokenKeyRenameHasNotReturned(t *testing.T) {
+	refused := []string{"cache" + "_write", "Cache" + "Write", "cache" + "Write"}
+
+	roots := []string{".", filepath.Join("..", "docs"), filepath.Join("..", "README.md")}
+	scanned := 0
+	for _, root := range roots {
+		found, files := scanFor(t, root, refused)
+		scanned += files
+		for _, hit := range found {
+			t.Errorf("%s: the dropped token-key rename is back — this harness emits "+
+				"cache_creation, and a profile that renames it reports a key no export carries", hit)
+		}
+	}
+	// A scan that read nothing reports nothing wrong.
+	if scanned < 20 {
+		t.Fatalf("the scan read %d files across %v, which is too few to have read the "+
+			"profiler, the docs and the readme", scanned, roots)
+	}
+}
+
+// TestTheRenameScanSeesTheRename is the control for the scan above, which can
+// only ever report "not found" and would report exactly that if it stopped
+// reading files. It is handed a tree containing the rename and one that does not.
+func TestTheRenameScanSeesTheRename(t *testing.T) {
+	needles := []string{"cache" + "_write"}
+
+	dirty := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dirty, "types.go"),
+		[]byte("type TokenCounts struct{ X int `json:\"cache"+"_write\"` }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if found, files := scanFor(t, dirty, needles); len(found) != 1 || files != 1 {
+		t.Errorf("the scan found %v in %d files, want one hit in one file: a scan that "+
+			"cannot see the rename reports every tree as clean", found, files)
+	}
+
+	clean := t.TempDir()
+	if err := os.WriteFile(filepath.Join(clean, "types.go"),
+		[]byte("type TokenCounts struct{ X int `json:\"cache"+"_creation\"` }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if found, _ := scanFor(t, clean, needles); len(found) != 0 {
+		t.Errorf("the scan reported %v in a tree that only carries the name we keep", found)
+	}
+}
+
+// scanFor walks a file or directory and reports every "path:line" carrying one
+// of the needles, together with how many files it actually read.
+func scanFor(t *testing.T, root string, needles []string) ([]string, int) {
+	t.Helper()
+	var hits []string
+	files := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files++
+		for n, line := range strings.Split(string(body), "\n") {
+			for _, needle := range needles {
+				if strings.Contains(line, needle) {
+					hits = append(hits, fmt.Sprintf("%s:%d: %s", path, n+1, strings.TrimSpace(line)))
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scanning %s: %v", root, err)
+	}
+	return hits, files
 }
