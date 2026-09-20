@@ -15,8 +15,11 @@
 #   an assertion's verdict is a function of repository state, and a suite that
 #   does not reach its summary says so.
 #
-# The suite list is a glob, so a fifth suite added tomorrow is covered the day
-# it lands. Both halves are read out of the source text by
+# The suite list is a glob, so a suite added tomorrow is covered the day it
+# lands — and every count this file compares against is read out of the CI
+# workflow or the README rather than written down here, so a suite added
+# tomorrow cannot leave a stale number behind that quietly stops guarding.
+# Both halves are read out of the source text by
 # tests/lib/audit-suites.sh: a verdict that cannot depend on the repository, and
 # a private copy of the harness — including a private EXIT trap — that a repair
 # to the shared one would never reach. Neither is answerable at runtime, and
@@ -92,11 +95,98 @@ for suite in tests/test_*.sh; do
   suite_count=$((suite_count + 1))
 done
 
-# The denominator. An empty or shrunken glob would make every per-suite check
-# below vacuously true, which is the failure this file exists to refuse.
-assert "tests/ still holds every suite this check is written against" \
-  test "$suite_count" -ge 5
+# The two other places the same list is written down, read out of those places
+# rather than restated here. Every count below is derived from one of them, so
+# there is no number in this file for the next suite to make wrong.
+WORKFLOW=.github/workflows/ci.yml
+
+# The suites the workflow runs, as a list that is allowed to be empty.
+#
+# `grep` exits 1 when it matches nothing, and a workflow that names no suites is
+# a state this file *reports* rather than one it dies on. That status used to
+# come out of the command substitution that derives the count, and `set -e`
+# killed the suite there, one line above the precondition written to refuse
+# exactly that — so the invariant failed closed through the abort guard and the
+# diagnostic naming the cause was lost. Finding nothing is an empty list here.
+# Whether an empty list is acceptable is the precondition's to say, and it is
+# the only thing that says it.
+workflow_suites() {
+  grep -oE 'tests/test_[A-Za-z0-9_]+\.sh' "$WORKFLOW" | sort -u || :
+}
+
+# The block the README tells a reader to run. A reader who follows a list that
+# is missing a suite never runs it, which is the same defect as a suite CI never
+# runs, one audience over.
+readme_test_block() {
+  awk '
+    /^Run the tests:$/ { found = 1; next }
+    found && /^```bash$/ { in_block = 1; next }
+    in_block && /^```$/ { exit }
+    in_block { print }
+  ' README.md
+}
+
+listed_in_the_readme() {
+  readme_test_block | grep -qF -- "$1"
+}
+
+workflow_suite_count="$(workflow_suites | wc -l | tr -d '[:space:]')"
+
+# The denominator, and it is a precondition: an empty or shrunken glob makes
+# every per-suite check below vacuously true, which is the failure this file
+# exists to refuse, and a vacuous check that only reports is not refused.
+#
+# It is derived rather than written down, and that is the whole repair. The
+# number used to be a floor — `-ge 6`, raised by hand each time a suite landed.
+# A branch adding the seventh suite did not touch this file, because nothing
+# made it: the floor still passed, one suite went unexamined, and removing a
+# suite altogether would have passed too. So the count this file expects is now
+# the number of suites the workflow runs, compared for *equality* rather than as
+# a bound. Equality in both directions, because each suite in the glob is also
+# required to be a step in the workflow below: the two lists cannot differ in
+# either direction without this failing.
+require "the CI workflow names suites, so these checks have a denominator" \
+  test "$workflow_suite_count" -gt 0
+require "tests/ holds exactly the suites the CI workflow runs" \
+  test "$suite_count" -eq "$workflow_suite_count"
+require "the README's list of tests to run is extractable" \
+  test -n "$(readme_test_block)"
 echo "  suites examined:$suites"
+echo "  suites the workflow runs: $(workflow_suites | tr '\n' ' ')"
+
+# --- Control: the denominator the precondition above refuses -----------------
+#
+# A workflow naming no suites is the state that precondition exists to refuse,
+# and it can only refuse a count it is handed. The derivation has to survive
+# producing zero for that to happen: the same question as anywhere else in this
+# file, which is whether the machinery can report the thing it is watching for.
+#
+# Both halves are asserted, because "it did not die" and "it said zero" are
+# different claims and only the pair of them gets the count as far as the
+# precondition.
+empty_workflow="$fixtures/names-no-suites.yml"
+cat > "$empty_workflow" <<'EOF'
+name: ci
+jobs:
+  test:
+    steps:
+      - run: echo this workflow runs no suites
+EOF
+
+# <workflow file> — the count the precondition above reads, over another
+# workflow. A subshell, so the override cannot leak into the checks below.
+derived_count_over() {
+  ( WORKFLOW="$1"; workflow_suites | wc -l | tr -d '[:space:]' )
+}
+
+a_workflow_naming_no_suites_derives_a_denominator_of_zero() {
+  local count
+  count="$(derived_count_over "$empty_workflow")" || return 1
+  [ "$count" = 0 ]
+}
+
+assert "a workflow naming no suites derives a denominator of zero to refuse" \
+  a_workflow_naming_no_suites_derives_a_denominator_of_zero
 
 for suite in $suites; do
   assert "$suite is on the shared harness" grep -q 'lib/harness\.sh' "$suite"
@@ -108,7 +198,9 @@ for suite in $suites; do
   # Everything above holds only over the suites that actually execute, so the
   # glob and the workflow are held to the same list.
   assert "$suite is a step in the CI workflow" \
-    grep -qF -- "$suite" .github/workflows/ci.yml
+    grep -qF -- "$suite" "$WORKFLOW"
+  assert "$suite is in the README's list of the tests to run" \
+    listed_in_the_readme "$suite"
 done
 
 # The audit ran over something. A tokenizer that matched nothing would report no
@@ -156,6 +248,15 @@ EOF
 assert "the audit rejects a value-shaped verdict written as a literal" \
   audit_rejects "$fixtures/value-literal.sh"
 
+# A precondition is an assertion that also refuses, so it carries an assertion's
+# vacuity question unchanged. A precondition that cannot fail is worse than a
+# vacuous assertion: it is a guard that can never refuse.
+cat > "$fixtures/require-literal.sh" <<'EOF'
+require "the destination is inside the scratch root" true
+EOF
+assert "the audit rejects a precondition that cannot fail" \
+  audit_rejects "$fixtures/require-literal.sh"
+
 cat > "$fixtures/trailing-true.sh" <<'EOF'
 mkdir -p tests && assert "a vacuous assertion after a separator" true
 EOF
@@ -167,6 +268,7 @@ assert "the audit reads an assertion that is not the first word on its line" \
 cat > "$fixtures/real-command.sh" <<'EOF'
 assert "tests/ exists" test -d tests
 assert "the harness is readable" quietly cat tests/lib/harness.sh
+require "the repository is where the suite thinks it is" test -d skills
 EOF
 assert "the audit accepts a verdict that runs a command" \
   audit_accepts "$fixtures/real-command.sh"
@@ -197,6 +299,14 @@ assert() {
 EOF
 assert "the audit rejects a suite that defines its own assert" \
   audit_rejects "$fixtures/own-assert.sh"
+
+cat > "$fixtures/own-require.sh" <<'EOF'
+require() {
+  echo "a private copy of the precondition, free to stop refusing"
+}
+EOF
+assert "the audit rejects a suite that defines its own require" \
+  audit_rejects "$fixtures/own-require.sh"
 
 cat > "$fixtures/own-assert-spaced.sh" <<'EOF'
 harness_summary ()
@@ -276,6 +386,75 @@ assert "a suite that dies before its summary says it aborted" \
 assert "a suite that dies before its summary prints no summary" \
   lacks '^[0-9]+ passed' "$abort_out"
 assert "a suite that dies before its summary exits nonzero" test "$abort_code" -ne 0
+
+# --- Controls: a precondition reports *and refuses* --------------------------
+#
+# `assert` is a reporter. It prints FAIL, counts it, and returns, so the line
+# after it runs — which is right for a check on repository state and wrong for a
+# check that guards a destructive step. A suite that computes "the destination is
+# not redirected away from the developer's live config", prints FAIL, and then
+# runs the install anyway has *reported* a failure, not refused one; and a
+# reported failure is not a refusal. That shape was live in
+# tests/test_install.sh, where it ran `rm -rf` against a real skills directory
+# after its own guard had already said no.
+#
+# So the harness provides the second shape too, and the refusal is what is
+# asserted here: nothing after a failed precondition runs. The suite still
+# reports — a precondition that aborted silently would trade this defect for the
+# one the abort guard exists to catch.
+cat > "$fixtures/refuses.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+. "$HARNESS_LIB"
+harness_init
+assert "control: a check that passes before the precondition" test -d tests
+require "control: a precondition the repository fails" test -e tests/no-such-file
+: > "$SIDE_EFFECT"
+assert "control: an assertion after the failed precondition" test -d tests
+harness_summary
+EOF
+
+refuse_out="$harness_scratch/refuses.out"
+refuse_code=0
+side_effect="$harness_scratch/the-step-the-precondition-guards"
+HARNESS_LIB="$PWD/$HARNESS" SIDE_EFFECT="$side_effect" \
+  bash "$fixtures/refuses.sh" > "$refuse_out" 2>&1 || refuse_code=$?
+
+assert "a failed precondition prints FAIL against its own label" \
+  grep -q '^FAIL: control: a precondition the repository fails$' "$refuse_out"
+assert "a failed precondition stops the step it guards from running" \
+  test ! -e "$side_effect"
+assert "a failed precondition stops the assertions after it from running" \
+  lacks '^(PASS|FAIL): control: an assertion after the failed precondition$' \
+  "$refuse_out"
+assert "a refusing suite still reports the verdict it reached" \
+  grep -q '^1 passed, 1 failed$' "$refuse_out"
+assert "a refusing suite is a report, not a silent abort" \
+  lacks 'aborted before reaching its summary' "$refuse_out"
+assert "a refusing suite exits nonzero" test "$refuse_code" -ne 0
+
+# And the other half: a precondition the repository meets is not a stop. A
+# `require` that always halted would pass every check above.
+cat > "$fixtures/requires-met.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+. "$HARNESS_LIB"
+harness_init
+require "control: a precondition the repository meets" test -d tests
+assert "control: an assertion after the met precondition" test -d skills
+harness_summary
+EOF
+
+met_out="$harness_scratch/requires-met.out"
+met_code=0
+HARNESS_LIB="$PWD/$HARNESS" bash "$fixtures/requires-met.sh" > "$met_out" 2>&1 \
+  || met_code=$?
+
+assert "a met precondition lets the suite run on" \
+  grep -q '^PASS: control: an assertion after the met precondition$' "$met_out"
+assert "a met precondition reaches the summary and passes" \
+  grep -q '^2 passed, 0 failed$' "$met_out"
+assert "a met precondition exits zero" test "$met_code" -eq 0
 
 # The guard's own diagnostic does not depend on the guard's cleanup succeeding.
 # errexit is live in a suite, and an EXIT handler that lost it would take its

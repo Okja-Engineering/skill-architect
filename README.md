@@ -66,7 +66,25 @@ only when the export yields a value the adapter can actually read:
 | `timing` | `claude_code.api_request` events carrying a parseable timestamp |
 
 Anything else is `none`, and `capture` delivers exactly what `probe` advertised, because
-both read the export through the same extractor. A partial export carrying tool calls and
+both read the export through the same extractor.
+
+`none` is all a capability can say, so it covers two different situations: no telemetry was
+configured, and the export you named could not be read. `capture` tells them apart — the
+second is an `error` state with a reason, and exit 2 — and `probe` now says so too, on
+stderr, naming the same reason `capture` would put in the profile:
+
+```text
+$ ./profiler probe --harness claude_code --otel-file ./typo.json
+{ "harness": "claude_code", ..., "capabilities": { "tokens": "none", ... } }
+probe: failed to read OTel export file: open ./typo.json: no such file or directory
+```
+
+stdout is unchanged — the report is the same JSON a caller already parses — and the exit
+status is still 0. `probe` has no documented exit contract to extend, so giving it one is
+new surface rather than a repair and is **deferred to 0.5.0**; until then a script that has
+to branch on a bad export should use `capture`, which does have one. A `probe` that read a
+file and found nothing in it stays silent, because that is an answer about the session
+rather than a fault of the run. A partial export carrying tool calls and
 timing but no token metric yields those two `present` and `tokens` `unknown` with a
 reason, rather than discarding the run.
 
@@ -379,15 +397,22 @@ claude plugin install skill-architect@skill-architect
 
 `claude plugin list` then shows `skill-architect@skill-architect` at version 0.4.2.
 
-The three below are **not verified in this release** — nobody ran them against a clean
-install, unlike the Claude Code route above. They are what each agent's documentation
-describes; if one is wrong, the manual copy under "Local checkout" works everywhere.
+Every row below carries the status of the route as **executed in this release**, not as
+described by a vendor's documentation. Routes marked verified were run against a clean
+install on this release's tree. Where a route says "not verified" the row says why — nobody
+here could run it, or running it would have changed something that is not ours to change —
+and it is a pointer to the vendor's own docs rather than a claim of ours; if it turns out
+wrong, the manual copy under "Manual standalone copy" works everywhere.
 
 | Agent | Command | Status |
 |---|---|---|
-| Devin | `devin plugins install Okja-Engineering/skill-architect` | not verified; check the exact source form against Devin's own docs, since this release found that `.` and `./` are not interchangeable for Claude Code |
-| Codex | Install from the local plugin directory or marketplace entry (see [Codex plugin docs](https://www.codex-docs.com/en/docs/build-plugins)) | not verified |
-| Cursor | Copy or symlink the plugin directory to your Cursor plugins folder (see [Cursor plugin docs](https://cursor.com/docs/plugins)) | not verified |
+| Devin | `devin plugins install Okja-Engineering/skill-architect` | not verified — **deliberately**. This form syncs to Devin Cloud, so running it would rewrite the plugin list of whichever account is logged in on the machine doing the verifying. That is not ours to change, so it was not run. The local-path form under "Local checkout" *was* run and is verified |
+| Codex | `codex plugin marketplace add Okja-Engineering/skill-architect` then `codex plugin add skill-architect@skill-architect` (see [Codex plugin docs](https://learn.chatgpt.com/docs/plugins)) | verified — both steps run against `codex-cli 0.153.4` with `CODEX_HOME` pointed at a scratch directory. `codex plugin list` then reports the plugin installed and enabled. Codex reads this repo's `.claude-plugin/marketplace.json` |
+| Cursor | Copy or symlink **the repository root** — the directory holding `.cursor-plugin/plugin.json`, not `.cursor-plugin/` itself — into your Cursor plugins folder (see [Cursor plugin docs](https://cursor.com/docs/plugins)) | not verified — no Cursor install was reachable here, so the destination folder is unconfirmed and comes from Cursor's docs, not from us. Which directory to copy *is* confirmed, from this repository's own layout |
+
+There is no `codex plugin install`. `codex plugin --help` lists `add`, `list`, `marketplace`
+and `remove`, and installing takes the same two steps as Claude Code: register a
+marketplace, then add the plugin from it.
 
 All native plugins use the same namespace:
 
@@ -399,34 +424,111 @@ All native plugins use the same namespace:
 ### Local checkout
 
 ```bash
-# Devin — not verified in this release
-devin plugins install .
+# Devin (from inside the repo) — verified live against Devin 3000.6.14
+devin plugins install --local .
 
 # Claude Code (from inside the repo) — verified live against a clean install
 claude plugin marketplace add ./
 claude plugin install skill-architect@skill-architect
+
+# Codex (from inside the repo) — verified live against codex-cli 0.153.4
+codex plugin marketplace add .
+codex plugin add skill-architect@skill-architect
 ```
 
-The trailing slash matters: `claude plugin marketplace add .` is rejected as an invalid
-source format, `./` is accepted.
+`--local` is not optional for a local path. Without it Devin refuses the install outright,
+because a local path is not a source it can sync to Devin Cloud:
+
+```text
+$ devin plugins install .
+Error: local path sources can't sync to Devin Cloud; run `devin plugins install --local .` to install on this machine only.
+```
+
+Devin rejects `.` and `./` identically, naming the same flag for each, so the
+trailing-slash trap below is specific to Claude Code and not a Devin concern.
+
+The trailing slash matters for Claude Code: `claude plugin marketplace add .` is rejected as
+an invalid source format, `./` is accepted. Codex accepts both spellings and resolves them
+to the same root, so the trap is Claude Code's alone — checked, not assumed, for all three
+CLIs that take a local path.
 
 ### Manual standalone copy
 
-Copy only the skills you want into your agent's skill directory. You own the files and pull updates when you choose.
+Copy the skills into your agent's skill directory. You own the files and pull updates when
+you choose: this is also the update command, so it replaces the installed skill rather than
+copying into it.
+
+Run it from the root of a checkout of this repository — `skills/` is resolved from the
+working directory. Set `skills_dir` to your agent's skills directory, taken from the list
+below, and change nothing else:
 
 ```bash
-cp -R skills/skill-audit ~/.claude/skills/skill-audit
-cp -R skills/skill-rewrite ~/.claude/skills/skill-rewrite
+skills_dir=~/.claude/skills
+
+mkdir -p "$skills_dir"
+for skill in skill-audit skill-rewrite; do
+  rm -rf "$skills_dir/.$skill.new" &&
+    cp -R "skills/$skill" "$skills_dir/.$skill.new" &&
+    rm -rf "$skills_dir/$skill" &&
+    mv "$skills_dir/.$skill.new" "$skills_dir/$skill" ||
+    { echo "$skill was not updated; your installed copy is untouched" >&2; break; }
+done
 ```
 
-Copy both, even if you only want `skill-rewrite`. Its `draft-rewrite.sh` resolves the
-audit scripts at `../skill-audit` relative to the `skill-rewrite` directory it lives in,
+Four things about its shape, because a shorter version of it was wrong twice:
+
+- **It replaces rather than copies into.** `cp -R src dst` copies *into* `dst` once `dst`
+  exists, so a bare `cp -R` on the second run leaves a second copy of the skill nested
+  inside the first, and any agent that walks the skills directory recursively registers
+  the skill twice. Replacing the directory also drops files that were removed upstream,
+  which a copy over the top leaves behind forever.
+- **It does not remove your installed skill until the replacement is ready.** The copy is
+  staged beside the destination and moved into place with `mv`, a rename within one
+  directory. The obvious spelling, `rm -rf dst && cp -R src dst`, guards the copy against
+  a failed remove but leaves nothing guarding the install against a failed copy: run it
+  from the wrong directory over a working install and you are left with no skill at all.
+- **It clears its own staging directory first**, so an interrupted run leaves nothing for
+  the next one to copy *into*. If a run fails, fix what it reported and run it again; it
+  converges.
+- **`skills_dir` is the only thing to change**, and it holds a skills *directory* — the
+  same thing the list below gives you. Every step appends the skill name itself, so no
+  substitution you make can turn this into `rm -rf` on the directory holding your other
+  skills. Those are left alone: each pass names exactly the one skill directory it
+  replaces.
+
+The loop copies both, and both is not optional even if you only want `skill-rewrite`. Its
+`draft-rewrite.sh` resolves the audit scripts at `../skill-audit` relative to the
+`skill-rewrite` directory it lives in,
 so `skill-audit` must sit beside it in the same skills directory. Without the sibling it
 does not fail loudly: it still writes a `REWRITE-DRAFT.md`, but the "Current state"
 section contains `No such file or directory` for `check-frontmatter.sh` and
 `check-structure.sh` instead of an audit.
 
-The exact path depends on the agent (`~/.claude/skills/`, `.cursor/skills/`, `.codex/skills/`, `.devin/skills/`, etc.).
+The exact path depends on the agent. Each row says where the path came from, because a
+path read off a vendor's website and a path a CLI printed here are not the same kind of
+claim:
+
+- **Claude Code** — `~/.claude/skills/`, the value `skills_dir` takes in the command above.
+  Verified.
+- **Devin** — `.devin/skills/` for a project, `~/.config/devin/skills/` globally. Verified by
+  running `devin skills paths`, which prints both. Note it is *not* `~/.devin/skills/`.
+- **Codex** — `~/.codex/skills/<skill-name>`, or `$CODEX_HOME/skills/<skill-name>` if you
+  have moved your Codex home. That is where OpenAI's own `skill-installer` skill — shipped
+  *inside* the Codex CLI, at `~/.codex/skills/.system/skill-installer/` — says it installs
+  to, and where the skills bundled with Codex sit. Codex also discovers skills from
+  `.agents/skills/` in each directory from your working directory up to the repository
+  root, from `~/.agents/skills/`, and from `/etc/codex/skills/`, per its
+  [skills docs](https://learn.chatgpt.com/docs/build-skills). Both are real; they are
+  different locations, not competing accounts of one. Read off those two vendor artifacts,
+  not from a placement run here: for Codex the route this release actually executed is the
+  plugin one above.
+- **Cursor** — `.cursor/skills/` or `.agents/skills/` in a repository, `~/.cursor/skills/`
+  or `~/.agents/skills/` globally, per Cursor's [skills docs](https://cursor.com/docs/skills)
+  — which is a different page from the plugins docs cited above. **Not verified here**: no
+  Cursor install was reachable, so this is Cursor's claim rather than ours.
+
+A skill placed somewhere the agent does not read fails silently — it simply never appears —
+so where the path is the vendor's claim and not ours, confirm it with the agent.
 
 ## Quick example
 
@@ -461,14 +563,22 @@ This produces `~/.claude/skills/my-skill/REWRITE-DRAFT.md` for review before any
 Run the tests:
 
 ```bash
+# First: the suite for the substrate the others are written on
+tests/test_harness.sh
+
 tests/test_skill.sh
+tests/test_install.sh
 tests/test_walk.sh
+tests/test_rewrite.sh
 tests/test_f01.sh
 tests/test_f02.sh
 
 # Profiler tests (Go)
 cd profiler && go test ./...
 ```
+
+`tests/test_harness.sh` holds this list to the suites CI runs, so a suite missing from
+here fails it rather than going quietly unrun.
 
 ## What this plugin does not do
 

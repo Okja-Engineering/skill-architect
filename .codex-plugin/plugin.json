@@ -3,5 +3,9 @@
   "version": "0.4.2",
   "description": "Agent skills for auditing and improving Agent Skills against the spec, Anthropic best practices, and ICM context-management criteria.",
   "license": "MIT",
+  "author": {
+    "name": "Okja Engineering",
+    "url": "https://github.com/Okja-Engineering"
+  },
   "skills": "./skills/"
 }

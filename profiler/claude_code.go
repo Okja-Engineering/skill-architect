@@ -165,8 +165,52 @@ func sourceOf(r RawMetricResult) MetricSource {
 // produce. A capability is "otel" only when the export file yielded a value for
 // that signal; a missing, unreadable, malformed, or signal-less file reports
 // "none".
+//
+// "none" is all the report can say, so a caller who needs to know whether a
+// supplied export was the problem wants ProbeWithDiagnostics instead.
 func (a ClaudeCodeAdapter) Probe() CapabilityReport {
-	return a.capabilityReport(a.resolve())
+	report, _ := a.ProbeWithDiagnostics()
+	return report
+}
+
+// ProbeWithDiagnostics resolves the environment once and returns the capability
+// report alongside the reasons any signal failed, implementing ProbeDiagnoser.
+//
+// This is the whole probe path now, and Probe delegates to it, so the report
+// and its explanation are always computed from one read of one file and cannot
+// disagree.
+func (a ClaudeCodeAdapter) ProbeWithDiagnostics() (CapabilityReport, []string) {
+	sig := a.resolve()
+	return a.capabilityReport(sig), failureReasons(sig)
+}
+
+// failureReasons collects the distinct reasons signals came back MetricError —
+// a source that existed and failed, which is this run's problem rather than the
+// session's.
+//
+// MetricUnknown is deliberately not included. "No export was configured" and
+// "the export carried nothing for this signal" are answers about the session;
+// capture exits 0 on them for the same reason. A probe that complained about
+// those would be noise on every ordinary run, and noise is how a real
+// diagnostic gets ignored.
+//
+// Deduplicated because a whole-export failure settles all three signals with
+// one reason, and saying it three times reads as three faults.
+func failureReasons(sig otelSignals) []string {
+	seen := make(map[string]bool, 3)
+	var reasons []string
+	for _, r := range []RawMetricResult{
+		sig.Tokens.RawMetricResult,
+		sig.ToolCalls.RawMetricResult,
+		sig.Timing.RawMetricResult,
+	} {
+		if r.State != MetricError || r.Reason == "" || seen[r.Reason] {
+			continue
+		}
+		seen[r.Reason] = true
+		reasons = append(reasons, r.Reason)
+	}
+	return reasons
 }
 
 // Capture reads telemetry for a specific Claude Code session and produces a Profile.

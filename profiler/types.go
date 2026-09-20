@@ -95,6 +95,34 @@ type ProfilerAdapter interface {
 	Capture(sessionID string, opts CaptureOpts) (Profile, error)
 }
 
+// ProbeDiagnoser is implemented by an adapter that can say *why* a capability
+// came back "none".
+//
+// A capability's vocabulary is a source or SourceNone, so a CapabilityReport
+// structurally cannot distinguish "no telemetry was configured" from "the
+// export you named could not be read" — both collapse to none. Capture keeps
+// them apart, in a signal's MetricError state and its reason, and the two
+// commands are documented to agree: capture delivers exactly what probe
+// advertised, because both read the export through the same extractor. A probe
+// that collapses an unreadable export into five nones and says nothing breaks
+// that agreement in the one direction that misleads, since a caller reads it as
+// a session with no telemetry rather than as a path they mistyped.
+//
+// The reason is reported here rather than added to CapabilityReport because
+// that report is embedded in every Profile: widening it would change what a
+// profile contains for the same input, which is an adapter-version and schema
+// question. A diagnostic on a separate channel changes no output anyone parses.
+type ProbeDiagnoser interface {
+	// ProbeWithDiagnostics probes once and returns the report together with one
+	// message per distinct reason a signal could not be read. It is empty when
+	// nothing failed, including when no export was supplied at all — that is an
+	// answer about the session, not a fault of the run.
+	//
+	// One resolve, not two: a diagnostic read separately could see a different
+	// file from the report it is explaining and contradict it.
+	ProbeWithDiagnostics() (CapabilityReport, []string)
+}
+
 // TokenCounts holds per-session token usage.
 //
 // Every count is a pointer because "the export said nothing about this" and

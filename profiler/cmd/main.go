@@ -72,13 +72,38 @@ func cmdProbe(args []string) {
 		os.Exit(1)
 	}
 
-	cap := adapter.Probe()
+	cap, diags := probeWithDiagnostics(adapter)
 	out, err := json.MarshalIndent(cap, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "marshal error: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println(string(out))
+
+	// After the report, because the report is the answer and these explain it.
+	// On stderr, because stdout is the report and a consumer parses it.
+	//
+	// The exit status stays 0. README documents no exit codes for `probe` at
+	// all, so a script wrapping it today can only be relying on 0, and giving
+	// `probe` an exit contract is new surface rather than a repair. Making the
+	// failure audible is the repair; making it branchable is 0.5.0.
+	for _, d := range diags {
+		fmt.Fprintf(os.Stderr, "probe: %s\n", d)
+	}
+}
+
+// probeWithDiagnostics probes an adapter and takes its diagnostics too when it
+// has them.
+//
+// Probe is on the adapter interface and every adapter has it; explaining a
+// "none" is optional, so an adapter that cannot still probes. The alternative —
+// widening ProfilerAdapter — would make every future adapter implement an
+// explanation before it could report a capability.
+func probeWithDiagnostics(a profiler.ProfilerAdapter) (profiler.CapabilityReport, []string) {
+	if d, ok := a.(profiler.ProbeDiagnoser); ok {
+		return d.ProbeWithDiagnostics()
+	}
+	return a.Probe(), nil
 }
 
 func cmdCapture(args []string) {
