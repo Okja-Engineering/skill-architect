@@ -727,4 +727,276 @@ require "the tree for the near-miss control is a repository with its paths stage
 assert "the barrier passes an index staging paths that merely read like the refused ones" \
   check_passes "$near_miss" "$near_miss_out"
 
+# --- The mutation runner, and a verdict in every direction ---------------------
+#
+# A mutation proves a check by reverting the mechanism the check exists to hold
+# and requiring the check to go red. What makes that a proof rather than a
+# ritual is that *not going red* has more than one meaning, and this release met
+# five of them:
+#
+#   - a mutant that did not compile, so the tests never ran and a search for a
+#     failure line found nothing;
+#   - a safety barrier's own proof that **skipped**, because it built a path
+#     from a directory that was not there;
+#   - a mutant that **never terminated**;
+#   - a check that stayed green against a pattern too wide to fail, because
+#     `git` consults the index before the working tree;
+#   - a scan that refused itself, having named what it refuses and then scanned
+#     its own directory.
+#
+# Four of those five are indistinguishable from a pass in a pass/fail tally and
+# the fifth is indistinguishable from a slow machine. Every one of them was
+# found separately, by a different slice, because every slice from S2 on
+# re-derived the runner by hand from the last one — five times by S8's count.
+# That is the copy-by-hand pattern tests/lib/harness.sh exists to end: five
+# copies of a runner are five chances for one of them to be the copy that
+# stopped distinguishing, and the drift is invisible because each copy is only
+# ever run once.
+#
+# So the runner lives in tests/lib/ beside the harness, and it is held here, in
+# the suite for the substrate the other suites are written on, by this file's
+# own rule: every direction it can report is made to happen and the report is
+# read. The contract is one sentence — **a verdict is printed in every
+# direction, and only KILLED is a success** — so silence is the defect and a
+# direction with no assertion over it is the runner half-held.
+
+mutation_runner=tests/lib/mutation-runner.sh
+
+require "the mutation runner is there to be loaded" test -f "$mutation_runner"
+. "$mutation_runner"
+require "the mutation runner defined every name it exists to provide" \
+  mutation_runner_ready
+
+mut="$harness_scratch/mutation"
+mkdir -p "$mut"
+mut_target="$mut/target"
+mut_out="$mut/run.out"
+
+# The mutators. One changes the file and one does not, because "the edit was a
+# no-op" is itself a direction: nothing was tested, and a runner that reported
+# the suite's own green as the answer would be crediting a mutation it never
+# made.
+mutant_edit() { printf 'mutated\n' > "$1"; }
+mutant_noop() { return 0; }
+
+# The suites, one per direction, each printing what a real suite prints when it
+# reaches that direction. They are fakes deliberately: the question here is what
+# the runner concludes from a suite's output and status, and no real suite can
+# be made to reach seven different directions on demand — which is exactly why
+# five of the seven were only ever met one slice at a time.
+suite_kills() { printf '\n3 passed, 1 failed\n'; return 1; }
+suite_survives() { printf '\n4 passed, 0 failed\n'; return 0; }
+suite_unloadable() {
+  echo 'tests/x.sh: line 9: syntax error near unexpected token `fi'"'"
+  return 2
+}
+suite_asserts_nothing() { printf '\n0 passed, 0 failed\n'; return 0; }
+suite_refuses() {
+  printf 'PASS: the first check\n'
+  printf 'REFUSED: the precondition above failed, so nothing that depended on it ran\n'
+  printf '\n1 passed, 1 failed\n'
+  return 1
+}
+suite_never_ends() { while :; do sleep 1; done; }
+
+# ran <mutator> <suite> — one run, with the runner's own line captured so the
+# assertions can read what it *said* as well as what it decided. A verdict the
+# runner reaches and does not print is the defect, so both are asserted every
+# time.
+ran() {
+  printf 'original\n' > "$mut_target"
+  mut_status=0
+  mutation_run MX "$mut_target" "$1" "$2" > "$mut_out" 2>&1 || mut_status=$?
+  return 0
+}
+
+mutation_format=harness
+mutation_deadline=1
+mutation_allow_skips=0
+
+ran mutant_edit suite_kills
+assert "a mutant the suite fails on is KILLED" \
+  test "$mutation_verdict" = KILLED
+assert "the KILLED verdict is printed and not only returned" \
+  grep -q 'KILLED' "$mut_out"
+assert "KILLED is the one direction that succeeds" test "$mut_status" -eq 0
+assert "a killed run restored the file it mutated" \
+  test "$(cat "$mut_target")" = original
+
+ran mutant_edit suite_survives
+assert "a mutant every check passes is SURVIVED" \
+  test "$mutation_verdict" = SURVIVED
+assert "the SURVIVED verdict is printed" grep -q 'SURVIVED' "$mut_out"
+assert "SURVIVED is not a success" test "$mut_status" -ne 0
+assert "a surviving run restored the file it mutated" \
+  test "$(cat "$mut_target")" = original
+
+# The first of the five. A suite that never loaded prints no verdict, and the
+# runner that searched its output for a failure line found none and read that as
+# a pass. So the rule is inverted: the *absence* of a verdict is a verdict, and
+# it is never a pass.
+ran mutant_edit suite_unloadable
+assert "a mutant whose suite prints no verdict at all is DID NOT BUILD" \
+  test "$mutation_verdict" = "DID NOT BUILD"
+assert "the DID NOT BUILD verdict is printed" grep -q 'DID NOT BUILD' "$mut_out"
+assert "DID NOT BUILD is not a success" test "$mut_status" -ne 0
+assert "a run that never built restored the file it mutated" \
+  test "$(cat "$mut_target")" = original
+
+# The last of the five, and the one that is a passing tally: a scan that named
+# what it refuses, scanned its own directory, and so examined nothing. It
+# reaches its summary and reports zero of both.
+ran mutant_edit suite_asserts_nothing
+assert "a suite that reached its summary having asserted nothing is DID NOT RUN" \
+  test "$mutation_verdict" = "DID NOT RUN"
+assert "the DID NOT RUN verdict is printed" grep -q 'DID NOT RUN' "$mut_out"
+assert "DID NOT RUN is not a success" test "$mut_status" -ne 0
+
+# The second of the five: the barrier's own proof that skipped. In a shell suite
+# that is `require` refusing — the suite reports a tally, and the checks after
+# the refusal never ran, so the tally cannot say whether the killing one was
+# among them. It reads as KILLED on the failure count alone, which is why the
+# skip outranks it.
+ran mutant_edit suite_refuses
+assert "a tally reached with checks that never ran is SKIPPED, not KILLED" \
+  test "$mutation_verdict" = SKIPPED
+assert "the SKIPPED verdict is printed" grep -q 'SKIPPED' "$mut_out"
+assert "SKIPPED is not a success" test "$mut_status" -ne 0
+assert "the SKIPPED report says how many checks did not run" \
+  test "$mutation_skips" -eq 1
+
+# And the knob that keeps the strictness usable: a suite with a skip by design
+# declares how many, and only a skip beyond the declared count is a verdict.
+# Without this the rule above would refuse every run of a suite that carries a
+# deliberate skip, and the pressure would be to drop the rule.
+mutation_allow_skips=1
+ran mutant_edit suite_refuses
+assert "a skip the caller declared is not a SKIPPED verdict" \
+  test "$mutation_verdict" = KILLED
+assert "the declared skip is still counted and reported" \
+  test "$mutation_skips" -eq 1
+mutation_allow_skips=0
+
+# The third of the five, and the only one that does not look like a pass — it
+# looks like a slow machine, which is why it sat for ten minutes. The deadline
+# is the runner's own, so it holds for a suite with no timeout flag of its own.
+mut_started=$SECONDS
+ran mutant_edit suite_never_ends
+mut_elapsed=$((SECONDS - mut_started))
+assert "a mutant whose suite never terminates is DID NOT END" \
+  test "$mutation_verdict" = "DID NOT END"
+assert "the DID NOT END verdict is printed" grep -q 'DID NOT END' "$mut_out"
+assert "DID NOT END is not a success" test "$mut_status" -ne 0
+assert "the runner stopped the suite at its deadline rather than waiting on it" \
+  test "$mut_elapsed" -lt 15
+assert "a run that never ended restored the file it mutated" \
+  test "$(cat "$mut_target")" = original
+
+# The edit that was not an edit. Carried from the runners the slices wrote,
+# where it caught a `sed` whose pattern had stopped matching the line it was
+# written for — so the mutation was never applied and the suite's green was the
+# unmutated tree's.
+ran mutant_noop suite_survives
+assert "a mutator that changed nothing is NOT APPLIED" \
+  test "$mutation_verdict" = "NOT APPLIED"
+assert "the NOT APPLIED verdict is printed" grep -q 'NOT APPLIED' "$mut_out"
+assert "NOT APPLIED is not a success" test "$mut_status" -ne 0
+assert "a no-op mutation does not report the suite's own result" \
+  test "$mutation_verdict" != SURVIVED
+
+# The control on all of the above: the verdict is a function of the suite's
+# output, so no two directions may share one. A runner that had collapsed two of
+# them would still satisfy every assertion that reads a single verdict.
+mutation_verdicts_are_distinct() {
+  local pair
+  local seen
+  seen=""
+  for pair in \
+    "mutant_edit suite_kills" \
+    "mutant_edit suite_survives" \
+    "mutant_edit suite_unloadable" \
+    "mutant_edit suite_asserts_nothing" \
+    "mutant_edit suite_refuses" \
+    "mutant_edit suite_never_ends" \
+    "mutant_noop suite_survives"
+  do
+    ran $pair
+    case "$seen" in
+      *"[$mutation_verdict]"*)
+        echo "  two directions share the verdict $mutation_verdict" >&2
+        return 1 ;;
+    esac
+    seen="$seen[$mutation_verdict]"
+  done
+  return 0
+}
+assert "the seven directions reach seven different verdicts" \
+  mutation_verdicts_are_distinct
+
+# --- and the same seven read out of `go test` ---------------------------------
+#
+# The format the five re-derived runners were written against, because the
+# slices that needed them were Go slices. It is the same seven directions and a
+# different way of reading them, which is the whole reason the reading is a
+# parameter and not a grep inlined at the verdict.
+#
+# One correction came with the move. The scratch runners recognised a
+# non-building mutant by searching for a dozen compiler-error phrases — a list
+# that grows with every error Go learns to emit and fails closed to SURVIVED
+# when one is missing. `go test` marks it once, in a line of its own, and that
+# is what is read.
+mutation_format=go
+
+suite_go_kills() {
+  printf '=== RUN   TestX\n--- FAIL: TestX (0.00s)\nFAIL\nFAIL\tgithub.com/x/y\t0.301s\nFAIL\n'
+  return 1
+}
+suite_go_unbuildable() {
+  printf '# github.com/x/y [github.com/x/y.test]\n'
+  printf './y_test.go:12:2: declared and not used: got\n'
+  printf 'FAIL\tgithub.com/x/y [build failed]\n'
+  return 1
+}
+suite_go_skips() {
+  printf '=== RUN   TestBarrier\n--- SKIP: TestBarrier (0.00s)\nPASS\nok  \tgithub.com/x/y\t0.201s\n'
+  return 0
+}
+suite_go_times_out() {
+  printf 'panic: test timed out after 30s\n\tgoroutine 1 [running]:\n'
+  return 2
+}
+
+ran mutant_edit suite_go_kills
+assert "a Go mutant a test fails on is KILLED" test "$mutation_verdict" = KILLED
+assert "the Go KILLED verdict is printed" grep -q 'KILLED' "$mut_out"
+
+# `FAIL <pkg> [build failed]` is a nonzero exit with no `--- FAIL` in it, which
+# is the exact shape the phrase-list runners read as SURVIVED.
+ran mutant_edit suite_go_unbuildable
+assert "a Go mutant that does not compile is DID NOT BUILD" \
+  test "$mutation_verdict" = "DID NOT BUILD"
+assert "the Go DID NOT BUILD verdict is printed" grep -q 'DID NOT BUILD' "$mut_out"
+assert "a Go mutant that does not compile is not read as a kill" \
+  test "$mutation_verdict" != KILLED
+
+# The barrier's own proof, in the form it actually took: `go test` exits 0 with
+# a SKIP in it, so the suite is green and the case that would have killed the
+# mutant never ran.
+ran mutant_edit suite_go_skips
+assert "a Go run with a skipped test is SKIPPED, not SURVIVED" \
+  test "$mutation_verdict" = SKIPPED
+assert "the Go SKIPPED verdict is printed" grep -q 'SKIPPED' "$mut_out"
+assert "the Go SKIPPED report says how many tests did not run" \
+  test "$mutation_skips" -eq 1
+
+# Read from the output as well as from the deadline, because `go test -timeout`
+# usually fires first and prints this rather than hanging until the runner's own
+# deadline. Two detectors, one verdict.
+ran mutant_edit suite_go_times_out
+assert "a Go run that reports its own timeout is DID NOT END" \
+  test "$mutation_verdict" = "DID NOT END"
+assert "the Go DID NOT END verdict is printed" grep -q 'DID NOT END' "$mut_out"
+
+mutation_format=harness
+
 harness_summary
