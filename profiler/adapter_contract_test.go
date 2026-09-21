@@ -1126,3 +1126,194 @@ func TestTheTierScanFindsTheTiers(t *testing.T) {
 		t.Errorf("declaredTiers read %v out of doctor.go, want %v — the constants and the scan disagree", got, want)
 	}
 }
+
+// --- The other declared vocabulary: MetricSource ------------------------------
+//
+// The guard above exists because a declared EnvironmentTier is a capability
+// claim. So is a declared MetricSource, and until the release gate that one had
+// no guard at all — `git grep declaredSources` was empty. Five of the seven
+// sources had **zero production references**: `hooks`, `hooks_estimated`,
+// `session_data`, `server_api`, `sqlite`. Unlike the reserved CaptureOpts
+// fields next door, none of them carried any comment, so the claim was made
+// silently by the declaration. One of them, `server_api`, is a string this
+// release removed from the tier vocabulary for advertising a surface nothing
+// reads, while cmd/main_test.go asserts the doctor report may not contain it
+// "which no capture in this release delivers" — and it stood 1,600 lines away
+// as a valid profile source.
+//
+// The rule is the one declaredTiers established, applied to this vocabulary: a
+// declared source is either produced by something in this build, or it says in
+// the file that it is not. Both directions, so the note cannot be left on a
+// source that later gains a producer either.
+
+// declaredSource is one MetricSource constant as the source text declares it.
+type declaredSource struct {
+	ident string
+	value string
+	doc   string
+}
+
+// declaredSources reads the MetricSource constants out of types.go, with their
+// doc comments.
+//
+// Out of the source rather than out of a list here, for the reason
+// declaredTiers is: a list maintained by hand is the list that does not mention
+// the constant somebody added. `parser.ParseComments`, because the comment is
+// half of what this check is about.
+func declaredSources(t *testing.T) []declaredSource {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "types.go", nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse types.go: %v", err)
+	}
+
+	var sources []declaredSource
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			if ident, ok := value.Type.(*ast.Ident); !ok || ident.Name != "MetricSource" {
+				continue
+			}
+			for i, expr := range value.Values {
+				lit, ok := expr.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					t.Errorf("a MetricSource constant in types.go is not a string literal, so this check cannot read it")
+					continue
+				}
+				text, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatalf("unquote %s: %v", lit.Value, err)
+				}
+				sources = append(sources, declaredSource{
+					ident: value.Names[i].Name,
+					value: text,
+					doc:   value.Doc.Text(),
+				})
+			}
+		}
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i].ident < sources[j].ident })
+	return sources
+}
+
+// sourcesUsedInProduction is every MetricSource constant some non-test file in
+// this module refers to, with where it referred to it.
+//
+// Its own declaration does not count, which is the whole point: a constant
+// whose only mention is the line declaring it is a vocabulary entry nothing
+// produces. Comments do not count either, and that is why this is an AST walk
+// and not a grep — `SourceHooksEstimated` is named twice in types.go's prose
+// and by no expression anywhere.
+func sourcesUsedInProduction(t *testing.T) map[string][]string {
+	t.Helper()
+	used := map[string][]string{}
+	for _, dir := range []string{".", "cmd"} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read %s: %v", dir, err)
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			path := filepath.Join(dir, name)
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, path, nil, 0)
+			if err != nil {
+				t.Fatalf("parse %s: %v", path, err)
+			}
+			// The const block's own names, so a declaration is not a use.
+			declared := map[*ast.Ident]bool{}
+			for _, decl := range file.Decls {
+				gen, ok := decl.(*ast.GenDecl)
+				if !ok || gen.Tok != token.CONST {
+					continue
+				}
+				for _, spec := range gen.Specs {
+					if value, ok := spec.(*ast.ValueSpec); ok {
+						for _, n := range value.Names {
+							declared[n] = true
+						}
+					}
+				}
+			}
+			ast.Inspect(file, func(n ast.Node) bool {
+				ident, ok := n.(*ast.Ident)
+				if !ok || declared[ident] || !strings.HasPrefix(ident.Name, "Source") {
+					return true
+				}
+				used[ident.Name] = append(used[ident.Name],
+					fmt.Sprintf("%s:%d", path, fset.Position(ident.Pos()).Line))
+				return true
+			})
+		}
+	}
+	return used
+}
+
+// TestEveryDeclaredSourceIsProducedOrSaysItIsNot is the rule.
+func TestEveryDeclaredSourceIsProducedOrSaysItIsNot(t *testing.T) {
+	used := sourcesUsedInProduction(t)
+
+	for _, src := range declaredSources(t) {
+		t.Run(src.ident, func(t *testing.T) {
+			produced := len(used[src.ident]) > 0
+			notes := strings.Contains(src.doc, reservedSourceNote)
+
+			if !produced && !notes {
+				t.Errorf("%s (%q) has no production reference and no comment saying so. A declared "+
+					"source is a claim that some capture produces it; if none does, the declaration "+
+					"has to say %q rather than leaving a reader to infer it from the absence of callers.",
+					src.ident, src.value, reservedSourceNote)
+			}
+			if produced && notes {
+				t.Errorf("%s (%q) says %q and is referred to by %v — the note outlived the reservation",
+					src.ident, src.value, reservedSourceNote, used[src.ident])
+			}
+		})
+	}
+}
+
+// TestTheSourceScanFindsTheSources is the control on both derivations above. A
+// declaration reader that found nothing would make the rule pass over an empty
+// set, and a use reader that found nothing would call every source reserved —
+// which is the failure this file has now found six ways.
+func TestTheSourceScanFindsTheSources(t *testing.T) {
+	var got []string
+	for _, src := range declaredSources(t) {
+		got = append(got, src.ident+"="+src.value)
+	}
+	want := []string{
+		"SourceHooks=hooks",
+		"SourceHooksEstimated=hooks_estimated",
+		"SourceNone=none",
+		"SourceOtel=otel",
+		"SourceSQLite=sqlite",
+		"SourceServerAPI=server_api",
+		"SourceSessionData=session_data",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("declaredSources read %v out of types.go, want %v — the constants and the scan disagree", got, want)
+	}
+
+	used := sourcesUsedInProduction(t)
+	for _, ident := range []string{"SourceOtel", "SourceNone"} {
+		if len(used[ident]) == 0 {
+			t.Errorf("the use scan found no reference to %s, which production code does refer to: "+
+				"a scan that reads nothing calls every source reserved", ident)
+		}
+	}
+	if len(used["SourceSQLite"]) != 0 {
+		t.Errorf("the use scan reports %s referred to at %v, and nothing refers to it: "+
+			"the derivation above cannot distinguish a producer from a declaration",
+			"SourceSQLite", used["SourceSQLite"])
+	}
+}
