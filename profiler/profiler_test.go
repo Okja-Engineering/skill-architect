@@ -119,8 +119,12 @@ func TestCapabilityReport_ClaudeCode_WithOtel(t *testing.T) {
 	if cap.Capabilities[MetricTiming] != SourceOtel {
 		t.Errorf("timing = %q, want otel", cap.Capabilities[MetricTiming])
 	}
-	if cap.Capabilities[MetricSkillActivation] != SourceNone {
-		t.Errorf("skill_activation = %q, want none", cap.Capabilities[MetricSkillActivation])
+	// The export logs a claude_code.skill_activated event, so activation is
+	// read out of it like the other three. Attribution is not: nothing in the
+	// telemetry maps an output back to the skill that produced it, so it is
+	// none whatever the export carries.
+	if cap.Capabilities[MetricSkillActivation] != SourceOtel {
+		t.Errorf("skill_activation = %q, want otel", cap.Capabilities[MetricSkillActivation])
 	}
 	if cap.Capabilities[MetricAttribution] != SourceNone {
 		t.Errorf("attribution = %q, want none", cap.Capabilities[MetricAttribution])
@@ -211,15 +215,17 @@ func TestCapture_ClaudeCode_WithOtelData(t *testing.T) {
 		t.Errorf("timing total_ms = %d, want 1172", profile.Timing.Value.TotalMs)
 	}
 
-	// Skill activation should be unknown.
-	if profile.SkillActivation.State != MetricUnknown {
-		t.Errorf("skill_activation state = %q, want unknown", profile.SkillActivation.State)
+	// Skill activation should be present: the export logs the activation this
+	// session's skill was invoked by.
+	if profile.SkillActivation.State != MetricPresent {
+		t.Errorf("skill_activation state = %q (reason %q), want present",
+			profile.SkillActivation.State, profile.SkillActivation.Reason)
 	}
-	if profile.SkillActivation.Reason == "" {
-		t.Error("skill_activation reason should not be empty")
-	}
-	if profile.SkillActivation.Value != nil {
-		t.Errorf("skill_activation value = %+v, want nil for unknown", profile.SkillActivation.Value)
+	assertActivations(t, profile.SkillActivation.Value, []ActivationEntry{
+		{SkillName: "my-skill", Timestamp: "2026-09-13T20:49:55.05Z", Trigger: "slash_command"},
+	})
+	if profile.SkillActivation.Source != "otel" {
+		t.Errorf("skill_activation source = %q, want otel", profile.SkillActivation.Source)
 	}
 
 	// Attribution should be unknown.
@@ -278,18 +284,30 @@ func TestCapture_ClaudeCode_WithoutOtel(t *testing.T) {
 		t.Errorf("attribution state = %q, want unknown", profile.Attribution.State)
 	}
 
-	// The three OTel signals carry the fallback reason the spec quotes, word
-	// for word. A substring check passes against a sentence that says the
+	// Every OTel signal carries the fallback reason the spec quotes, word for
+	// word. A substring check passes against a sentence that says the
 	// opposite; the spec quotes this one, so the test has to hold it to it.
-	for metric, got := range map[MetricName]string{
-		MetricTokens:    profile.Tokens.Reason,
-		MetricToolCalls: profile.ToolCalls.Reason,
-		MetricTiming:    profile.Timing.Reason,
-	} {
-		if got != fallbackReasonInSpec {
+	//
+	// The set is derived, not listed: a signal that started being read out of
+	// the export and kept a reason of its own would be a signal whose fallback
+	// the spec does not describe, and a written-down three would not notice.
+	signals := capturedSignals(profile)
+	checked := 0
+	for _, metric := range sortedMetrics(profile.Capability.Capabilities) {
+		if !otelBackedSignals[metric] {
+			continue
+		}
+		checked++
+		if got := signals[metric].raw.Reason; got != fallbackReasonInSpec {
 			t.Errorf("%s reason =\n  %q\nwant the reason docs/profiler-spec.md quotes under Fallback:\n  %q",
 				metric, got, fallbackReasonInSpec)
 		}
+	}
+	// A derived denominator that derives nothing passes every assertion over
+	// it. Asserted as "not zero" rather than against len(otelBackedSignals),
+	// which an emptied set would satisfy on both sides.
+	if checked == 0 {
+		t.Error("no export-backed signal was checked, so the fallback reason was asserted over nothing")
 	}
 }
 
@@ -299,26 +317,30 @@ func TestCapture_ClaudeCode_WithoutOtel(t *testing.T) {
 const (
 	// docs/profiler-spec.md, "Fallback".
 	fallbackReasonInSpec = "OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile."
-	// docs/profiler-spec.md, "Capture logic" step 6.
-	activationReasonInSpec = "This adapter does not yet read Claude Code's skill telemetry: the " +
-		"claude_code.skill_activated event, logged when a skill is invoked through the Skill tool or a / command, " +
-		"carries skill.name, invocation_trigger, skill.source and skill.kind. Reading it is 0.5.0."
+	// docs/profiler-spec.md, "Capture logic" step 7.
+	attributionReasonInSpec = "Claude Code telemetry carries no output-to-skill mapping"
+	// The sentence that deferred activation to this release, which no profile
+	// may still carry now that the read exists. Spelled here once so the scan
+	// below is not a guess at how it used to read.
+	retiredActivationDeferral = "Reading it is 0.5.0."
 )
 
-// skill_activation and attribution are a property of the harness and of this
-// adapter, not of any export, so their reasons are the same in every case the
-// adapter can be in — and both are quoted in the spec.
-func TestCapture_TheHarnessLevelReasonsAreTheSpecsWordForWord(t *testing.T) {
-	for _, name := range []string{"full_export.ndjson", "skill_name_present.json", "malformed.json", "no_envelope.json"} {
-		t.Run(name, func(t *testing.T) {
-			profile := capturedProfile(t, name)
-			if got := profile.SkillActivation.Reason; got != activationReasonInSpec {
-				t.Errorf("skill_activation reason =\n  %q\nwant\n  %q", got, activationReasonInSpec)
-			}
-			if got := profile.Attribution.Reason; got != "Claude Code telemetry carries no output-to-skill mapping" {
-				t.Errorf("attribution reason = %q", got)
-			}
-		})
+// Attribution is the one signal that is a property of the harness rather than
+// of any export: nothing Claude Code emits maps an output back to the skill
+// that produced it, so the answer is the same for every input the adapter can
+// be given, and the spec quotes it.
+//
+// skill_activation used to stand beside it here, with a reason saying this
+// adapter did not read the telemetry yet. It is read now, so its reason is a
+// fact about the export in hand and differs per input — its cases are in
+// TestCapture_ReasonNamesWhatTheExportActuallyCarried and in provenance_test.go.
+// What is asserted about it here is only that the deferral is gone: a profile
+// telling its reader that reading the activation is 0.5.0 work, produced by the
+// release that does it, describes a reader that no longer exists.
+func TestCapture_TheAttributionReasonIsTheSpecsWordForWord(t *testing.T) {
+	profiles := map[string]Profile{}
+	for _, name := range []string{"full_export.ndjson", "skill_activated.json", "skill_name_present.json", "malformed.json", "no_envelope.json"} {
+		profiles[name] = capturedProfile(t, name)
 	}
 	// And with no export configured at all.
 	adapter := ClaudeCodeAdapter{}
@@ -326,8 +348,17 @@ func TestCapture_TheHarnessLevelReasonsAreTheSpecsWordForWord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := profile.SkillActivation.Reason; got != activationReasonInSpec {
-		t.Errorf("skill_activation reason with no export =\n  %q\nwant\n  %q", got, activationReasonInSpec)
+	profiles["no export configured"] = profile
+
+	for name, profile := range profiles {
+		t.Run(name, func(t *testing.T) {
+			if got := profile.Attribution.Reason; got != attributionReasonInSpec {
+				t.Errorf("attribution reason =\n  %q\nwant\n  %q", got, attributionReasonInSpec)
+			}
+			if got := profile.SkillActivation.Reason; strings.Contains(got, retiredActivationDeferral) {
+				t.Errorf("skill_activation reason = %q, and this release is the one that reads it", got)
+			}
+		})
 	}
 }
 
@@ -382,6 +413,101 @@ func TestToolCalls_APendingAcceptBesideAResultIsNotReported(t *testing.T) {
 	}
 	if want := "2 accepted " + otelToolDecisionLog + " events"; !strings.Contains(pending.ToolCalls.Reason, want) {
 		t.Errorf("tool_calls reason = %q, want it to name %q", pending.ToolCalls.Reason, want)
+	}
+}
+
+// --- Skill activation: read from claude_code.skill_activated ---
+
+// assertActivations compares the captured entries with what the export carried,
+// in order. Both contents and order are part of the profile, for the same
+// reason they are for tool calls: the list is the session's activations.
+func assertActivations(t *testing.T, got, want []ActivationEntry) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("skill_activation = %+v, want %d entries: %+v", got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("skill_activation[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// One entry per claude_code.skill_activated event, carrying the skill.name and
+// the invocation_trigger the event named, ordered by the clock and not by the
+// order the exporter happened to write the records in.
+//
+// The trigger is optional because the event does not always carry it; the name
+// is not, because an activation of no named skill is not an activation anyone
+// can act on. An event whose clock could not be read is still an activation —
+// the event was read, only its time was not — so it is kept and sorted last,
+// the same rule a tool call gets.
+func TestActivation_ReadsTheSkillActivatedEvent(t *testing.T) {
+	profile := capturedProfile(t, "skill_activated.json")
+
+	if profile.SkillActivation.State != MetricPresent {
+		t.Fatalf("skill_activation state = %q (reason %q), want present",
+			profile.SkillActivation.State, profile.SkillActivation.Reason)
+	}
+	if profile.SkillActivation.Source != string(SourceOtel) {
+		t.Errorf("skill_activation source = %q, want otel", profile.SkillActivation.Source)
+	}
+	if profile.SkillActivation.Reason != "" {
+		t.Errorf("skill_activation reason = %q on a present result: schema v1 has no reason on present",
+			profile.SkillActivation.Reason)
+	}
+	// The export writes 20:49:55.3 first and 20:49:55.1 second, so a reader
+	// that kept file order would report them the other way round.
+	assertActivations(t, profile.SkillActivation.Value, []ActivationEntry{
+		{SkillName: "my-skill", Timestamp: "2026-09-13T20:49:55.1Z", Trigger: "slash_command"},
+		{SkillName: "custom_skill", Timestamp: "2026-09-13T20:49:55.3Z"},
+		{SkillName: "untimed-skill", Trigger: "skill_tool"},
+	})
+	if got := profile.Capability.Capabilities[MetricSkillActivation]; got != SourceOtel {
+		t.Errorf("capability skill_activation = %q, want otel — a value was read", got)
+	}
+}
+
+// The name is what makes the event an activation. An event carrying none of it
+// was seen and is counted, and the signal says what it saw rather than
+// reporting an activation of nothing.
+func TestActivation_AnEventWithNoSkillNameIsNotAnActivation(t *testing.T) {
+	profile := capturedProfile(t, "unreadable_activation_events.json")
+
+	if profile.SkillActivation.State != MetricUnknown || profile.SkillActivation.Value != nil {
+		t.Fatalf("skill_activation state = %q with value %+v, want unknown and no value",
+			profile.SkillActivation.State, profile.SkillActivation.Value)
+	}
+	want := "no skill activations in OTel export: 2 " + otelSkillActivatedLog + " events carried no skill.name"
+	if got := profile.SkillActivation.Reason; got != want {
+		t.Errorf("skill_activation reason =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+// skill.name rides along on request-scoped signals — token.usage, api_request
+// and the rest — marking the skill active for that request. It is not an
+// activation record: one skill used across five requests carries the attribute
+// five times, and emitting an entry per record would report five activations
+// where the harness logged none. So the attribute alone yields `unknown`, and
+// the reason names the event that was looked for rather than the attribute that
+// was there.
+//
+// This is the negative control for the whole extractor: the fixture is thick
+// with skill.name and a reader keyed on the attribute rather than on the event
+// reports it as present.
+func TestActivation_SkillNameOnARequestSignalIsNotAnActivation(t *testing.T) {
+	profile := capturedProfile(t, "skill_name_present.json")
+
+	if profile.SkillActivation.State != MetricUnknown || profile.SkillActivation.Value != nil {
+		t.Fatalf("skill_activation state = %q with value %+v, want unknown — this export logs no activation event",
+			profile.SkillActivation.State, profile.SkillActivation.Value)
+	}
+	want := "no " + otelSkillActivatedLog + " log events found in OTel export"
+	if got := profile.SkillActivation.Reason; got != want {
+		t.Errorf("skill_activation reason =\n  %q\nwant\n  %q", got, want)
+	}
+	if got := profile.Capability.Capabilities[MetricSkillActivation]; got != SourceNone {
+		t.Errorf("capability skill_activation = %q, want none — nothing was read", got)
 	}
 }
 
@@ -564,9 +690,10 @@ func TestNoAttributionValueInJSONForUnknown(t *testing.T) {
 // every input. A signal added here without a read behind it fails the cases
 // below rather than passing them, which is the safe direction for a list.
 var otelBackedSignals = map[MetricName]bool{
-	MetricTokens:    true,
-	MetricToolCalls: true,
-	MetricTiming:    true,
+	MetricTokens:          true,
+	MetricToolCalls:       true,
+	MetricSkillActivation: true,
+	MetricTiming:          true,
 }
 
 // capturedSignal is one signal's state paired with whether the profile actually
@@ -604,7 +731,10 @@ type captureCase struct {
 	unconfigured bool         // adapter has no export file at all
 	missingFile  bool         // adapter points at a path that does not exist
 	present      []MetricName // signals that must be "present"
-	absent       MetricState  // state required of tokens/tool_calls/timing when not present
+	// absent is the state required of every signal this adapter reads out of
+	// the export — otelBackedSignals — when the case does not list it as
+	// present. The rest are unknown whatever the input.
+	absent MetricState
 	// session is the identity to capture under, for a fixture that does not
 	// carry the shared fixtureSession. Empty means fixtureSession.
 	session string
@@ -624,7 +754,7 @@ var captureCases = []captureCase{
 
 	// Exports that carry values.
 	{name: "every signal", fixture: "full_export.ndjson",
-		present: []MetricName{MetricTokens, MetricToolCalls, MetricTiming}, absent: MetricUnknown},
+		present: []MetricName{MetricTokens, MetricToolCalls, MetricSkillActivation, MetricTiming}, absent: MetricUnknown},
 	{name: "tokens only", fixture: "tokens_only.json",
 		present: []MetricName{MetricTokens}, absent: MetricUnknown},
 	{name: "tool calls only", fixture: "tool_calls_only.json",
@@ -647,8 +777,14 @@ var captureCases = []captureCase{
 		present: []MetricName{MetricToolCalls}, absent: MetricUnknown},
 	{name: "a tool call with no timestamp is still a call", fixture: "no_timestamp_tool_call.json",
 		present: []MetricName{MetricToolCalls}, absent: MetricUnknown},
-	{name: "skill.name is carried but not read", fixture: "skill_name_present.json",
+	{name: "skill.name rides on request signals and no skill was activated", fixture: "skill_name_present.json",
 		present: []MetricName{MetricTokens, MetricTiming}, absent: MetricUnknown},
+	{name: "a skill activation event", fixture: "skill_activated.json",
+		present: []MetricName{MetricSkillActivation}, absent: MetricUnknown},
+	{name: "another product's activation beside this harness's", fixture: "foreign_scope_activation.json",
+		present: []MetricName{MetricSkillActivation}, absent: MetricUnknown},
+	{name: "two sessions' activations in one export", fixture: "two_sessions_activation.json", session: sessionA,
+		present: []MetricName{MetricSkillActivation}, absent: MetricUnknown},
 	{name: "api_request records out of order", fixture: "out_of_order.ndjson",
 		present: []MetricName{MetricTiming}, absent: MetricUnknown},
 	{name: "only a cache count was exported", fixture: "cache_only.json",
@@ -706,6 +842,8 @@ var captureCases = []captureCase{
 	{name: "tool events with nothing readable", fixture: "unreadable_tool_events.json", absent: MetricUnknown},
 	{name: "accepts with no results yet", fixture: "accepts_no_results.json", absent: MetricUnknown},
 	{name: "a reject with no tool name", fixture: "unnamed_reject.json", absent: MetricUnknown},
+	{name: "activation events carrying no skill name", fixture: "unreadable_activation_events.json", absent: MetricUnknown},
+	{name: "the only activation is another product's", fixture: "foreign_scope_activation_only.json", absent: MetricUnknown},
 	{name: "api_request with no timeUnixNano", fixture: "untimed_api_request.json", absent: MetricUnknown},
 	{name: "only events the adapter does not read", fixture: "unknown_events.json", absent: MetricUnknown},
 	{name: "no OTLP envelope", fixture: "no_envelope.json", absent: MetricUnknown},
@@ -956,14 +1094,25 @@ func TestCapture_ReasonNamesWhatTheExportActuallyCarried(t *testing.T) {
 			want: "no tool call outcomes in OTel export: " +
 				"1 claude_code.tool_decision event recorded a reject with no tool_name"},
 
-		// The mandate boundary: skill.name is carried verbatim for a
-		// user-defined skill, and the adapter says it does not read it — not
-		// that the name was redacted.
+		// The activation reason is a fact about the export. skill.name on a
+		// request-scoped signal marks a skill active for that request and is
+		// not an activation record, so the reason names the event that was
+		// looked for — not the attribute that happened to be there, and not a
+		// redaction the export did not perform.
 		{fixture: "skill_name_present.json", metric: MetricSkillActivation,
-			wantIn:  []string{"skill.name", "0.5.0"},
+			want:    "no " + otelSkillActivatedLog + " log events found in OTel export",
 			wantOut: []string{"redact", "OTEL_LOG_TOOL_DETAILS", "custom_skill"}},
+		{fixture: "empty_envelope.json", metric: MetricSkillActivation,
+			want: "no " + otelSkillActivatedLog + " log events found in OTel export"},
+		{fixture: "unknown_events.json", metric: MetricSkillActivation,
+			want: "no " + otelSkillActivatedLog + " log events found in OTel export"},
+		// Seen, and nothing readable in it: the counter the walk kept, in the
+		// unit the reader can count in their own export.
+		{fixture: "unreadable_activation_events.json", metric: MetricSkillActivation,
+			want: "no skill activations in OTel export: 2 " + otelSkillActivatedLog +
+				" events carried no skill.name"},
 		{fixture: "skill_name_present.json", metric: MetricAttribution,
-			want: "Claude Code telemetry carries no output-to-skill mapping"},
+			want: attributionReasonInSpec},
 	}
 
 	for _, tc := range cases {

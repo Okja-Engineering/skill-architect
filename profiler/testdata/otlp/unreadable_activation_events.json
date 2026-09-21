@@ -1,0 +1,30 @@
+{
+  "resourceLogs": [
+    {
+      "scopeLogs": [
+        {
+          "logRecords": [
+            {
+              "timeUnixNano": "1789332595100000000",
+              "body": { "stringValue": "claude_code.skill_activated" },
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
+                { "key": "event.name", "value": { "stringValue": "skill_activated" } },
+                { "key": "invocation_trigger", "value": { "stringValue": "slash_command" } }
+              ]
+            },
+            {
+              "timeUnixNano": "1789332595300000000",
+              "body": { "stringValue": "claude_code.skill_activated" },
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
+                { "key": "event.name", "value": { "stringValue": "skill_activated" } },
+                { "key": "skill.name", "value": { "stringValue": "" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

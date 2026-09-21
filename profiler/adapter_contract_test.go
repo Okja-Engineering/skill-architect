@@ -606,6 +606,11 @@ type stubAdapter struct {
 	capabilities     map[MetricName]MetricSource
 	tokens           TokenResult
 	cacheTokens      TokenResult
+	// activation is the stub's skill_activation result. It is a field rather
+	// than a constant so rule 2 can be exercised over a second signal: a table
+	// whose only liar lies about tokens is a table nobody has shown reads the
+	// other signals it walks.
+	activation ActivationResult
 	// pointedAt is the export this instance was built for, so one stub can
 	// answer differently for the primary and the cache-only export the way a
 	// real adapter reading two files does.
@@ -635,7 +640,7 @@ func (s stubAdapter) Capture(sessionID string, _ CaptureOpts) (Profile, error) {
 		},
 		Tokens:          tokens,
 		ToolCalls:       UnknownToolCallResult("the stub reads no tool calls"),
-		SkillActivation: UnknownActivationResult("the stub reads no activations"),
+		SkillActivation: s.activation,
 		Timing:          UnknownTimingResult("the stub reads no timing"),
 		Attribution:     UnknownAttributionResult("the stub maps no outputs to skills"),
 	}, nil
@@ -667,6 +672,7 @@ func honestStub() stubAdapter {
 		capabilities: advertising(map[MetricName]MetricSource{MetricTokens: SourceOtel}),
 		tokens:       PresentTokenResult(TokenCounts{Input: Count(10), Output: Count(5)}, string(SourceOtel)),
 		cacheTokens:  PresentTokenResult(TokenCounts{CacheRead: Count(7)}, string(SourceOtel)),
+		activation:   UnknownActivationResult("the stub reads no activations"),
 	}
 }
 
@@ -704,6 +710,20 @@ func TestTheContractTableCanFail(t *testing.T) {
 	advertisesNothing := honestStub()
 	advertisesNothing.capabilities = map[MetricName]MetricSource{}
 
+	// The same two directions of rule 2, over skill_activation rather than
+	// tokens. A table that walks only the signal its own liars lie about is a
+	// table nobody has shown reads the rest of the report it iterates, and
+	// activation is the signal this release made readable — the moment a signal
+	// can be present, both directions of the claim about it can be false.
+	overAdvertisingActivation := honestStub()
+	overAdvertisingActivation.capabilities = advertising(map[MetricName]MetricSource{
+		MetricTokens: SourceOtel, MetricSkillActivation: SourceOtel,
+	})
+
+	undeclaredActivation := honestStub()
+	undeclaredActivation.activation = PresentActivationResult(
+		[]ActivationEntry{{SkillName: "invented", Timestamp: "2026-09-13T20:49:55.1Z"}}, string(SourceOtel))
+
 	misnamed := honestStub()
 
 	cases := []struct {
@@ -720,6 +740,16 @@ func TestTheContractTableCanFail(t *testing.T) {
 			name:  "returns a value it never advertised a source for",
 			entry: stubEntry("under-advertising", underAdvertising),
 			want:  `tokens: probe advertised "none" and capture returned "present"`,
+		},
+		{
+			name:  "advertises an activation its capture cannot deliver",
+			entry: stubEntry("over-advertising-activation", overAdvertisingActivation),
+			want:  `skill_activation: probe advertised "otel", capture state is "unknown"`,
+		},
+		{
+			name:  "reports an activation it never advertised a source for",
+			entry: stubEntry("undeclared-activation", undeclaredActivation),
+			want:  `skill_activation: probe advertised "none" and capture returned "present"`,
 		},
 		{
 			name:  "captures without a session id",

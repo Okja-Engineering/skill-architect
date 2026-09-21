@@ -1,0 +1,50 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "claude-code" } }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": { "name": "com.anthropic.claude_code.events", "version": "2.1.221" },
+          "logRecords": [
+            {
+              "timeUnixNano": "1789332595300000000",
+              "body": { "stringValue": "claude_code.skill_activated" },
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
+                { "key": "event.name", "value": { "stringValue": "skill_activated" } },
+                { "key": "skill.name", "value": { "stringValue": "custom_skill" } },
+                { "key": "skill.source", "value": { "stringValue": "plugin" } },
+                { "key": "skill.kind", "value": { "stringValue": "skill" } }
+              ]
+            },
+            {
+              "timeUnixNano": "1789332595100000000",
+              "body": { "stringValue": "claude_code.skill_activated" },
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
+                { "key": "event.name", "value": { "stringValue": "skill_activated" } },
+                { "key": "skill.name", "value": { "stringValue": "my-skill" } },
+                { "key": "invocation_trigger", "value": { "stringValue": "slash_command" } },
+                { "key": "skill.source", "value": { "stringValue": "user" } },
+                { "key": "skill.kind", "value": { "stringValue": "skill" } }
+              ]
+            },
+            {
+              "body": { "stringValue": "claude_code.skill_activated" },
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "00000000-0000-4000-8000-000000000001" } },
+                { "key": "event.name", "value": { "stringValue": "skill_activated" } },
+                { "key": "skill.name", "value": { "stringValue": "untimed-skill" } },
+                { "key": "invocation_trigger", "value": { "stringValue": "skill_tool" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
