@@ -306,9 +306,78 @@ attribution as a guess, which makes the whole signal unusable.
 **Serialization rules:**
 - Profile is JSON. Pretty-printed for human readability, but parsing is canonical.
 - `schema: "skill-architect/profile/v1"` is required. Future versions bump the suffix. The rule for bumping it: v1 stays while a v1 reader is merely *ignorant* of a new key, and v2 is required when a v1 reader would be *wrong*. Every key 0.5.0 adds — `error_type`, `count`, `id`, the four attribution fields, `estimated_context_tokens` — is optional and absent when it was not read, so a v1 reader skips what it does not know and is right about everything it does. A signal that serialized an empty result on every profile would break that, because its `state` would be outside the vocabulary a v1 reader walks; that is why the estimate is a pointer.
-- `snapshot_hash` is whatever the caller passed to `--snapshot`, copied into the profile verbatim. The profiler neither hashes nor validates `--skill-dir` against it; the caller owns that correspondence. F04 is expected to compare only profiles carrying the same `snapshot_hash`.
+- `snapshot_hash` is whatever the caller passed to `--snapshot`, copied into the profile verbatim. The profiler neither hashes nor validates `--skill-dir` against it; the caller owns that correspondence. `compare` reads it and **states a difference rather than refusing one**: comparing a skill before and after a change is the paired comparison's whole purpose, so two snapshot ids are a `note`, not a refusal. What `compare` does refuse is stated in the comparison contract below.
 - A profile with all metrics `unknown` is valid — it honestly reports that no telemetry was available.
 - A profile must round-trip: `Marshal → Unmarshal → Marshal` produces identical JSON (modulo key ordering).
+- A profile that marks a signal `present` and carries no value for it is **invalid**, and `LoadProfile` refuses it rather than leaving the comparator to dereference it. For the two list-valued signals — `tool_calls` and `skill_activation` — "no value" is an empty list as well as an absent one: a result with no entries is never `present`, and an adapter reporting a session that called no tool says so with `unknown` and a reason.
+
+## Comparison contract (`skill-architect/comparison/v1`)
+
+`CompareProfiles(baseline, candidate)` reads two profiles and reports what
+changed between them. `LoadProfile(path)` is how a stored one is read, and it
+refuses anything of another schema, anything that is not a profile, and any
+profile marking a signal `present` with no value behind it.
+
+The comparison's job is to answer one question — what changed about the *skill*
+— and every rule below exists to stop it answering a different one, what changed
+about the *reader*, and presenting that answer as if it were the first.
+
+**A refusal is not a warning beside a delta. No delta is computed at all.** A
+number in the report is a number somebody will read, so a comparison that cannot
+be made honestly carries a reason and no values.
+
+1. **The pair is refused when the two profiles do not name the same, non-empty
+   `capability.adapter_version`.** The report carries `refusal`, every
+   `MetricComparison` carries the same reason, none is `comparable`, and the
+   reason names **both versions**. `AdapterVersion` is bumped whenever the
+   adapter changes what a profile contains for the same input, which is exactly
+   the condition under which a delta stops being about the session — so a
+   profile stored under 0.4.x subtracted from a fresh 0.5.0 one reports four
+   releases of fixes to the reader as the skill's regression. This is that
+   constant's first consumer and the reason it exists. Two profiles naming *no*
+   version are refused too: `"" == ""` is agreement between two unknowns.
+
+2. **One signal is refused when the two sides read it from different sources.**
+   A delta across `otel` and `sqlite` is not a measurement of the same thing.
+   The reason names both sources, and the signals that do agree still compare —
+   a cross-source signal refuses itself, not the report.
+
+3. **Every `MetricComparison` carries `baseline_source` and `candidate_source`,
+   always**, whatever the outcome and including the signals neither side read,
+   which report `none`. Neither key is `omitempty`: an empty string is not a
+   member of the source vocabulary, and a reader walking it would be *wrong*
+   rather than ignorant — the same rule that makes `estimated_context_tokens` a
+   pointer on the profile.
+
+4. **A delta is only ever over what both sides read.** A `TokenCounts` field
+   one profile never read has no key in the delta either, because the difference
+   between a number and an absence is not a number; both sides' values are
+   carried in full beside it, so which side was missing it is visible. When the
+   two share no count at all, `tokens` is not comparable and says so — a delta
+   object with every key absent reads as "no change".
+
+5. **`estimated_context_tokens` carries a `note` on the answer itself**: a
+   relative estimate, not billed — an ordinal signal only, and never a cost. The
+   note travels with the delta rather than being documented beside it, so it
+   survives into anything that renders the report.
+
+6. **`skill_activation` is compared as a set of skill names**
+   (`only_in_baseline` / `only_in_candidate`) as well as a count, because a bare
+   count cannot say which skill stopped firing. Per-task precision and recall
+   belong to the experiment layer, not here.
+
+7. **A difference that does not stop a comparison is a `note`, not a refusal.**
+   `harness`, `snapshot_hash` and `skill_dir` are noted when they differ.
+   Comparing two snapshots of a skill is the paired comparison's whole purpose.
+
+The report's own `comparable` is **derived**: it is true when some signal was
+compared. A refusal makes every signal incomparable by construction rather than
+by a second rule, which is what keeps the two from ever disagreeing.
+
+`compare` exits **0** when something was compared, **2** when the report is
+complete and nothing in it is comparable, and **1** for every usage error
+including a profile that could not be read. The report is written to stdout
+whatever the status: when nothing compared, the reasons are the answer.
 
 ## Adapter implementations (Slice 1 scope)
 

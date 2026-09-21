@@ -2,8 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -55,15 +62,21 @@ func buildProfiler(t *testing.T) string {
 
 func fixture(name string) string { return filepath.Join("..", "testdata", "otlp", name) }
 
+// fixtureSession is the session.id every export under testdata/otlp carries.
+// A capture reads only the records carrying the session it was asked for, so a
+// case that means to read something has to ask for this one.
+const fixtureSession = "00000000-0000-4000-8000-000000000001"
+
 func TestCapture_ExitStatusSaysWhetherAnythingWasRead(t *testing.T) {
 	bin := buildProfiler(t)
 	missing := filepath.Join(t.TempDir(), "absent.json")
 
 	for _, tc := range []struct {
-		name  string
-		otel  string
-		want  int
-		about string
+		name    string
+		otel    string
+		session string
+		want    int
+		about   string
 	}{
 		{name: "an export that cannot be read at all", otel: fixture("malformed.json"), want: 2,
 			about: "every signal is error; nothing was read"},
@@ -71,15 +84,24 @@ func TestCapture_ExitStatusSaysWhetherAnythingWasRead(t *testing.T) {
 			about: "every signal is error; nothing was read"},
 		{name: "no export configured", want: 0,
 			about: "nothing failed — the caller configured no telemetry"},
-		{name: "an export carrying every signal", otel: fixture("full_export.ndjson"), want: 0,
-			about: "three signals were read"},
+		{name: "an export carrying every signal", otel: fixture("full_export.ndjson"), session: fixtureSession, want: 0,
+			about: "four signals were read"},
+		// The same export under a session it does not carry. Nothing is read,
+		// and nothing failed either: a session absent from an export is an
+		// answer about that session.
+		{name: "an export that carries no record of the session asked for", otel: fixture("full_export.ndjson"), want: 0,
+			about: "the projection removed every record, so nothing was read and nothing failed"},
 		{name: "an export carrying no telemetry", otel: fixture("no_envelope.json"), want: 0,
 			about: "nothing failed; the file simply is not an export"},
-		{name: "an export carrying only tool calls", otel: fixture("tool_calls_only.json"), want: 0,
+		{name: "an export carrying only tool calls", otel: fixture("tool_calls_only.json"), session: fixtureSession, want: 0,
 			about: "a signal was read, so the capture produced something"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := []string{"capture", "--harness", "claude_code", "--session", "s",
+			session := tc.session
+			if session == "" {
+				session = "a-session-this-export-does-not-carry"
+			}
+			args := []string{"capture", "--harness", "claude_code", "--session", session,
 				"--snapshot", "h", "--skill-dir", "/skills/my-skill"}
 			if tc.otel != "" {
 				args = append(args, "--otel-file", tc.otel)
@@ -204,8 +226,10 @@ func TestRequestedHelpExitsZero(t *testing.T) {
 		{"--help on the command itself", []string{"--help"}},
 		{"-h on probe", []string{"probe", "-h"}},
 		{"-h on capture", []string{"capture", "-h"}},
+		{"-h on compare", []string{"compare", "-h"}},
 		{"--help on probe", []string{"probe", "--help"}},
 		{"--help on capture", []string{"capture", "--help"}},
+		{"--help on compare", []string{"compare", "--help"}},
 		{"help as a word", []string{"help"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -232,6 +256,19 @@ func TestRequestedHelpExitsZero(t *testing.T) {
 // status — and the second is the one a wrapper is supposed to retry or report.
 func TestUsageErrorsExitOneSoThatTwoMeansOneThing(t *testing.T) {
 	bin := buildProfiler(t)
+
+	// compare reads two files, so the ways of getting it wrong include the
+	// files themselves. A profile that cannot be read is the caller naming the
+	// wrong path or an unreadable document — not a comparison that produced
+	// nothing, which is what 2 means.
+	dir := t.TempDir()
+	valid := writeProfileFile(t, dir, "valid.json", storedProfile(profiler.AdapterVersion, "a", 1000, 10000))
+	notAProfile := filepath.Join(dir, "not-a-profile.json")
+	if err := os.WriteFile(notAProfile, []byte(`{"hello":"world"}`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	absent := filepath.Join(dir, "absent.json")
+
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -251,6 +288,14 @@ func TestUsageErrorsExitOneSoThatTwoMeansOneThing(t *testing.T) {
 			"--session", "", "--snapshot", "h", "--skill-dir", "/d"}},
 		{"a flag no adapter reads", []string{"capture", "--harness", "claude_code",
 			"--session", "s", "--snapshot", "h", "--skill-dir", "/d", "--export-file", "s.json"}},
+		{"compare with neither profile", []string{"compare"}},
+		{"compare with only a baseline", []string{"compare", "--baseline", valid}},
+		{"compare with only a candidate", []string{"compare", "--candidate", valid}},
+		{"an unknown flag on compare", []string{"compare", "--bogus-flag"}},
+		{"a baseline that is not there", []string{"compare", "--baseline", absent, "--candidate", valid}},
+		{"a candidate that is not there", []string{"compare", "--baseline", valid, "--candidate", absent}},
+		{"a baseline that is not a profile", []string{"compare", "--baseline", notAProfile, "--candidate", valid}},
+		{"a candidate that is not a profile", []string{"compare", "--baseline", valid, "--candidate", notAProfile}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := exec.Command(bin, tc.args...)
@@ -343,4 +388,305 @@ func TestProbe_SaysOnStderrWhyACapabilityIsNone(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- compare ---
+//
+// The comparison's own tests live beside it in package profiler. These are the
+// command, because that is what a user runs and what a script stores the output
+// of. A subcommand nothing exercises end to end is how the adapter-version
+// refusal comes to be silently not enforced — and that refusal is the whole
+// reason `compare` can be trusted with a profile somebody stored months ago.
+
+// storedProfile is a profile as it comes back off disk: one somebody captured
+// and kept. The adapter version is a parameter because it is the thing under
+// test.
+func storedProfile(adapterVersion, sessionID string, input, totalMs int) profiler.Profile {
+	p := profiler.Profile{
+		Schema:       profiler.ProfileSchema,
+		ProfiledAt:   "2026-09-20T10:00:00Z",
+		Harness:      "claude_code",
+		SessionID:    sessionID,
+		SnapshotHash: "sha-" + sessionID,
+		SkillDir:     "/skills/my-skill",
+		Capability: profiler.CapabilityReport{
+			Harness:    "claude_code",
+			AdapterVer: adapterVersion,
+			ProbedAt:   "2026-09-20T10:00:00Z",
+		},
+		Tokens: profiler.PresentTokenResult(profiler.TokenCounts{
+			Input:  profiler.Count(input),
+			Output: profiler.Count(20),
+		}, string(profiler.SourceOtel)),
+		Timing: profiler.PresentTimingResult(profiler.TimingData{
+			StartTime: "2026-09-20T10:00:00Z",
+			EndTime:   "2026-09-20T10:00:10Z",
+			TotalMs:   int64(totalMs),
+		}, string(profiler.SourceOtel)),
+		ToolCalls:       profiler.UnknownToolCallResult("no tool call events in export"),
+		SkillActivation: profiler.UnknownActivationResult("no skill activation events in export"),
+		Attribution:     profiler.UnknownAttributionResult("this harness does not attribute outputs to skills"),
+	}
+	return p
+}
+
+func writeProfileFile(t *testing.T, dir, name string, p profiler.Profile) string {
+	t.Helper()
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal profile: %v", err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
+}
+
+// runCompare runs the command and returns everything a caller can observe.
+// The report is parsed only when stdout holds one; a usage error prints no
+// report at all, and that is itself part of the contract.
+func runCompare(t *testing.T, bin string, args ...string) (report profiler.ComparisonReport, stdout, stderr string, code int) {
+	t.Helper()
+	cmd := exec.Command(bin, append([]string{"compare"}, args...)...)
+	var outBuf, errBuf strings.Builder
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	_ = cmd.Run()
+	stdout, stderr = outBuf.String(), errBuf.String()
+	code = cmd.ProcessState.ExitCode()
+	if strings.HasPrefix(strings.TrimSpace(stdout), "{") {
+		if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+			t.Fatalf("stdout is not a comparison report: %v\n%s", err, stdout)
+		}
+	}
+	return report, stdout, stderr, code
+}
+
+// The failure this slice exists to prevent: a profile stored by an older
+// adapter compared against a fresh one, reporting four releases of fixes to the
+// *reader* as the skill's regression. Measured at a 50% apparent token drop on
+// one fixture, where the entire difference was the reader getting more honest.
+func TestCompare_RefusesAProfileStoredByAnotherAdapterVersion(t *testing.T) {
+	bin := buildProfiler(t)
+	dir := t.TempDir()
+
+	// The numbers are the ones that would be subtracted: a 50% drop.
+	stored := writeProfileFile(t, dir, "stored.json", storedProfile("0.4.1", "old", 1000, 10000))
+	fresh := writeProfileFile(t, dir, "fresh.json", storedProfile(profiler.AdapterVersion, "new", 500, 6000))
+
+	report, stdout, stderr, code := runCompare(t, bin, "--baseline", stored, "--candidate", fresh)
+
+	if code != 2 {
+		t.Errorf("exit status = %d, want 2 — the comparison produced no comparable answer\n%s", code, stderr)
+	}
+	if report.Comparable {
+		t.Error("the report says it is comparable")
+	}
+	for _, want := range []string{"0.4.1", profiler.AdapterVersion} {
+		if !strings.Contains(report.Refusal, want) {
+			t.Errorf("refusal = %q, want it to name version %q", report.Refusal, want)
+		}
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr = %q, want it to name version %q — a human running this must not have to parse the JSON", stderr, want)
+		}
+	}
+	if len(report.Metrics) == 0 {
+		t.Fatal("the report compared no metric at all, so this proves nothing")
+	}
+	for name, mc := range report.Metrics {
+		if mc.Comparable || mc.Delta != nil {
+			t.Errorf("%s: comparable=%v delta=%v — a refused comparison still handed over a number", name, mc.Comparable, mc.Delta)
+		}
+	}
+	// The number that would have been reported must appear nowhere in the
+	// output. -500 is the delta this pair would have produced.
+	if strings.Contains(stdout, "-500") {
+		t.Errorf("the refused delta is in the output anyway:\n%s", stdout)
+	}
+
+	// The control: the same two profiles at one adapter version do compare,
+	// and do produce that delta. Without it, a `compare` that refused
+	// everything would pass every assertion above.
+	sameVersion := writeProfileFile(t, dir, "same.json", storedProfile(profiler.AdapterVersion, "old", 1000, 10000))
+	control, controlOut, _, controlCode := runCompare(t, bin, "--baseline", sameVersion, "--candidate", fresh)
+	if controlCode != 0 {
+		t.Fatalf("exit status = %d, want 0 — the same pair at one adapter version is comparable", controlCode)
+	}
+	if !control.Comparable || control.Refusal != "" {
+		t.Fatalf("comparable=%v refusal=%q — the refusal above proves nothing", control.Comparable, control.Refusal)
+	}
+	if !strings.Contains(controlOut, "-500") {
+		t.Errorf("the comparable pair did not report the delta, so the refusal proves nothing:\n%s", controlOut)
+	}
+}
+
+// The exit status is what a script branches on. 0 is a comparison that produced
+// something; 2 is a run that produced a report and nothing comparable in it;
+// 1 is the caller getting the command wrong. The report is on stdout in both
+// of the first two, because the reasons are the point when nothing compared.
+func TestCompare_ExitStatusSaysWhetherAnythingWasCompared(t *testing.T) {
+	bin := buildProfiler(t)
+	dir := t.TempDir()
+
+	comparableA := writeProfileFile(t, dir, "a.json", storedProfile(profiler.AdapterVersion, "a", 1000, 10000))
+	comparableB := writeProfileFile(t, dir, "b.json", storedProfile(profiler.AdapterVersion, "b", 500, 6000))
+	otherVersion := writeProfileFile(t, dir, "old.json", storedProfile("0.4.1", "a", 1000, 10000))
+
+	readNothing := storedProfile(profiler.AdapterVersion, "c", 0, 0)
+	readNothing.Tokens = profiler.UnknownTokenResult("no OTel export configured")
+	readNothing.Timing = profiler.UnknownTimingResult("no OTel export configured")
+	nothing := writeProfileFile(t, dir, "nothing.json", readNothing)
+
+	otherSource := storedProfile(profiler.AdapterVersion, "d", 500, 6000)
+	otherSource.Tokens.Source = string(profiler.SourceSQLite)
+	otherSource.Timing.Source = string(profiler.SourceSQLite)
+	crossSource := writeProfileFile(t, dir, "sqlite.json", otherSource)
+
+	for _, tc := range []struct {
+		name                string
+		baseline, candidate string
+		want                int
+		about               string
+	}{
+		{"two profiles read the same way", comparableA, comparableB, 0,
+			"tokens and timing were read from the same source on both sides"},
+		{"two adapter versions", comparableA, otherVersion, 2,
+			"nothing is comparable: the difference may be the reader"},
+		{"a profile that read nothing", comparableA, nothing, 2,
+			"no signal is present on both sides, so there is nothing to subtract"},
+		{"two different sources", comparableA, crossSource, 2,
+			"every signal these two share was read from a different source"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report, stdout, _, code := runCompare(t, bin, "--baseline", tc.baseline, "--candidate", tc.candidate)
+			if code != tc.want {
+				t.Errorf("exit status = %d, want %d — %s", code, tc.want, tc.about)
+			}
+			// Whatever the status, the report is written: a caller that wants
+			// the reasons must be able to read them.
+			if report.Schema != profiler.ComparisonSchema {
+				t.Errorf("stdout schema = %q, want %q\n%s", report.Schema, profiler.ComparisonSchema, stdout)
+			}
+			if (code == 0) != report.Comparable {
+				t.Errorf("exit status %d disagrees with the report's own comparable=%v", code, report.Comparable)
+			}
+		})
+	}
+}
+
+// Both sources reach the report a caller parses, on every metric and whatever
+// the outcome — including the signals neither side read, which say "none".
+func TestCompare_EveryMetricInTheReportNamesBothSources(t *testing.T) {
+	bin := buildProfiler(t)
+	dir := t.TempDir()
+	a := writeProfileFile(t, dir, "a.json", storedProfile(profiler.AdapterVersion, "a", 1000, 10000))
+	b := writeProfileFile(t, dir, "b.json", storedProfile(profiler.AdapterVersion, "b", 500, 6000))
+
+	_, stdout, _, _ := runCompare(t, bin, "--baseline", a, "--candidate", b)
+
+	var doc struct {
+		Metrics map[string]map[string]json.RawMessage `json:"metrics"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatalf("stdout is not a report: %v\n%s", err, stdout)
+	}
+	if len(doc.Metrics) == 0 {
+		t.Fatal("the report carries no metrics, so this walk asserts nothing")
+	}
+	for name, fields := range doc.Metrics {
+		for _, key := range []string{"baseline_source", "candidate_source"} {
+			if _, ok := fields[key]; !ok {
+				t.Errorf("metric %q has no %q in the report", name, key)
+			}
+		}
+	}
+}
+
+// --- The help and the dispatcher cannot come to disagree ---
+//
+// Every slice from here to the release adds a subcommand. A command the
+// dispatcher accepts and the help does not list is one nobody can find, and a
+// command the help lists and the dispatcher rejects is one that does not exist.
+// Both sets are derived — one from main.go's own switch, one from the help text
+// the binary prints — so neither can be updated without the other.
+func TestTheHelpListsEveryCommandTheDispatcherAccepts(t *testing.T) {
+	dispatched := dispatchedCommands(t)
+	if len(dispatched) == 0 {
+		t.Fatal("no command was read out of main.go's dispatcher, so this check reads nothing")
+	}
+
+	bin := buildProfiler(t)
+	cmd := exec.Command(bin, "help")
+	helpText, _ := cmd.CombinedOutput()
+	listed := commandsInHelp(string(helpText))
+	if len(listed) == 0 {
+		t.Fatalf("no command was read out of the help text, so this check reads nothing:\n%s", helpText)
+	}
+
+	if !reflect.DeepEqual(dispatched, listed) {
+		t.Errorf("the dispatcher accepts %v and the help lists %v", dispatched, listed)
+	}
+	// The two flag spellings are aliases of `help` rather than commands of
+	// their own, so they are excluded above — which is only honest if the help
+	// still says they work.
+	for _, alias := range []string{"-h", "--help"} {
+		if !strings.Contains(string(helpText), alias) {
+			t.Errorf("the help does not mention %q, which the dispatcher accepts", alias)
+		}
+	}
+}
+
+// dispatchedCommands reads the command names out of the switch in main(),
+// rather than out of a list written down here that would go stale the same way
+// the help text does.
+func dispatchedCommands(t *testing.T) []string {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+	var names []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		clause, ok := n.(*ast.CaseClause)
+		if !ok {
+			return true
+		}
+		for _, expr := range clause.List {
+			lit, ok := expr.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				continue
+			}
+			name, err := strconv.Unquote(lit.Value)
+			if err != nil || strings.HasPrefix(name, "-") {
+				continue // the flag spellings of help are aliases, not commands
+			}
+			names = append(names, name)
+		}
+		return true
+	})
+	sort.Strings(names)
+	return names
+}
+
+// commandsInHelp reads the first word of every line under "commands:".
+func commandsInHelp(help string) []string {
+	var names []string
+	inBlock := false
+	for _, line := range strings.Split(help, "\n") {
+		if strings.HasPrefix(line, "commands:") {
+			inBlock = true
+			continue
+		}
+		if !inBlock {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			break // the block ends at the first blank line
+		}
+		names = append(names, fields[0])
+	}
+	sort.Strings(names)
+	return names
 }
