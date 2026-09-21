@@ -85,9 +85,9 @@ Four destinations it refuses, and it refuses them before it runs the audit, so a
 - **A directory.** Name the file to write, not the folder to write it in.
 - **A symbolic link.** A redirect follows the link and truncates what is on the other end, so where the draft would go is not where you named it. Give the path the link points at.
 - **A `SKILL.md`.** A rewrite draft is not a skill. This is the mechanism behind the Constraints section's "do not overwrite the original `SKILL.md`": until `-o` existed there was no way to reach that mistake, and now that there is, the drafter refuses it rather than trusting you not to make it.
-- **Anywhere inside a live agent configuration directory.** An agent reads its skills directory as skills, so a draft left in one is not a stray file but a document that may be loaded as instructions.
+- **Anywhere inside a live agent configuration directory, or inside a directory an agent reads skills from.** An agent reads a skills directory as skills, so a draft left in one is not a stray file but a document that may be loaded as instructions. The list is every `$HOME`-relative directory this repository's README documents an agent reading skills from — including `$HOME/.agents`, which belongs to no single harness and is read by more than one.
 
-Protected destinations: `$HOME/.claude`, `$HOME/.cursor`, `$HOME/.codex`, `$HOME/.devin`, `$HOME/.config`.
+Protected destinations: `$HOME/.claude`, `$HOME/.cursor`, `$HOME/.codex`, `$HOME/.devin`, `$HOME/.config`, `$HOME/.agents`.
 
 Each of those is decided **after the path is resolved**, which is the part worth knowing if you are writing the destination in a script. `$HOME/drafts/x.md` where `drafts` is a symlink into `~/.claude/skills` is refused, though nothing in its spelling looks wrong; `$HOME/.claude-notes/x.md` is accepted, though `$HOME/.claude` is a prefix of it. And a destination whose path the drafter cannot resolve at all — a directory it may not traverse — is refused as an execution error, exit 3, rather than being let through: "I could not tell where this would land" is not "go ahead".
 

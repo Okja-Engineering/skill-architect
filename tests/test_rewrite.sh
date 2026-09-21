@@ -631,6 +631,19 @@ assert "a destination named directly inside a live config directory is refused" 
 assert "the directly named config destination was not written" \
   test ! -f "$out_home/.claude/skills/direct.md"
 
+# The same rule at the root the list did not have. `$HOME/.agents/skills/` is
+# not a harness's own configuration directory — it is the shared one Codex and
+# Cursor both read — which is exactly why the list built from harness names
+# missed it, and why the rationale is about what an agent reads rather than
+# about whose directory it is. Driven behaviourally as well as compared as a
+# list, because the list comparison would pass over a root the loop never uses.
+mkdir -p "$out_home/.agents/skills"
+agents_target="$(target_from tests/fixtures/f01/valid-full agents-config-out)"
+assert "a destination inside the shared agent skills directory is refused" \
+  refused_out "$out_home" "$agents_target" "$out_home/.agents/skills/shared.md"
+assert "the shared agent skills destination was not written" \
+  test ! -f "$out_home/.agents/skills/shared.md"
+
 # (iii) A `SKILL.md`. This is the one refusal that is not about the caller's
 # machine but about this skill's own stated constraint — "Do not overwrite the
 # original `SKILL.md` without explicit approval" — which had no mechanism for as
@@ -699,6 +712,38 @@ assert "the SKILL.md names every live configuration directory the drafter protec
 if [ "$(protected_roots_in_script)" != "$(documented_protected_roots)" ]; then
   echo "  in the script: $(protected_roots_in_script | tr '\n' ' ')"
   echo "  documented   : $(documented_protected_roots | tr '\n' ' ')"
+fi
+
+# And the side that was missing, which is the one the rationale actually rests
+# on. The refusal exists because "an agent reads its skills directory as
+# skills", so the list has to be the set of directories *this repository tells a
+# reader an agent reads skills from* — and the document that tells them that is
+# the README, not the SKILL.md. Held against the SKILL.md alone, the two lists
+# agreed with each other and both disagreed with the README: `$HOME/.agents/`
+# is documented there as a global skills directory for Codex and for Cursor, and
+# it was not protected. Reproduced — rc=0, draft written into
+# `$HOME/.agents/skills/`.
+#
+# Read off the README as a path shape rather than out of a table, because the
+# table is prose and the paths are spread through it: every `$HOME`-relative
+# path the document spells with a `skills` component in it, reduced to its first
+# component. That is deliberately over-inclusive — `~/.devin/skills/` appears
+# there only to say it is *not* the place, and this counts it anyway — and
+# over-inclusive is the safe direction for a refusal list: protecting a
+# directory nobody reads costs a destination, and not protecting one costs a
+# document loaded as instructions.
+readme_skills_roots() {
+  { grep -oE '~/\.[a-z][a-z-]*(/[a-z][a-z-]*)*/skills' README.md || true; } \
+    | sed -e 's|^~/||' -e 's|/.*$||' | sort -u
+}
+
+assert "the README names a \$HOME-relative skills directory at all, so the comparison has two sides" \
+  test -n "$(readme_skills_roots)"
+assert "the drafter protects every directory the README documents an agent reading skills from, and none it does not" \
+  test "$(protected_roots_in_script)" = "$(readme_skills_roots)"
+if [ "$(protected_roots_in_script)" != "$(readme_skills_roots)" ]; then
+  echo "  in the script  : $(protected_roots_in_script | tr '\n' ' ')"
+  echo "  in the README  : $(readme_skills_roots | tr '\n' ' ')"
 fi
 
 # And the premise that comparison rests on: the roots are `$HOME`-relative, so

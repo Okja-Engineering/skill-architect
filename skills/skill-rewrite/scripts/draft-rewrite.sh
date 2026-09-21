@@ -382,10 +382,18 @@ path_inside() {
 # statement from "a path that could not be resolved", which is why it accepts
 # rather than refusing: there is nothing here that could not be determined.
 #
-# One physical line per root, and the list is compared against the one
-# skills/skill-rewrite/SKILL.md gives a reader, so neither side can grow without
-# the other.
-protected_home_dirs=".claude .cursor .codex .devin .config"
+# One physical line per root, and the list is compared against two documents:
+# the one skills/skill-rewrite/SKILL.md gives a reader, and every `$HOME`-relative
+# skills path the README spells. Neither side can grow without the others.
+#
+# `.agents` is not any one harness's configuration directory — it is the shared
+# skills directory Codex and Cursor both read, which the README documents at
+# `~/.agents/skills/` for each of them. A list assembled from harness names
+# missed it for that reason, and the miss was the whole list failing its own
+# stated rationale: the refusal is about what an agent reads as instructions,
+# not about whose dot-directory it is. Reproduced before it was added — rc=0,
+# draft written into `$HOME/.agents/skills/`.
+protected_home_dirs=".claude .cursor .codex .devin .config .agents"
 
 # output_is_permitted <spelled> — decide the destination named with -o.
 #
