@@ -19,6 +19,8 @@ import (
 //	profiler experiment {design,plan,run} …
 //	profiler ingest [--spool-dir <dir>] [--strict]        (reads one hook payload on stdin)
 //	profiler hooks {install,uninstall} [--home <dir>] [--command <cmd>]
+//	profiler analyze [--spool-dir <dir>]
+//	profiler doctor [--home <dir>] [--spool-dir <dir>] [--command <cmd>] [--harness <name>] [--otel-file <path>]
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -38,6 +40,10 @@ func main() {
 		cmdIngest(os.Args[2:])
 	case "hooks":
 		cmdHooks(os.Args[2:])
+	case "analyze":
+		cmdAnalyze(os.Args[2:])
+	case "doctor":
+		cmdDoctor(os.Args[2:])
 	case "version":
 		fmt.Println("profiler " + profiler.AdapterVersion)
 	case "-h", "--help", "help":
@@ -442,14 +448,7 @@ func cmdIngest(args []string) {
 	strict := fs.Bool("strict", false, "replace prompt and tool content with its size, keeping only metadata")
 	parseFlags(fs, args)
 
-	dir := *spoolDir
-	if dir == "" {
-		var err error
-		if dir, err = profiler.DefaultSpoolDir(); err != nil {
-			fmt.Fprintf(os.Stderr, "ingest error: cannot resolve the home directory, pass --spool-dir: %v\n", err)
-			os.Exit(1)
-		}
-	}
+	dir := resolveSpoolDir("ingest", *spoolDir)
 
 	if _, err := profiler.IngestMode(profiler.StdinSource{In: os.Stdin}, dir, time.Now(), *strict); err != nil {
 		// Registered as `… ingest || true`, so Cursor will never look at this
@@ -508,28 +507,109 @@ func hooksFlags(sub string, args []string) (home, command string) {
 	commandFlag := fs.String("command", "", "the hook command to register (default: this binary's own `ingest`)")
 	parseFlags(fs, args)
 
-	home = *homeFlag
-	if home == "" {
-		var err error
-		if home, err = os.UserHomeDir(); err != nil {
-			fmt.Fprintf(os.Stderr, "hooks %s error: cannot resolve the home directory, pass --home: %v\n", sub, err)
-			os.Exit(1)
-		}
-	}
+	return resolveHome("hooks "+sub, *homeFlag), resolveHookCommand("hooks "+sub, *commandFlag)
+}
 
-	command = *commandFlag
-	if command == "" {
-		// An absolute path, because PATH inside a hook's environment is not
-		// something this tool gets to assume. `|| true` so a failure of ours
-		// can never take the user's session down with it.
-		self, err := os.Executable()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "hooks %s error: cannot resolve this binary's path, pass --command: %v\n", sub, err)
-			os.Exit(1)
-		}
-		command = self + " ingest || true"
+// resolveHome is the home a command operates on: the flag, or the current
+// user's.
+//
+// One function, so no two commands can come to disagree about what "the user's
+// own" means — which is the resolution that decides whether a run touches the
+// real Cursor configuration. `doctor` reads that directory and `hooks` writes
+// it, and they have to be looking at the same one or the report describes a
+// machine nobody configured.
+func resolveHome(command, flagValue string) string {
+	if flagValue != "" {
+		return flagValue
 	}
-	return home, command
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s error: cannot resolve the home directory, pass --home: %v\n", command, err)
+		os.Exit(1)
+	}
+	return home
+}
+
+// resolveHookCommand is the registration this binary writes, and therefore the
+// one `doctor` looks for.
+//
+// An absolute path, because PATH inside a hook's environment is not something
+// this tool gets to assume; `|| true` so a failure of ours can never take the
+// user's session down with it. Both spellings have to be the same string or
+// `doctor` reports that nothing is registered on a machine `hooks install` has
+// just configured — so there is one of them.
+func resolveHookCommand(command, flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	self, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s error: cannot resolve this binary's path, pass --command: %v\n", command, err)
+		os.Exit(1)
+	}
+	return self + " ingest || true"
+}
+
+// resolveSpoolDir is the spool a command reads or writes: the flag, or the one
+// under the current user's home that `ingest` appends to.
+func resolveSpoolDir(command, flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	dir, err := profiler.DefaultSpoolDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s error: cannot resolve the home directory, pass --spool-dir: %v\n", command, err)
+		os.Exit(1)
+	}
+	return dir
+}
+
+// cmdAnalyze summarises a spool.
+//
+// It prints the summary and nothing else. A spool directory that is not there
+// is an error rather than an empty summary: a caller who cannot tell them apart
+// reports "nothing was captured" for a capture that never ran, and that is the
+// conclusion a user of this command is most likely to draw and least able to
+// check.
+func cmdAnalyze(args []string) {
+	fs := flag.NewFlagSet("analyze", flag.ContinueOnError)
+	spoolDir := fs.String("spool-dir", "", "spool directory (default: <home>/.skill-architect/spool)")
+	parseFlags(fs, args)
+
+	summary, err := profiler.AnalyzeSpool(resolveSpoolDir("analyze", *spoolDir))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "analyze error: %v\n", err)
+		os.Exit(1)
+	}
+	printJSON(summary)
+}
+
+// cmdDoctor reports what this machine can and cannot measure.
+//
+// It exits 0 whatever it finds. Detection is a report and not a gate: "nothing
+// here measures anything" is the answer for most machines today, and a status
+// that called it a failure would make the command unusable in the one situation
+// it exists for. A usage error is still 1, because that is the caller's to fix.
+//
+// The measurement half only says something when an export is supplied, and that
+// is the whole design: a capability is what a probe read, so the command has to
+// be given something to read. Everything else it reports is an observation.
+func cmdDoctor(args []string) {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	home := fs.String("home", "", "home directory holding .cursor/hooks.json and the spool (default: the current user's)")
+	spoolDir := fs.String("spool-dir", "", "spool directory (default: <home>/.skill-architect/spool)")
+	command := fs.String("command", "", "the registered hook command to look for (default: this binary's own `ingest`)")
+	harness := harnessFlag(fs)
+	otelFile := fs.String("otel-file", "", "an export to probe, which is the only way a measurement surface is reported")
+	parseFlags(fs, args)
+
+	printJSON(profiler.DetectEnvironment(profiler.EnvironmentQuery{
+		Home:        resolveHome("doctor", *home),
+		SpoolDir:    *spoolDir,
+		HookCommand: resolveHookCommand("doctor", *command),
+		Harness:     *harness,
+		ExportFile:  *otelFile,
+	}))
 }
 
 func reportHooks(sub string, res profiler.HookInstallResult, err error) {
@@ -617,6 +697,8 @@ commands:
   experiment  Design, plan or run a paired experiment
   hooks       Register or remove this binary's ingest in Cursor's hooks.json
   ingest      Append one Cursor hook payload, read on stdin, to the spool
+  analyze     Summarise what a hook spool contains
+  doctor      Report what this machine can and cannot measure
   version     Print version
   help        Print this help (also -h, --help)
 
@@ -627,5 +709,7 @@ examples:
   profiler experiment plan --file ./design.json
   profiler experiment run --design ./design.json > ./result.json
   profiler hooks install
-  echo '{"hook_event_name":"sessionStart"}' | profiler ingest`)
+  echo '{"hook_event_name":"sessionStart"}' | profiler ingest
+  profiler analyze
+  profiler doctor --harness claude_code --otel-file ./otel-export.json`)
 }

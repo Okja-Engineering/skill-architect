@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/Okja-Engineering/skill-architect/profiler"
+	"github.com/Okja-Engineering/skill-architect/profiler/internal/homesafe"
 )
 
 // The invariant: a flag the selected adapter cannot honour fails loudly. It is
@@ -508,7 +509,7 @@ func writeProfileFile(t *testing.T, dir, name string, p profiler.Profile) string
 // every other call site in this file to coming through here.
 func runCLI(t *testing.T, bin string, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
-	return runCLIIn(t, bin, cliRun{home: sandboxHome(t)}, args...)
+	return runCLIIn(t, bin, cliRun{home: homesafe.SandboxHome(t)}, args...)
 }
 
 // cliRun is what a run needs that is not an argument: the home the process
@@ -521,7 +522,7 @@ type cliRun struct {
 // runCLIIn is the one place in this file that starts the profiler binary.
 func runCLIIn(t *testing.T, bin string, run cliRun, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
-	mustBeOutsideRealHome(t, run.home)
+	homesafe.MustBeOutside(t, run.home)
 
 	cmd := exec.Command(bin, args...)
 	// HOME is replaced rather than appended to, so there is exactly one and no
@@ -549,200 +550,13 @@ func envWithout(env []string, name string) []string {
 
 // --- The home-directory barrier ---
 //
-// A sibling of this lives in package profiler's own tests. It is duplicated
-// rather than shared because these are two packages and the alternative —
-// exporting it from profiler — would be production surface existing only for
-// tests. S8 adds `doctor`, which takes a home as well; at a third copy it
-// should be lifted into an internal package rather than copied again.
-
-// sandboxHome returns a directory standing in for a home, proved to be outside
-// the real one before it is handed back.
-func sandboxHome(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	mustBeOutsideRealHome(t, dir)
-	return dir
-}
-
-// fatalTB is the part of *testing.T the barrier is allowed to use.
-//
-// It is this narrow on purpose. The bug this barrier replaces was a guard that
-// called Errorf, which marks the test failed and then *returns* — so the
-// install on the next line ran anyway. An interface carrying only Fatalf makes
-// writing that bug a compile error rather than something a reviewer has to
-// catch again, and a mutation that tried it does not build.
-type fatalTB interface {
-	Helper()
-	Fatalf(format string, args ...any)
-}
-
-// mustBeOutsideRealHome aborts unless dir is somewhere other than the real
-// user's home directory.
-//
-// The explicit return after each Fatalf is not redundant: with a *testing.T,
-// Fatalf does not come back, and the return says the barrier does not depend on
-// that — the guarantee is this function's own rather than borrowed.
-func mustBeOutsideRealHome(tb fatalTB, dir string) {
-	tb.Helper()
-	contained, why, err := realHomeContains(dir)
-	if err != nil {
-		tb.Fatalf("refusing to run: %s: %v", why, err)
-		return
-	}
-	if contained {
-		tb.Fatalf("refusing to run: %s", why)
-		return
-	}
-}
-
-// realHomeContains is the decision, split out from the abort so it can be
-// asserted in both directions. A guard with no negative test is a guard nobody
-// has watched work: this one degraded to a string prefix test and the whole
-// suite stayed green until the two tests below existed.
-func realHomeContains(dir string) (contained bool, why string, err error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return true, "the real home could not be named, so nothing can be shown to be outside it", err
-	}
-	contained, err = pathContains(home, dir)
-	if err != nil {
-		return true, dir + " could not be placed relative to the real home " + home, err
-	}
-	if !contained {
-		return false, "", nil
-	}
-	return true, dir + " is inside the real home " + home, nil
-}
-
-// pathContains reports whether child is parent or something inside it, deciding
-// after both are resolved.
-//
-// Resolution is the point. The question is which directory will be written, not
-// how the path was spelled: on macOS t.TempDir() sits under /var/folders, a
-// symlink to /private/var/folders, and $HOME can be a symlink of its own. A
-// comparison of the unresolved strings answers a different question.
-//
-// Containment is filepath.Rel rather than a prefix test, because a parent's
-// name is a prefix of every sibling beginning with the same letters —
-// strings.HasPrefix calls /Users/alice-backup a part of /Users/alice.
-func pathContains(parent, child string) (bool, error) {
-	resolvedParent, err := filepath.EvalSymlinks(parent)
-	if err != nil {
-		return false, err
-	}
-	resolvedChild, err := filepath.EvalSymlinks(child)
-	if err != nil {
-		return false, err
-	}
-	rel, err := filepath.Rel(resolvedParent, resolvedChild)
-	if err != nil {
-		return false, err
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
-}
-
-// TestPathContains_DecidesAfterResolution is the negative half of the barrier:
-// the two cases a test on the spelling of the paths gets wrong.
-//
-// Both are built out of directories this test creates, so neither depends on
-// what happens to exist beside the real home and neither is skipped. A skipped
-// case here would be the barrier's proof passing by not running.
-func TestPathContains_DecidesAfterResolution(t *testing.T) {
-	root := t.TempDir()
-	stands := filepath.Join(root, "alice") // stands for the home
-	inside := filepath.Join(stands, ".cursor")
-	sibling := filepath.Join(root, "alice-backup") // shares its name as a prefix
-	for _, d := range []string{stands, inside, sibling} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			t.Fatalf("mkdir %s: %v", d, err)
-		}
-	}
-	// A symlink elsewhere that points into the protected directory: outside by
-	// every string comparison, inside in fact.
-	link := filepath.Join(root, "looks-harmless")
-	if err := os.Symlink(inside, link); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
-
-	for _, tc := range []struct {
-		name  string
-		child string
-		want  bool
-	}{
-		{"the directory itself", stands, true},
-		{"something inside it", inside, true},
-		{"a symlink from elsewhere pointing inside it", link, true},
-		{"a sibling whose name starts with the same letters", sibling, false},
-		{"the parent of both", root, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := pathContains(stands, tc.child)
-			if err != nil {
-				t.Fatalf("pathContains(%q, %q): %v", stands, tc.child, err)
-			}
-			if got != tc.want {
-				t.Errorf("pathContains(%q, %q) = %v, want %v", stands, tc.child, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestRealHomeContains_RefusesRatherThanGuessesWhenItCannotResolve pins the
-// answer on the side of safety. A path the barrier cannot resolve is not a path
-// it has shown to be outside the home, and "I could not tell" must not read as
-// "go ahead".
-func TestRealHomeContains_RefusesRatherThanGuessesWhenItCannotResolve(t *testing.T) {
-	// A path under no directory at all: unresolvable, and the case a barrier
-	// that shrugged would wave through.
-	unresolvable := filepath.Join(t.TempDir(), "never-created", ".cursor")
-
-	// Whether the case is reachable is asked of the filesystem, not of the
-	// function under test — skipping on what it returned would make this pass
-	// by not running the moment the answer went wrong.
-	if _, err := filepath.EvalSymlinks(unresolvable); err == nil {
-		t.Skipf("this filesystem resolved %s, so the case is not reachable here", unresolvable)
-	}
-
-	contained, why, err := realHomeContains(unresolvable)
-	if err == nil {
-		t.Error("realHomeContains reported no error for a path that cannot be resolved")
-	}
-	if !contained {
-		t.Error("a path that could not be resolved was reported as outside the real home")
-	}
-	if why == "" {
-		t.Error("no reason was given for the refusal")
-	}
-}
-
-// TestRealHomeContains_KnowsTheRealHome joins the decision to the directory it
-// is protecting. Only paths that already exist are asked about, and nothing is
-// created: this is the one assertion in the file that looks at the real home,
-// and it looks only.
-func TestRealHomeContains_KnowsTheRealHome(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("os.UserHomeDir: %v", err)
-	}
-	for _, tc := range []struct {
-		name string
-		dir  string
-		want bool
-	}{
-		{"the real home itself", home, true},
-		{"the temp dir", t.TempDir(), false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, why, err := realHomeContains(tc.dir)
-			if err != nil {
-				t.Fatalf("realHomeContains(%q): %v", tc.dir, err)
-			}
-			if got != tc.want {
-				t.Errorf("realHomeContains(%q) = %v, want %v (reason %q)", tc.dir, got, tc.want, why)
-			}
-		})
-	}
-}
+// The barrier lives in the profiler module's internal/homesafe, with its own
+// tests. It used to exist here and in package profiler's tests, and `doctor`
+// made a third caller: three copies of a guard are three chances for one of
+// them to be the copy that degraded, and a guard that never fires in a healthy
+// tree stops working invisibly. Nothing in this file names a home except
+// through it — TestEverySubprocessRunsThroughTheSandboxedRunner derives that
+// from this file rather than trusting the convention.
 
 // runCompare runs the command and returns everything a caller can observe.
 // The report is parsed only when stdout holds one; a usage error prints no
@@ -1239,7 +1053,7 @@ func homeTheBinaryResolves(t *testing.T, bin, home string) string {
 	}
 
 	resolved := filepath.Dir(filepath.Dir(res.HooksJSON))
-	mustBeOutsideRealHome(t, resolved)
+	homesafe.MustBeOutside(t, resolved)
 	if resolved != home {
 		t.Fatalf("the binary resolved its home to %s, not to the sandbox %s — the HOME override did not take, and a default-home case would write outside the sandbox", resolved, home)
 	}
@@ -1248,7 +1062,7 @@ func homeTheBinaryResolves(t *testing.T, bin, home string) string {
 
 func TestIngest_WritesOneSpoolLinePerInvocationAndSaysNothing(t *testing.T) {
 	bin := buildProfiler(t)
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 	spool := filepath.Join(home, "spool")
 
 	payload := `{"hook_event_name":"beforeSubmitPrompt","conversation_id":"conv-1","prompt":"do the thing"}`
@@ -1291,7 +1105,7 @@ func TestIngest_WritesOneSpoolLinePerInvocationAndSaysNothing(t *testing.T) {
 
 func TestIngest_StrictStripsContentAndSaysSo(t *testing.T) {
 	bin := buildProfiler(t)
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 	spool := filepath.Join(home, "spool")
 	payload := `{"hook_event_name":"beforeSubmitPrompt","cwd":"/work","prompt":"do the thing"}`
 
@@ -1316,7 +1130,7 @@ func TestIngest_StrictStripsContentAndSaysSo(t *testing.T) {
 // supplies the real home — the risky half, and the reason for the pre-flight.
 func TestIngest_DefaultsToTheSpoolUnderTheResolvedHome(t *testing.T) {
 	bin := buildProfiler(t)
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 	homeTheBinaryResolves(t, bin, home)
 
 	payload := `{"hook_event_name":"sessionStart","conversation_id":"conv-1"}`
@@ -1337,7 +1151,7 @@ func TestIngest_DefaultsToTheSpoolUnderTheResolvedHome(t *testing.T) {
 // empty for a week gets discovered a week late.
 func TestIngest_SaysSoWhenItCannotWrite(t *testing.T) {
 	bin := buildProfiler(t)
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 	sealed := filepath.Join(home, "sealed")
 	if err := os.Mkdir(sealed, 0o500); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -1365,7 +1179,7 @@ func TestIngest_SaysSoWhenItCannotWrite(t *testing.T) {
 
 func TestHooksInstall_IsIdempotentAndPreservesAForeignHook(t *testing.T) {
 	bin := buildProfiler(t)
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 
 	// Somebody else's hook, already registered on an event we also register.
 	cursorDir := filepath.Join(home, ".cursor")
@@ -1436,7 +1250,7 @@ func TestHooksInstall_IsIdempotentAndPreservesAForeignHook(t *testing.T) {
 // the risky wiring: `hooks install` with no --home.
 func TestHooks_DefaultHomeIsTheOneTheBinaryResolves(t *testing.T) {
 	bin := buildProfiler(t)
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 	homeTheBinaryResolves(t, bin, home)
 
 	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "hooks", "install")
@@ -1459,10 +1273,13 @@ func TestHooks_DefaultHomeIsTheOneTheBinaryResolves(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
-		// An absolute path, because PATH inside a hook's environment is not
-		// something this tool gets to assume.
-		if !strings.Contains(string(body), bin+" ingest") {
-			t.Errorf("the registered command is not this binary's ingest:\n%s", body)
+		// The whole command, not a prefix of it. An absolute path, because PATH
+		// inside a hook's environment is not something this tool gets to
+		// assume, and `|| true` so a failure of ours cannot take the user's
+		// session down — the second half is the part a prefix match cannot see,
+		// and a mutation that dropped it passed.
+		if want := bin + " ingest || true"; !strings.Contains(string(body), want) {
+			t.Errorf("the registered command is not %q:\n%s", want, body)
 		}
 	})
 }
@@ -1476,7 +1293,7 @@ func TestHooks_RefusesAFileItCannotParseAndSaysWhich(t *testing.T) {
 
 	for _, sub := range []string{"install", "uninstall"} {
 		t.Run(sub, func(t *testing.T) {
-			home := sandboxHome(t)
+			home := homesafe.SandboxHome(t)
 			cursorDir := filepath.Join(home, ".cursor")
 			if err := os.MkdirAll(cursorDir, 0o700); err != nil {
 				t.Fatalf("mkdir: %v", err)
@@ -1526,8 +1343,8 @@ func TestTheFlagWinsOverTheEnvironment(t *testing.T) {
 	bin := buildProfiler(t)
 
 	t.Run("hooks --home", func(t *testing.T) {
-		flagHome := sandboxHome(t)
-		envHome := sandboxHome(t)
+		flagHome := homesafe.SandboxHome(t)
+		envHome := homesafe.SandboxHome(t)
 		if flagHome == envHome {
 			t.Fatal("the two sandboxes are the same directory, so this case separates nothing")
 		}
@@ -1553,8 +1370,8 @@ func TestTheFlagWinsOverTheEnvironment(t *testing.T) {
 	})
 
 	t.Run("ingest --spool-dir", func(t *testing.T) {
-		envHome := sandboxHome(t)
-		flagSpool := filepath.Join(sandboxHome(t), "elsewhere")
+		envHome := homesafe.SandboxHome(t)
+		flagSpool := filepath.Join(homesafe.SandboxHome(t), "elsewhere")
 
 		_, stderr, code := runCLIIn(t, bin,
 			cliRun{home: envHome, stdin: `{"hook_event_name":"stop"}`},
@@ -1736,6 +1553,277 @@ func TestTheHooksHelpListsEverySubcommandItDispatches(t *testing.T) {
 	}
 }
 
+// --- `analyze` and `doctor` ---
+
+// TestAnalyze_SummarisesTheSpoolAndClaimsNothingAboutIt is the command half of
+// the rule the library half keeps: the summary describes the files.
+//
+// The assertion that matters is the negative one. A user runs `analyze` to find
+// out what a week of capture holds, and the document they get back is the one
+// they paste into an issue — so it may not contain a token count, a tool call
+// or a skill activation, because no adapter in this release reads a spool and
+// any of those would be a measurement nobody made.
+func TestAnalyze_SummarisesTheSpoolAndClaimsNothingAboutIt(t *testing.T) {
+	bin := buildProfiler(t)
+	home := homesafe.SandboxHome(t)
+	spool := filepath.Join(home, "spool")
+
+	for _, payload := range []string{
+		`{"hook_event_name":"sessionStart","conversation_id":"c1","model":"gpt-5"}`,
+		`{"hook_event_name":"preToolUse","conversation_id":"c1","tool_name":"Bash"}`,
+		`{"hook_event_name":"beforeSubmitPrompt","conversation_id":"c1","prompt":"do not quote me"}`,
+	} {
+		_, stderr, code := runCLIIn(t, bin, cliRun{home: home, stdin: payload}, "ingest", "--spool-dir", spool)
+		if code != 0 {
+			t.Fatalf("seeding the spool failed with status %d: %s", code, stderr)
+		}
+	}
+
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "analyze", "--spool-dir", spool)
+	if code != 0 {
+		t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+	}
+
+	var summary profiler.SpoolSummary
+	if err := json.Unmarshal([]byte(stdout), &summary); err != nil {
+		t.Fatalf("stdout is not a summary: %v\n%s", err, stdout)
+	}
+	if summary.Lines != 3 || summary.Envelopes != 3 {
+		t.Errorf("lines = %d, envelopes = %d, want 3 and 3", summary.Lines, summary.Envelopes)
+	}
+	if summary.PayloadKeys["tool_name"] != 1 {
+		t.Errorf("payload_keys[tool_name] = %d, want 1", summary.PayloadKeys["tool_name"])
+	}
+	if summary.Dir != spool {
+		t.Errorf("dir = %q, want %q", summary.Dir, spool)
+	}
+
+	// The vocabulary of a measurement, asked of the document itself.
+	for _, forbidden := range []string{"\"tokens\"", "\"tool_calls\"", "\"skill_activation\"", "\"present\"", "do not quote me"} {
+		if strings.Contains(stdout, forbidden) {
+			t.Errorf("the summary carries %s, which is a claim about what the harness did:\n%s", forbidden, stdout)
+		}
+	}
+}
+
+// TestAnalyze_SaysSoWhenThereIsNoSpoolToRead keeps the distinction the library
+// makes: a spool that was never written is not a capture that recorded nothing.
+func TestAnalyze_SaysSoWhenThereIsNoSpoolToRead(t *testing.T) {
+	bin := buildProfiler(t)
+	home := homesafe.SandboxHome(t)
+	missing := filepath.Join(home, "never-captured")
+
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "analyze", "--spool-dir", missing)
+
+	if code != 1 {
+		t.Errorf("exit status = %d, want 1 — a spool that is not there is not an empty summary\n%s%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, missing) {
+		t.Errorf("stderr = %q, want it to name the directory it could not read", stderr)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("a summary was printed for a spool that could not be read:\n%s", stdout)
+	}
+}
+
+// TestAnalyze_DefaultsToTheSpoolUnderTheResolvedHome is the risky wiring: a
+// command with no --spool-dir must read the spool under the home the binary
+// resolves, which the sandboxed runner has pointed at a directory of this
+// test's own.
+func TestAnalyze_DefaultsToTheSpoolUnderTheResolvedHome(t *testing.T) {
+	bin := buildProfiler(t)
+	home := homesafe.SandboxHome(t)
+	homeTheBinaryResolves(t, bin, home)
+
+	_, stderr, code := runCLIIn(t, bin, cliRun{home: home, stdin: `{"hook_event_name":"stop"}`}, "ingest")
+	if code != 0 {
+		t.Fatalf("seeding failed with status %d: %s", code, stderr)
+	}
+
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "analyze")
+	if code != 0 {
+		t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+	}
+	var summary profiler.SpoolSummary
+	if err := json.Unmarshal([]byte(stdout), &summary); err != nil {
+		t.Fatalf("stdout is not a summary: %v\n%s", err, stdout)
+	}
+	if want := filepath.Join(home, ".skill-architect", "spool"); summary.Dir != want {
+		t.Errorf("dir = %q, want %q — analyze and ingest have to agree about where the spool is", summary.Dir, want)
+	}
+	if summary.Lines != 1 {
+		t.Errorf("lines = %d, want the one line ingest just wrote", summary.Lines)
+	}
+}
+
+// TestDoctor_ReportsASpoolWithoutClaimingItMeasuresAnything is the wording
+// ruling at the command layer, where a user actually reads it.
+//
+// The spool is registered, written and counted, and the report still says the
+// tier is none — because no adapter reads a spool. Both halves are asserted on
+// the text of the document, not on the struct, since the text is what a user
+// sees and what they quote.
+func TestDoctor_ReportsASpoolWithoutClaimingItMeasuresAnything(t *testing.T) {
+	bin := buildProfiler(t)
+	home := homesafe.SandboxHome(t)
+	homeTheBinaryResolves(t, bin, home)
+
+	if _, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "hooks", "install"); code != 0 {
+		t.Fatalf("hooks install failed with status %d: %s", code, stderr)
+	}
+	if _, stderr, code := runCLIIn(t, bin, cliRun{home: home, stdin: `{"hook_event_name":"stop"}`}, "ingest"); code != 0 {
+		t.Fatalf("ingest failed with status %d: %s", code, stderr)
+	}
+
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "doctor")
+	if code != 0 {
+		t.Fatalf("exit status = %d, want 0 — detection is a report, not a gate\n%s", code, stderr)
+	}
+
+	var rep profiler.EnvironmentReport
+	if err := json.Unmarshal([]byte(stdout), &rep); err != nil {
+		t.Fatalf("stdout is not a report: %v\n%s", err, stdout)
+	}
+
+	// What it observed: our own registration, found by the command this binary
+	// registers rather than by a string that looks like it.
+	if len(rep.Observed.HooksJSON.RegisteredEvents) == 0 {
+		t.Errorf("doctor found no registered events after this binary's own `hooks install`:\n%s", stdout)
+	}
+	if rep.Observed.Spool.Lines != 1 {
+		t.Errorf("spool lines = %d, want the one line ingest wrote", rep.Observed.Spool.Lines)
+	}
+
+	// What it may not say.
+	if rep.Measurement.Tier != profiler.TierNone {
+		t.Errorf("tier = %q on a machine whose only telemetry is a spool nothing reads", rep.Measurement.Tier)
+	}
+	if rep.Observed.Spool.Yields == "" {
+		t.Error("the spool counts ship with nothing saying what they yield")
+	}
+	for _, forbidden := range []string{"\"hooks\"", "\"server_api\"", "\"enterprise\""} {
+		if strings.Contains(stdout, forbidden) {
+			t.Errorf("the report carries the tier %s, which no capture in this release delivers:\n%s", forbidden, stdout)
+		}
+	}
+}
+
+// TestDoctor_ReportsTheTierItProbedFor is the other direction, and the one that
+// keeps the command from being a report that can only ever say "none".
+func TestDoctor_ReportsTheTierItProbedFor(t *testing.T) {
+	bin := buildProfiler(t)
+	home := homesafe.SandboxHome(t)
+	export := filepath.Join("..", "testdata", "otlp", "full_export.ndjson")
+	absExport, err := filepath.Abs(export)
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home},
+		"doctor", "--harness", "claude_code", "--otel-file", absExport)
+	if code != 0 {
+		t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+	}
+
+	var rep profiler.EnvironmentReport
+	if err := json.Unmarshal([]byte(stdout), &rep); err != nil {
+		t.Fatalf("stdout is not a report: %v\n%s", err, stdout)
+	}
+	if rep.Measurement.Tier != profiler.TierExport {
+		t.Fatalf("tier = %q, want %q (reason %q)", rep.Measurement.Tier, profiler.TierExport, rep.Measurement.Reason)
+	}
+	if rep.Measurement.Export != absExport {
+		t.Errorf("export = %q, want %q", rep.Measurement.Export, absExport)
+	}
+	if len(rep.Measurement.Signals) == 0 {
+		t.Error("a tier above none carrying no signals, so nothing says what it was derived from")
+	}
+}
+
+// TestDoctor_NeverWritesToTheHomeItInspects is the property that makes doctor
+// safe to run anywhere: it is a read.
+//
+// A command that reports on a configuration is the one a user runs when
+// something is already wrong, and one that repaired what it found would be
+// changing the thing being diagnosed.
+func TestDoctor_NeverWritesToTheHomeItInspects(t *testing.T) {
+	bin := buildProfiler(t)
+	home := homesafe.SandboxHome(t)
+
+	before := treeUnder(t, home)
+	if _, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "doctor"); code != 0 {
+		t.Fatalf("exit status = %d: %s", code, stderr)
+	}
+	after := treeUnder(t, home)
+
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("doctor changed the home it was inspecting:\n before %v\n after  %v", before, after)
+	}
+	if len(after) != 0 {
+		t.Errorf("the sandbox home is not empty, so an unchanged tree proves less than it should: %v", after)
+	}
+}
+
+// treeUnder is every path under root, relative and sorted.
+func treeUnder(t *testing.T, root string) []string {
+	t.Helper()
+	var found []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		if rel != "." {
+			found = append(found, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	sort.Strings(found)
+	return found
+}
+
+// TestDoctorLooksForTheCommandHooksInstallRegisters is a derivation, because
+// there is no way to test it by running.
+//
+// `doctor` reports which events carry *our* entry, and "ours" is an exact
+// string. If the two commands were resolved in two places, a change to one
+// would leave doctor reporting that nothing is registered on a machine `hooks
+// install` had just configured — and every test would still pass, because each
+// half would be self-consistent. A mutation that changed the command proved
+// exactly that: it survived the whole suite.
+//
+// So both go through resolveHookCommand, and that is read out of main.go rather
+// than remembered.
+func TestDoctorLooksForTheCommandHooksInstallRegisters(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+
+	for _, caller := range []string{"cmdDoctor", "hooksFlags"} {
+		if !declaresFunc(file, caller) {
+			t.Fatalf("main.go declares no %q, so this check reads nothing", caller)
+		}
+		if !callsFunc(file, caller, "resolveHookCommand") {
+			t.Errorf("%s does not resolve the hook command through resolveHookCommand: two spellings of the "+
+				"registered command means doctor can report that nothing is registered on a machine hooks "+
+				"install has just configured, with every test still green", caller)
+		}
+	}
+
+	// The control: a function that does not call it has to come back false, or
+	// the two assertions above are satisfied by a check that reads nothing.
+	if callsFunc(file, "cmdCompare", "resolveHookCommand") {
+		t.Error("callsFunc reports a call from a function that makes none, so the derivation above cannot fail")
+	}
+}
+
 // TestEverySubprocessRunsThroughTheSandboxedRunner is what turns the HOME
 // override from a convention into a mechanism.
 //
@@ -1799,8 +1887,19 @@ func TestEverySubprocessRunsThroughTheSandboxedRunner(t *testing.T) {
 	// in a healthy tree the barrier never fires: deleting the call changes
 	// nothing observable, which makes it exactly the kind of safety line that
 	// disappears in a refactor nobody reviews closely.
-	if !callsFunc(file, "runCLIIn", "mustBeOutsideRealHome") {
+	if !callsFunc(file, "runCLIIn", "homesafe.MustBeOutside") {
 		t.Error("runCLIIn starts the process without checking the home it was handed; every subprocess in this file gets its home from here, so this is the one call that makes the sandbox a guarantee")
+	}
+
+	// The control on the derivation above. callsFunc reading nothing looks the
+	// same as the call being there, and that is not hypothetical: when the
+	// barrier moved into internal/homesafe the call became a qualified one and
+	// the identifier-only match stopped seeing it, which turned the check red
+	// rather than silently green only because the check was already looking for
+	// a call it could name. A spelling nothing calls has to come back false, or
+	// the assertion above proves nothing.
+	if callsFunc(file, "runCLIIn", "homesafe.NoSuchFunction") {
+		t.Error("callsFunc reports a call to a function nothing calls, so the derivation above cannot fail")
 	}
 }
 
@@ -1814,6 +1913,13 @@ func declaresFunc(file *ast.File, name string) bool {
 }
 
 // callsFunc reports whether the named function's body calls the other.
+//
+// The callee may be spelled bare ("helper") or qualified ("pkg.Helper"), and
+// the comparison is against that whole spelling rather than against the final
+// identifier. Matching only the identifier is what stopped seeing the barrier
+// when it moved into a package of its own; matching only the trailing name
+// would find any package's function with the same last word, which is a
+// different check from the one being asked for.
 func callsFunc(file *ast.File, funcName, callee string) bool {
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -1826,7 +1932,7 @@ func callsFunc(file *ast.File, funcName, callee string) bool {
 			if !ok {
 				return true
 			}
-			if id, ok := call.Fun.(*ast.Ident); ok && id.Name == callee {
+			if calleeName(call.Fun) == callee {
 				found = true
 			}
 			return true
@@ -1834,6 +1940,21 @@ func callsFunc(file *ast.File, funcName, callee string) bool {
 		return found
 	}
 	return false
+}
+
+// calleeName is how a call is spelled in the source: "helper" or "pkg.Helper",
+// and "" for anything else — a method on a value, a function held in a
+// variable — which no derivation here asks about.
+func calleeName(fun ast.Expr) string {
+	switch f := fun.(type) {
+	case *ast.Ident:
+		return f.Name
+	case *ast.SelectorExpr:
+		if pkg, ok := f.X.(*ast.Ident); ok {
+			return pkg.Name + "." + f.Sel.Name
+		}
+	}
+	return ""
 }
 
 // caseLiteralsIn reads the string literals of the switch inside one named

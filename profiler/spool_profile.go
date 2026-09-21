@@ -63,25 +63,67 @@ var ErrSessionIDRequired = errors.New("a session id is required: a read returns 
 //
 // A line that cannot be decoded is skipped and the rest of the file is read: a
 // hook killed mid-write leaves a truncated last line, and losing the rest of
-// the day over it would break the one promise the spool makes.
+// the day over it would break the one promise the spool makes. A caller who
+// needs to know how many of those there were asks AnalyzeSpool, which counts
+// them; this read is scoped to one session and a line it cannot decode is not
+// one it can tell belongs.
 func LoadSessionEvents(dir, sessionID string) ([]SpoolEvent, error) {
 	if sessionID == "" {
 		return nil, ErrSessionIDRequired
 	}
 
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		// A spool that was never written is not a session with no events, and
-		// a caller who cannot tell them apart will report "nothing happened"
-		// for a capture that never ran.
+	var out []SpoolEvent
+	if _, err := forEachSpoolLine(dir, func(line []byte) {
+		var ev SpoolEvent
+		if json.Unmarshal(line, &ev) != nil {
+			return
+		}
+		if sessionMatches(ev, sessionID) {
+			out = append(out, ev)
+		}
+	}); err != nil {
 		return nil, err
 	}
 
-	// os.ReadDir returns its entries sorted by filename, and a spool file is
-	// named for its UTC day — so the files are already read oldest-first. A
-	// second sort here was in the draft and cannot change anything; the
-	// dependency is written down instead, because it is the thing that would
-	// break if the directory listing were ever replaced.
+	// Stable, so two events captured in the same second keep the order they
+	// were written in — which within one file is the order they happened.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Ts < out[j].Ts })
+	return out, nil
+}
+
+// forEachSpoolLine calls visit once for every non-blank line of every spool
+// file in dir, oldest file first, and reports how many spool files it read.
+//
+// It is the one place that decides what a spool line is, because there are now
+// two readers of the same corpus — this file's session read and AnalyzeSpool's
+// summary — and a second copy of this loop is two answers to "which files
+// count". The draft had exactly that: one reader skipped subdirectories and the
+// other did not, so the same directory held a different number of events
+// depending on which function was asked.
+//
+// Three properties, and each of them is a decision:
+//
+//   - **A directory that is not there is an error**, not an empty spool. A
+//     caller who cannot tell them apart reports "nothing happened" for a
+//     capture that never ran.
+//   - **Only `*.jsonl` files, and no subdirectories.** The spool sits under the
+//     user's home and collects other things — a backup, an editor's swap file,
+//     a directory somebody made — and reading those as spool lines would be a
+//     reader inventing events.
+//   - **Oldest file first**, which os.ReadDir's filename ordering already gives
+//     because a spool file is named for its UTC day. The dependency is written
+//     down rather than re-sorted, because it is what would break if the
+//     directory listing were ever replaced.
+//
+// A line that cannot be decoded is visit's problem, not this function's: it
+// hands over every line it read and lets each reader say what it does with one
+// it cannot parse. Silence is what the summary exists to avoid.
+func forEachSpoolLine(dir string, visit func(line []byte)) (files int, err error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+
 	var names []string
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), spoolFileSuffix) {
@@ -89,30 +131,20 @@ func LoadSessionEvents(dir, sessionID string) ([]SpoolEvent, error) {
 		}
 	}
 
-	var out []SpoolEvent
 	for _, name := range names {
 		data, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
-			return nil, err
+			return files, err
 		}
+		files++
 		for _, line := range strings.Split(string(data), "\n") {
 			if strings.TrimSpace(line) == "" {
 				continue
 			}
-			var ev SpoolEvent
-			if json.Unmarshal([]byte(line), &ev) != nil {
-				continue
-			}
-			if sessionMatches(ev, sessionID) {
-				out = append(out, ev)
-			}
+			visit([]byte(line))
 		}
 	}
-
-	// Stable, so two events captured in the same second keep the order they
-	// were written in — which within one file is the order they happened.
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Ts < out[j].Ts })
-	return out, nil
+	return files, nil
 }
 
 // sessionMatches reports whether one event belongs to the named session. The
