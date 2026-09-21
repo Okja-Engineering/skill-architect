@@ -41,7 +41,7 @@ import json, sys
 with open(sys.argv[1]) as f:
     data = json.load(f)
 assert data['name'] == 'skill-architect', 'name mismatch'
-assert data['version'] == '0.4.3', 'version mismatch'
+assert data['version'] == '0.5.0', 'version mismatch'
 assert 'skills' in data, 'missing skills'
 PY
 }
@@ -55,7 +55,7 @@ assert data['name'] == 'skill-architect', 'marketplace name mismatch'
 plugins = data['plugins']
 assert len(plugins) == 1, 'expected exactly one plugin entry'
 assert plugins[0]['name'] == 'skill-architect', 'plugin entry name mismatch'
-assert plugins[0]['version'] == '0.4.3', 'plugin entry version mismatch'
+assert plugins[0]['version'] == '0.5.0', 'plugin entry version mismatch'
 assert plugins[0]['source'] == './', 'plugin entry source mismatch'
 PY
 }
@@ -93,7 +93,7 @@ done
 # release that bumps the four plugin.json files and forgets this one advertises
 # the previous release to anyone installing by name.
 assert ".claude-plugin/marketplace.json exists" test -f .claude-plugin/marketplace.json
-assert ".claude-plugin/marketplace.json is valid and at 0.4.3" quietly marketplace_is_valid
+assert ".claude-plugin/marketplace.json is valid and at 0.5.0" quietly marketplace_is_valid
 
 # The profiler records its own version in every profile it writes, and it is the
 # sixth version surface. It is asserted here beside the manifests so one place
