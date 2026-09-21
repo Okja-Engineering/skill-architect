@@ -14,6 +14,7 @@ import (
 //
 //	profiler capture --harness claude_code --session <id> --snapshot <sha> --skill-dir <path> [--otel-file <path>]
 //	profiler probe --harness claude_code [--otel-file <path>]
+//	profiler compare --baseline <profile.json> --candidate <profile.json>
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -25,6 +26,8 @@ func main() {
 		cmdProbe(os.Args[2:])
 	case "capture":
 		cmdCapture(os.Args[2:])
+	case "compare":
+		cmdCompare(os.Args[2:])
 	case "version":
 		fmt.Println("profiler " + profiler.AdapterVersion)
 	case "-h", "--help", "help":
@@ -208,6 +211,70 @@ func captureExitCode(p profiler.Profile) int {
 	return 0
 }
 
+func cmdCompare(args []string) {
+	fs := flag.NewFlagSet("compare", flag.ContinueOnError)
+	baseline := fs.String("baseline", "", "path to the baseline profile JSON")
+	candidate := fs.String("candidate", "", "path to the candidate profile JSON")
+	parseFlags(fs, args)
+
+	// Both, always. A comparison of one profile against nothing is not a
+	// comparison, and defaulting either side would mean guessing which stored
+	// profile the caller meant.
+	if *baseline == "" || *candidate == "" {
+		fmt.Fprintln(os.Stderr, "required: --baseline, --candidate")
+		os.Exit(1)
+	}
+
+	// A profile that cannot be read is the caller naming the wrong path or a
+	// document that is not a profile of this schema — something to retype, so
+	// 1, the same status capture gives its own errors. It is not a comparison
+	// that produced nothing, which is 2 and is the status a wrapper acts on.
+	base, err := profiler.LoadProfile(*baseline)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "compare error: %v\n", err)
+		os.Exit(1)
+	}
+	cand, err := profiler.LoadProfile(*candidate)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "compare error: %v\n", err)
+		os.Exit(1)
+	}
+
+	report := profiler.CompareProfiles(base, cand)
+	out, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "marshal error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(out))
+
+	// A pair-level refusal is the one thing a human must not have to parse the
+	// report to learn: it means every number they came for is absent, and why.
+	// On stderr, because stdout is the report and a consumer parses it.
+	if report.Refusal != "" {
+		fmt.Fprintf(os.Stderr, "compare: %s\n", report.Refusal)
+	}
+	os.Exit(compareExitCode(report))
+}
+
+// compareExitCode is what a script wrapping `compare` branches on.
+//
+// 2 when the run produced a report and nothing in it is comparable — the two
+// profiles were read by different adapters, or they share no signal that both
+// of them read. Exiting 0 there tells the wrapper a comparison happened, and an
+// empty one gets stored as "no change", which is the fabrication `compare`
+// exists to refuse.
+//
+// 0 when something was compared. The report is printed either way; when the
+// status is non-zero, the refusal and the per-signal reasons in it are the
+// whole point.
+func compareExitCode(r profiler.ComparisonReport) int {
+	if r.Comparable {
+		return 0
+	}
+	return 2
+}
+
 // captureFlagError reports why the selected adapter cannot honour the flags it
 // was given, or nil when it can.
 //
@@ -233,10 +300,12 @@ func usage() {
 commands:
   probe     Probe environment and report capabilities
   capture   Capture a session profile
+  compare   Compare two captured profiles
   version   Print version
   help      Print this help (also -h, --help)
 
 examples:
   profiler probe --harness claude_code --otel-file ./otel-export.json
-  profiler capture --harness claude_code --session abc123 --snapshot sha123 --skill-dir ./skills/my-skill --otel-file ./otel-export.json`)
+  profiler capture --harness claude_code --session abc123 --snapshot sha123 --skill-dir ./skills/my-skill --otel-file ./otel-export.json
+  profiler compare --baseline ./before.json --candidate ./after.json`)
 }

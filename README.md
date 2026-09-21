@@ -49,14 +49,20 @@ cd profiler && go build -o profiler ./cmd/
 # Capture a session profile
 ./profiler capture --harness claude_code --session abc123 --snapshot sha123 \
   --skill-dir ./skills/my-skill --otel-file ./otel-export.json
+
+# Compare two captured profiles
+./profiler compare --baseline ./before.json --candidate ./after.json
 ```
 
 `version` prints the adapter version that every profile records in
 `capability.adapter_version` — `profiler 0.5.0` at this release. It tracks what
 the adapter captures, so profiles produced by different adapter versions stay
-distinguishable. It is not the plugin version: it moves as soon as the adapter
-changes what a profile contains for the same input, which is usually before the
-release that carries it is tagged, so the two numbers can differ.
+distinguishable — and `compare` is what acts on that: it refuses a comparison
+between two profiles whose adapter versions differ, because the difference
+between them may be the reader rather than the skill. It is not the plugin
+version: it moves as soon as the adapter changes what a profile contains for
+the same input, which is usually before the release that carries it is tagged,
+so the two numbers can differ.
 
 Probe detection is per signal, not all-or-nothing, and a signal is reported available
 only when the export yields a value the adapter can actually read:
@@ -317,7 +323,57 @@ $ ./profiler capture --harness claude_code … --export-file session.json
 --export-file is not read by the claude_code adapter; supply an OTel export with --otel-file
 ```
 
-The profile JSON is the integration point for future paired comparisons (F04). See [`docs/profiler-spec.md`](docs/profiler-spec.md) for the adapter interface contract.
+### Comparing two profiles
+
+`compare` reads two stored profiles and reports what changed between them:
+
+```bash
+./profiler compare --baseline ./before.json --candidate ./after.json
+```
+
+The report is JSON on stdout, schema `skill-architect/comparison/v1`, with one
+entry per signal the profile carries. Each entry says whether it was comparable
+and carries **both sides' sources** — always, including the signals neither side
+read, which say `none`. A delta is never laundered into a single source.
+
+**A comparison is refused rather than approximated.** Two refusals, at two
+levels:
+
+- **The pair**, when the two profiles name different `capability.adapter_version`
+  values, or when neither names one. The report carries `refusal`, no signal is
+  comparable, and no delta is computed at all. This is what stops a profile you
+  stored under 0.4.x being subtracted from a fresh one: the reader changed four
+  times between them, and those changes would read as the skill's regression.
+  The refusal names both versions.
+- **One signal**, when the two sides read it from different sources — an `otel`
+  count against a `sqlite` one is not a delta. The other signals still compare.
+
+Differences that do *not* stop a comparison are reported as `notes`: a different
+`harness`, `snapshot_hash` or `skill_dir`. Comparing two snapshots of a skill is
+what the tool is for, so a different snapshot id is said and not refused.
+
+Deltas are only ever over what both sides read. A token count one profile never
+read has no key in the delta either, because the difference between a number and
+an absence is not a number — the same rule that gives an unread count no key in
+the profile. Both profiles' values are carried in full beside the delta, so it
+is visible which side was missing it.
+
+`compare` exits **0** when at least one signal was compared and **2** when the
+report is complete and nothing in it is comparable — a refused pair, or two
+profiles sharing no signal they both read. The report is written to stdout
+either way, because when nothing compared the reasons are the whole point.
+Every usage error — a missing `--baseline` or `--candidate`, an unrecognised
+flag, a path that is not there, a document that is not a profile of this schema
+— exits **1**, so 2 means the comparison and nothing else.
+
+`estimated_context_tokens` is compared with a note that rides on the answer
+itself: it is a chars/4 estimate over payload bytes, an ordinal signal only, and
+never a cost. `skill_activation` is compared as a set of skill names —
+`only_in_baseline` and `only_in_candidate` — because a bare count cannot say
+which skill stopped firing.
+
+See [`docs/profiler-spec.md`](docs/profiler-spec.md) for the adapter interface
+contract and the comparison contract.
 
 ## Install
 
@@ -626,7 +682,7 @@ here fails it rather than going quietly unrun.
 ## What this plugin does not do
 
 - It does not automatically rewrite the audited skill.
-- It does not run live paired comparisons (with-skill vs without-skill) — the profiler (v0.4.0 preview) captures runtime signals, but the comparison engine is not yet built.
+- It does not run live paired comparisons (with-skill vs without-skill) end to end — the profiler captures runtime signals and `profiler compare` reports the differences between two captured profiles, but scheduling and executing the paired runs is still the caller's job.
 - It does not judge subjective writing quality or correctness of domain advice.
 
 See [`.out-of-scope.md`](.out-of-scope.md) for deliberate boundaries.
