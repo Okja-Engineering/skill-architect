@@ -99,93 +99,274 @@ func TestPathContains_DecidesAfterResolution(t *testing.T) {
 	}
 }
 
+// boundAxis is one arrangement of the protected root: the component it really
+// is, whether it exists yet, and the way the destination spells that same
+// component.
+//
+// The spelling axis is the half the previous round had no row for. Where the
+// root exists, every spelling in a group names one object, so the verdict has
+// to be the same for all of them — and it was not: a case-folded or NFD
+// spelling resolved to a string that did not match and the write landed inside
+// anyway. Where the root does not exist there is no identity on either side,
+// which is the one place a name comparison is the right answer, so it is
+// generated over too rather than assumed.
+type boundAxis struct {
+	component string
+	exists    bool
+	spelling  string
+}
+
+// The non-ASCII component is spelled NFC on disk and NFD in one of the
+// destination spellings. APFS is normalisation-insensitive, so the two name one
+// directory; a comparison of the strings says they are two.
+const (
+	nfcName = "café"
+	nfdName = "café"
+)
+
+func boundAxes() []boundAxis {
+	return []boundAxis{
+		{"root", true, "root"},
+		{"root", true, "ROOT"},
+		{"root", true, "Root"},
+		{nfcName, true, nfcName},
+		{nfcName, true, nfdName},
+		{nfcName, true, "CAF" + nfcName[3:]},
+		{"notyet", false, "notyet"},
+		{"notyet", false, "NOTYET"},
+		{nfcName, false, nfcName},
+		{nfcName, false, nfdName},
+	}
+}
+
+// boundOperators is one line per mechanism by which a spelling can name an
+// object other than the one it appears to name. `@R` is whatever the
+// destination calls the root's own component, so each of these is applied to
+// every axis above: adding a mechanism covers every arrangement of the root,
+// and adding an arrangement covers every mechanism.
+//
+// Both directions are here. A path that resolves *into* the protected directory
+// while its name says otherwise is the hole; one that resolves *out* of it while
+// its name says inside is the false refusal, which costs a legitimate
+// destination. A repair closing only the first passes half of this.
+//
+// Spelled with plain concatenation and never filepath.Join, because Join calls
+// Clean, which folds the `..` half of these cases away before the test has run.
+var boundOperators = []string{
+	"@R/inner/d-exact",
+	"@R",
+	"@R/not-created-yet/d-new",
+	"@RX/d-sibling",
+	"@R-backup/d-sibling",
+	"away/d-outside",
+	"@R/aside/d-out-through-link",
+	"@R/aside/../d-climb-out",
+	"@R/rel/../d-climb-out-rel",
+	"away/back/d-back-in",
+	"away/back/../d-back-out",
+	"away/chain/d-through-chain",
+	"away/chain/../d-climb-out-of-chain",
+	"@R/../away/d-climb",
+	"@R/not-created-yet/../../d-fold-past-missing",
+	"@R/inner/../aside/../d-interleaved",
+	"away/leaflink",
+	"away/leaflink/d-under-leaflink",
+	"away/leaffile",
+	"away/dangling",
+	"@R/outleaf",
+	"@R/outleaf/d-under-outleaf",
+	"@R/outfile",
+	"//@R///inner//d-doubled",
+	"./@R/./inner/./d-dots",
+	"@R/inner/d-trailing-nl\n",
+	"away/d-trailing-nl\n",
+	"@R/nl-out\n",
+	"away/nl-in\n",
+	"@R/inner/d-trailing-tab\t",
+}
+
+// buildBoundTree lays out one instance of the tree the operators are spelled
+// against. Everything is inside the test's own scratch directory — what points
+// "out" of the root points at a sibling under the scratch root, never at
+// anything of the reader's — so the oracle can perform the escape rather than
+// reason about it. A case whose write must not be allowed to happen cannot be
+// measured.
+func buildBoundTree(t *testing.T, base string, axis boundAxis) {
+	t.Helper()
+	root := base + "/" + axis.component
+	mk := func(dir string) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("mkdir %q: %v", dir, err)
+		}
+	}
+	ln := func(target, name string) {
+		if err := os.Symlink(target, name); err != nil {
+			t.Fatalf("symlink %q -> %q: %v", name, target, err)
+		}
+	}
+	file := func(path string) {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write %q: %v", path, err)
+		}
+	}
+	mk(base + "/away")
+	mk(base + "/" + axis.component + "X")
+	mk(base + "/" + axis.component + "-backup")
+	if !axis.exists {
+		return
+	}
+	mk(root + "/inner")
+	// Inside the root, pointing out of it — absolute and relative targets,
+	// since a relative target resolves against the link's own directory and
+	// that is a second thing to get wrong.
+	ln(base+"/away", root+"/aside")
+	ln("../away", root+"/rel")
+	// Outside the root, pointing back into it: the other direction of the same
+	// defect, where the verdict refuses a path that is in fact contained. And a
+	// chain of two, so one hop of resolution is not mistaken for all of it.
+	ln(root, base+"/away/back")
+	ln(base+"/away/back", base+"/away/chain")
+	// At the leaf, in both directions and in all three states a leaf link can
+	// be in: to a directory, to an existing file, and dangling. A write follows
+	// a leaf link, so these are writes into the root under names outside it —
+	// the case the two shell copies of this walk appended as named and never
+	// followed.
+	ln(root+"/inner", base+"/away/leaflink")
+	file(root + "/inner/leaf-target")
+	ln(root+"/inner/leaf-target", base+"/away/leaffile")
+	ln(root+"/inner/never-created", base+"/away/dangling")
+	ln(base+"/away", root+"/outleaf")
+	file(base + "/away/out-target")
+	ln(base+"/away/out-target", root+"/outfile")
+	// And a link with a trailing newline in its own name, at each end. A
+	// resolved name carried back through a shell's command substitution loses
+	// that byte, which is how the shell copies of this decided the verdict for
+	// one entry and performed the write on another; Go keeps the bytes, and the
+	// case is here so that the three walks are held to one invariant rather
+	// than to one language's accidents.
+	ln(base+"/away", root+"/nl-out\n")
+	ln(root+"/inner", base+"/away/nl-in\n")
+}
+
+// boundLanded performs the write the way a caller would and reports where its
+// bytes ended up: inside the root, outside it, or nowhere because the kernel
+// refused the write altogether.
+//
+// Answered by identity throughout. The object is located with os.SameFile over
+// a walk that does not follow symlinks, and "the object *is* the root" is asked
+// with os.SameFile too. A name-matching oracle would have agreed with a
+// name-matching barrier about every case in which both were wrong, which is
+// exactly how this class survived a round of this very test.
+func boundLanded(root, spelled string) (landed string, where string) {
+	marker := []byte("where-did-this-land")
+	object := spelled
+	if err := os.WriteFile(spelled, marker, 0o600); err != nil {
+		// A destination that is a directory, or that needs one made, is the
+		// other shape a caller writes: mkdir and then write inside it.
+		if err := os.MkdirAll(spelled, 0o700); err != nil {
+			return "nowrite", spelled
+		}
+		object = spelled + "/marker"
+		if err := os.WriteFile(object, marker, 0o600); err != nil {
+			return "nowrite", spelled
+		}
+	}
+	target, err := os.Stat(object)
+	if err != nil {
+		return "nowrite", spelled
+	}
+	if rootInfo, err := os.Stat(root); err == nil && os.SameFile(rootInfo, target) {
+		return "inside", root
+	}
+	found := ""
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		if os.SameFile(fi, target) {
+			found = path
+		}
+		return nil
+	})
+	if found != "" {
+		return "inside", found
+	}
+	if real, err := filepath.EvalSymlinks(object); err == nil {
+		return "outside", real
+	}
+	return "outside", object
+}
+
 // TestPathContains_AgreesWithWhereTheWriteLands is the invariant the table
-// above cannot state, and the one the barrier was found failing.
+// above cannot state, and the one the barrier has now been found failing twice.
 //
-// The table above is a list of spellings somebody thought of. That is what let
-// this class survive: `..` folded lexically *before* symlinks are resolved is
-// correct for every spelling in which no `..` crosses a link, so a table
-// assembled by hand agrees with a barrier that is wrong. This test does not
-// name an expectation at all. It performs the write on the *spelled* path,
-// finds out from the filesystem where the bytes actually landed, and requires
-// the barrier's verdict to be that answer.
+// The table above is a list of spellings somebody thought of, and this test used
+// to be one as well: twelve spellings, written out by hand, against a real-write
+// oracle. The oracle was the right design and the table was the wrong driver.
+// `..` folded lexically before symlinks are resolved is correct for every
+// spelling in which no `..` crosses a link — and comparing two resolved *names*
+// is correct for every spelling in which a name is an identity, which on this
+// platform is every spelling somebody thinks to write down and none of the ones
+// that matter. Two whole classes sat outside the twelve rows.
 //
-// So the oracle is the kernel, and a spelling nobody thought of is still
-// judged. Every directory in each case already exists and only the leaf file
-// is new, which is the shape a real caller is in: the write goes through the
-// kernel's own resolution with nothing folded by anybody first.
+// So the case set is generated. One axis is the arrangement of the root —
+// whether it exists, and how the destination spells its component — and the
+// other is a list of mutation operators, one per mechanism by which a name can
+// name something else. Their product is the case set, so a new mechanism is one
+// line and a new arrangement is one line, and neither needs anybody to remember
+// that the other exists.
 //
-// The two directions are both here and they fail differently. A path that
-// resolves *into* the protected directory while its fold says otherwise is the
-// hole — the barrier says "outside" and the write lands inside. A path that
-// resolves *out* of it while its fold says inside is the false refusal, which
-// costs a legitimate destination. A repair that only closed the first would
-// pass half of this.
+// No case names an expected verdict. Each is performed twice over a tree built
+// by one function: once as the write a caller would make, so the filesystem says
+// where the bytes went, and once through the barrier. The two must agree.
+//
+// A spelling the kernel refuses to write on at all is skipped and counted: no
+// object was created or truncated, so there is nothing for a verdict to be about.
+// The count is asserted, because a generated set that had quietly become
+// unperformable would otherwise look exactly like one that passed.
 func TestPathContains_AgreesWithWhereTheWriteLands(t *testing.T) {
-	base := t.TempDir()
-	root := filepath.Join(base, "r")
-	home := filepath.Join(root, "home") // stands for the protected directory
-	for _, d := range []string{
-		filepath.Join(home, ".cursor"),
-		filepath.Join(home, "sub"),
-		filepath.Join(root, "outside"),
-		filepath.Join(root, "home-backup"),
-	} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			t.Fatalf("mkdir %s: %v", d, err)
+	cases, unperformable := 0, 0
+	for _, axis := range boundAxes() {
+		for _, op := range boundOperators {
+			axis, op := axis, op
+			spelling := strings.ReplaceAll(op, "@R", axis.spelling)
+			name := fmt.Sprintf("root %q exists=%v spelled %q: %q",
+				axis.component, axis.exists, axis.spelling, spelling)
+			cases++
+			t.Run(name, func(t *testing.T) {
+				base := t.TempDir()
+				buildBoundTree(t, base, axis)
+				root := base + "/" + axis.component
+				spelled := base + "/" + spelling
+
+				landed, where := boundLanded(root, spelled)
+				if landed == "nowrite" {
+					unperformable++
+					t.Skipf("the kernel performed no write on %q, so there is no object for a verdict to be about", spelled)
+				}
+
+				got, err := PathContains(root, spelled)
+				if err != nil {
+					t.Fatalf("PathContains(%q, %q): %v", root, spelled, err)
+				}
+				if insideOrOutside(got) != landed {
+					t.Errorf("PathContains(%q, %q) = %v, but a write on that spelling landed at %q, "+
+						"which is %s the protected directory",
+						root, spelled, got, where, landed)
+				}
+			})
 		}
 	}
-	// aside and chain live beside the protected directory and point into it;
-	// out and rel live inside it and point away. Each is the parent of a `..`
-	// in the table, which is the component whose fold is the whole question.
-	for _, ln := range []struct{ target, name string }{
-		{filepath.Join(home, ".cursor"), filepath.Join(root, "aside")},
-		{filepath.Join(root, "aside"), filepath.Join(root, "chain")},
-		{filepath.Join(root, "outside"), filepath.Join(home, "out")},
-		{filepath.Join("..", "outside"), filepath.Join(home, "rel")},
-	} {
-		if err := os.Symlink(ln.target, ln.name); err != nil {
-			t.Fatalf("symlink %s: %v", ln.name, err)
-		}
+	if cases < 100 {
+		t.Errorf("the generated bound produced only %d cases, so it is not the case set this claims to be", cases)
 	}
-
-	// Spelled with string concatenation, never filepath.Join: Join calls Clean,
-	// which folds the `..` these cases are about before the test has even run.
-	// A case assembled with Join would be testing a different path from the one
-	// its name claims.
-	cases := []struct{ name, spelled string }{
-		{"named directly inside", home + "/.cursor/f1"},
-		{"through a symlink into it", root + "/aside/f2"},
-		{"through a chain of symlinks into it", root + "/chain/f3"},
-		{"a `..` crossing a symlink whose target's parent is inside", root + "/aside/../f4"},
-		{"a `..` crossing a chain of symlinks", root + "/chain/../f5"},
-		{"two `..` crossing a symlink, climbing back down", root + "/aside/../../home/.cursor/f6"},
-		{"a `..` crossing a symlink that points away", home + "/out/../f7"},
-		{"a `..` crossing a symlink whose own target is relative", home + "/rel/../f8"},
-		{"through a symlink that points away", home + "/out/f9"},
-		{"a sibling whose name starts with the same letters", root + "/home-backup/f10"},
-		{"a plain `..` inside it", home + "/sub/../f11"},
-		{"a plain `..` out of it", home + "/../f12"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := os.WriteFile(tc.spelled, []byte(tc.name), 0o600); err != nil {
-				t.Fatalf("the case could not be performed, so it proves nothing: "+
-					"writing %s: %v", tc.spelled, err)
-			}
-			landedInside, where := writeLandedUnder(t, home, tc.spelled)
-
-			got, err := PathContains(home, tc.spelled)
-			if err != nil {
-				t.Fatalf("PathContains(%q, %q): %v", home, tc.spelled, err)
-			}
-			if got != landedInside {
-				t.Errorf("PathContains(%q, %q) = %v, but a write on that spelling landed at %s, "+
-					"which is %s the protected directory",
-					home, tc.spelled, got, where, insideOrOutside(landedInside))
-			}
-		})
+	if unperformable*3 >= cases {
+		t.Errorf("the generated bound could perform a write for only %d of %d cases, so most of it asserted nothing",
+			cases-unperformable, cases)
 	}
 }
 

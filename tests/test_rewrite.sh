@@ -766,102 +766,257 @@ assert "a refused destination exits 1, the status the header registers for a usa
 # --- the bound, against where a write on that spelling actually lands ---------
 #
 # Everything above names a destination somebody thought of, and that is how the
-# bound came to be defeatable purely by spelling. `path_absolute` folded `..`
-# away textually and `path_resolved` followed symlinks only afterwards, so a
-# `..` that crossed a symlink was folded against the *link's own name* instead
-# of against its target. `$HOME/aside/../draft.md`, where `aside` is a link into
-# `$HOME/.claude/skills`, folded to `$HOME/draft.md` — outside every protected
-# root by every test above — and the draft landed in `$HOME/.claude` at exit 0.
-# The same defect runs the other way: a link inside a protected directory
-# pointing out of it made the drafter refuse a destination that lands nowhere
-# near one, which costs a caller a legitimate place to write.
+# bound came to be defeatable purely by spelling — twice. The first round of it
+# was a textual `..` fold standing in front of symlink resolution. The second
+# round was the repair for the first: it compared the *bytes of a resolved name*
+# against the bytes of a name built for the root, and a name is not an identity.
+# `$HOME/.CLAUDE/skills/x` and an NFD spelling of an NFC home both resolved to a
+# string that did not match and landed in the live directory anyway, for all six
+# roots; and the resolved name came back through a command substitution, which
+# strips trailing newlines, so a destination spelled with one was *decided* on
+# one path and *written* on another.
 #
-# So no case below names an expected verdict, and that is the repair to the
-# *test* rather than to the script. Each spelling is performed twice over two
-# trees built by one function: once as a plain redirect, so the filesystem says
-# where a write on that exact spelling lands, and once through the drafter. The
-# drafter must refuse precisely when the bytes landed inside the protected
-# directory. The oracle is the kernel, so a spelling nobody here thought of is
-# judged as well — which is the half a hand-written table of refusals cannot
-# reach, and the half this defect lived in for a release.
+# So no case below names an expected verdict — and, the repair to the test this
+# time, no case below is written out by hand either. The previous round's table
+# was twelve spellings, which is twelve of the spellings its author thought of:
+# two whole classes of escape sat outside it, and inserting one row into it
+# turned it red. A table cannot be the completeness argument, for the same
+# reason a denylist cannot: it is complete only about what somebody enumerated.
 #
-# Every directory in each tree exists and only the leaf is new, which is the
-# position a real caller is in: nothing in the path is folded by anybody before
-# the kernel resolves it.
+# What is enumerated here instead is *the protected roots the script itself
+# declares* and *a set of mutation operators*, and the cases are their product.
+# The roots come from `protected_roots_in_script`, which reads the drafter's own
+# `protected_home_dirs` line, so a seventh root is covered the moment it is
+# added and without anybody remembering that this file exists. The operators are
+# the mechanisms by which a name can name something other than what it appears
+# to — case, Unicode normalisation, a trailing byte, a link at the leaf, a link
+# mid-path, a dangling link, a `..` crossing any of them — so a newly understood
+# mechanism is one line here and is then applied to every root.
+#
+# Each generated spelling is performed twice over two trees built by one
+# function. Once as a plain redirect, so the filesystem says where a write on
+# that exact spelling lands; once through the drafter. The oracle is the kernel,
+# and it is an *identity* oracle rather than a name one: the object the write
+# created is compared with the root by `-ef` and searched for under the root by
+# content, so neither a link hanging out of the tree nor a spelling of the root
+# can fool it.
+#
+# What is asserted is the safety direction without qualification — a spelling
+# whose bytes land inside a protected directory is refused — and the other
+# direction up to the three refusals this script publishes: a destination that
+# lands outside is accepted unless it is refused as a symbolic link, as a
+# directory or as a SKILL.md, and a refusal that names none of those is a
+# failure. That is what stops the repair from being "refuse everything" while
+# still allowing the rules `-o` documents. The leaf-symlink rule refuses every
+# leaf link before containment is ever asked, so the proof that the walk
+# *follows* a leaf link lives where there is no such rule in front of it: in
+# tests/test_install.sh, over the copy of the walk this file's own copy is
+# asserted to be byte-identical to.
+#
+# A spelling the kernel refuses to write on at all is recorded and not asserted:
+# no object was created or truncated, so there is no landing place for a verdict
+# to agree or disagree with. The count is asserted instead, because a generator
+# whose cases had all quietly become unperformable would otherwise look exactly
+# like a generator that passed.
 containment_tree() {
   local h="$1"
+  local r="$2"
   rm -rf "$h"
-  mkdir -p "$h/.claude/skills" "$h/.claude-notes" "$h/plain" "$h/elsewhere"
+  mkdir -p "$h/$r/skills" "$h/${r}-notes" "$h/${r}X" "$h/plain" "$h/elsewhere"
   # Beside the protected directory, pointing into it — and a chain of two, so
   # one hop of resolution is not mistaken for all of it.
-  ln -s "$h/.claude/skills" "$h/aside"
+  ln -s "$h/$r/skills" "$h/aside"
   ln -s "$h/aside" "$h/chain"
   # Inside the protected directory, pointing out of it. Once with an absolute
   # target and once with a relative one, because a relative target is resolved
   # against the link's own directory and that is a second thing to get wrong.
-  ln -s "$h/elsewhere" "$h/.claude/away"
-  ln -s "../elsewhere" "$h/.claude/rel"
+  ln -s "$h/elsewhere" "$h/$r/away"
+  ln -s "../elsewhere" "$h/$r/rel"
+  # At the leaf. `: > "$dest"` follows a leaf symlink, so each of these is a
+  # write into the protected directory whatever the destination is called.
+  : > "$h/$r/skills/leaf.md"
+  ln -s "$h/$r/skills/leaf.md" "$h/plain/leaflink"
+  ln -s "$h/$r/skills/dangles.md" "$h/plain/dangling"
+  # The same link with a trailing newline in *its own* name, which is the
+  # spelling the previous round's barrier decided on one path and wrote on
+  # another: the resolved name came back through `$( )`, which strips the
+  # newline, so the verdict was reached for `nl-link` and the redirect was
+  # performed on `nl-link` followed by a newline — a different entry, and this
+  # one is a link into the protected directory.
+  ln -s "$h/$r/skills/nl-leaf.md" "$h/plain/nl-link"$'\n'
+  # And the mirror of them, pointing out, so the repair cannot be "follow the
+  # leaf and refuse".
+  : > "$h/elsewhere/leaf.md"
+  ln -s "$h/elsewhere/leaf.md" "$h/$r/skills/outlink"
+  # A directory link in front of the leaf links, to reach the same two through
+  # one more hop.
+  ln -s "$h/plain" "$h/plainlink"
 }
 
-# <destination template> — the drafter's verdict for this spelling is the
-# answer the filesystem gives for it. `@H` stands for the home the tree is
-# built under, so the same template can be instantiated in two trees.
-containment_agrees() {
-  local template="$1"
-  local oracle_home="$work/bound-oracle/h"
-  local drafter_home="$work/bound-drafter/h"
-  local oracle_dest drafter_dest marker landed verdict ctarget
-  containment_tree "$oracle_home"
-  containment_tree "$drafter_home"
-  oracle_dest="${template//@H/$oracle_home}"
-  drafter_dest="${template//@H/$drafter_home}"
-
-  # The oracle. A marker rather than a stat comparison, because `find -type f`
-  # does not follow the links this tree hangs out of the protected directory
-  # and a grep for content cannot be fooled by one.
+# <home> <root> <destination> — inside, outside, or nowrite: where a plain
+# redirect on this exact spelling put its bytes, answered by identity and by
+# content and never by comparing the destination's name with the root's.
+containment_landed() {
+  local h="$1" r="$2" dest="$3" marker
   marker="where-did-this-land-$$-${RANDOM}"
-  if ! printf '%s\n' "$marker" > "$oracle_dest" 2>/dev/null; then
-    printf 'the oracle write on %s could not be performed, so this case has no verdict to compare against\n' \
-      "$oracle_dest" >&2
-    return 1
+  if ! printf '%s\n' "$marker" > "$dest" 2>/dev/null; then
+    printf 'nowrite\n'
+    return 0
   fi
-  if [ -n "$(find "$oracle_home/.claude" -type f -exec grep -lF -- "$marker" {} + 2>/dev/null || true)" ]; then
-    landed=inside
+  if [ -e "$h/$r" ] && [ "$dest" -ef "$h/$r" ]; then
+    printf 'inside\n'
+    return 0
+  fi
+  # `find` does not follow the links this tree hangs out of the protected
+  # directory, so a file it reports under the root really is under it.
+  if [ -d "$h/$r" ] &&
+    [ -n "$(find "$h/$r" -type f -exec grep -lF -- "$marker" {} + 2>/dev/null || true)" ]; then
+    printf 'inside\n'
   else
-    landed=outside
+    printf 'outside\n'
+  fi
+}
+
+# <root> <destination template> — the drafter's verdict for this spelling is the
+# answer the filesystem gives for it. `@H` stands for the home the tree is built
+# under, so one template can be instantiated in two trees; `@N` for that same
+# home spelled NFD, which is the same directory under a different name; and `@R`
+# for the protected root being generated over.
+containment_agrees() {
+  local r="$1"
+  local template="${2//@R/$1}"
+  local oracle_home="$work/bound-oracle/$bound_home_nfc"
+  local drafter_home="$work/bound-drafter/$bound_home_nfc"
+  local oracle_dest drafter_dest landed verdict
+  containment_tree "$oracle_home" "$r"
+  containment_tree "$drafter_home" "$r"
+  oracle_dest="${template//@H/$oracle_home}"
+  oracle_dest="${oracle_dest//@N/$work/bound-oracle/$bound_home_nfd}"
+  drafter_dest="${template//@H/$drafter_home}"
+  drafter_dest="${drafter_dest//@N/$work/bound-drafter/$bound_home_nfd}"
+
+  bound_cases=$((bound_cases + 1))
+  landed="$(containment_landed "$oracle_home" "$r" "$oracle_dest")"
+  if [ "$landed" = nowrite ]; then
+    bound_unperformable=$((bound_unperformable + 1))
+    return 0
   fi
 
-  ctarget="$(target_from tests/fixtures/f01/valid-full bound-target)"
-  draft_run_home "$drafter_home" -t "$ctarget" -o "$drafter_dest"
+  draft_run_home "$drafter_home" -t "$bound_target" -o "$drafter_dest"
   if [ "$code" -eq 0 ]; then verdict=accepted; else verdict=refused; fi
 
-  if [ "$landed" = inside ] && [ "$verdict" = refused ]; then return 0; fi
-  if [ "$landed" = outside ] && [ "$verdict" = accepted ]; then return 0; fi
-  printf 'the destination %s: a write on that spelling lands %s the protected directory, and the drafter %s it (exit %s)\n%s\n' \
-    "$template" "$landed" "$verdict" "$code" "$errout" >&2
+  if [ "$landed" = inside ]; then
+    [ "$verdict" = refused ] && return 0
+    printf 'the destination %s: a write on that spelling lands inside the protected directory, and the drafter accepted it (exit %s)\n%s\n' \
+      "$template" "$code" "$errout" >&2
+    return 1
+  fi
+  [ "$verdict" = accepted ] && return 0
+  case "$errout" in
+    *'is a symbolic link'* | *'is a directory, and the draft is a file'* | *'which is a SKILL.md'*)
+      return 0
+      ;;
+  esac
+  printf 'the destination %s: a write on that spelling lands outside every protected directory, and the drafter refused it (exit %s) for a reason that is not one of the three refusals it publishes\n%s\n' \
+    "$template" "$code" "$errout" >&2
   return 1
 }
 
-# Five of these twelve spellings are the defect, in both of its directions, and
-# seven are the controls that stop the repair from being "refuse everything".
-# They are one list because the script cannot tell them apart either.
-for bound_case in \
-  '@H/.claude/skills/b1.md' \
-  '@H/aside/b2.md' \
-  '@H/chain/b3.md' \
-  '@H/aside/../b4.md' \
-  '@H/chain/../b5.md' \
-  '@H/aside/../../.claude/skills/b6.md' \
-  '@H/.claude/away/../b7.md' \
-  '@H/.claude/rel/../b8.md' \
-  '@H/.claude/away/b9.md' \
-  '@H/.claude-notes/b10.md' \
-  '@H/plain/../.claude/skills/b11.md' \
-  '@H/.claude/skills/../../plain/b12.md'
-do
-  assert "the drafter's verdict for $bound_case is where a write on it lands" \
-    containment_agrees "$bound_case"
+# The operators. One line per mechanism by which a spelling can name an object
+# other than the one it appears to name, each applied to every root. `@R` is the
+# root, so the case set grows with the root list and not with this list.
+#
+# Deliberately in both directions: the ones that resolve *into* the protected
+# directory while their spelling says otherwise are the hole, and the ones that
+# resolve *out* of it while their spelling says inside are the false refusal,
+# which costs a caller a legitimate destination. A repair that closed only the
+# first would pass half of this.
+bound_operators=(
+  '@H/@R/skills/exact.md'
+  '@H/@R'
+  '@H/@R/skills/UPPER-LEAF.md'
+  '@H/plain/plain.md'
+  '@H/@RX/sibling.md'
+  '@H/@R-notes/sibling.md'
+  '@H/aside/mid-link.md'
+  '@H/chain/mid-chain.md'
+  '@H/aside/../climb-out-of-link.md'
+  '@H/chain/../climb-out-of-chain.md'
+  '@H/aside/../../@R/skills/climb-back-in.md'
+  '@H/@R/away/out-link.md'
+  '@H/@R/away/../climb-out.md'
+  '@H/@R/rel/../climb-out-rel.md'
+  '@H/plain/leaflink'
+  '@H/plain/dangling'
+  '@H/plainlink/leaflink'
+  '@H/@R/skills/outlink'
+  '@H/plain/../@R/skills/through-dotdot.md'
+  '@H/@R/skills/../../plain/out-through-dotdot.md'
+  '@H/@R/nope/../tail-fold.md'
+  '@H/@R/nope/../../plain/tail-climb.md'
+  '@H//@R///skills//doubled.md'
+  '@H/./@R/./skills/./dots.md'
+  '@N/@R/skills/nfd-home.md'
+  '@N/plain/nfd-home-outside.md'
+  '@N/aside/nfd-home-mid-link.md'
+)
+
+# The mutations that are about the *bytes* of the spelling rather than its
+# shape. These are the ones the previous round's table had no row for and could
+# not have had one for: the escape is not a path shape, it is the difference
+# between the name a barrier compares and the name the kernel writes on. Written
+# with `$'…'` so the byte is in the array and not in a format string — a
+# trailing newline put through `$(printf …)` would be stripped by the very
+# mechanism being tested.
+bound_byte_operators=(
+  '@H/@R/skills/trailing-nl.md'$'\n'
+  '@H/plain/trailing-nl.md'$'\n'
+  '@H/@R/skills/trailing-tab.md'$'\t'
+  '@H/plain/trailing-tab.md'$'\t'
+  '@H/@R/skills/trailing-space.md '
+  '@H/plain/trailing-space.md '
+  '@H/@R/skills/two-newlines.md'$'\n\n'
+  '@H/plain/nl-link'$'\n'
+  '@H/plainlink/nl-link'$'\n'
+)
+
+bound_cases=0
+bound_unperformable=0
+bound_home_nfc=$'caf\xc3\xa9/h'
+bound_home_nfd=$'cafe\xcc\x81/h'
+bound_target="$(target_from tests/fixtures/f01/valid-full bound-target)"
+
+for bound_root in $(protected_roots_in_script); do
+  bound_upper="$(printf '%s' "$bound_root" | tr 'a-z' 'A-Z')"
+  for bound_case in "${bound_operators[@]}" "${bound_byte_operators[@]}"; do
+    assert "the drafter's verdict for $(printf '%q' "${bound_case//@R/$bound_root}") is where a write on it lands" \
+      containment_agrees "$bound_root" "$bound_case"
+  done
+  # The root component spelled in a case the volume folds. Live for all six
+  # roots at the head this replaces: the exact spelling was refused and the
+  # capitalised one was accepted, and the draft landed in the live directory.
+  for bound_case in '@H/@U/skills/case-folded.md' '@H/@U/skills/../@U/skills/case-folded-twice.md' '@N/@U/skills/nfd-and-case-folded.md'; do
+    assert "the drafter's verdict for ${bound_case//@U/$bound_upper} is where a write on it lands" \
+      containment_agrees "$bound_root" "${bound_case//@U/$bound_upper}"
+  done
 done
+
+# A generated case set that had quietly become unperformable would look exactly
+# like one that passed — every case would return 0 having asserted nothing — so
+# the proportion the kernel refused to write on at all is itself asserted. It is
+# a proportion and not an exact count on purpose: an exact count is a number a
+# new operator invalidates, which is the same brittleness as the table this
+# generator replaces.
+#
+# Three shapes per root are expected to be among them. `@H/@R` itself is EISDIR.
+# The two `@H/@R/nope/../…` spellings are ENOENT, because this script never
+# creates a parent directory — which makes those two cases vacuous *at this
+# surface* and is why the same two operators are also driven through
+# tests/test_install.sh, whose consumer's first command is `mkdir -p`.
+assert "the generated bound performed a real write for the large majority of its cases" \
+  test "$((bound_unperformable * 5))" -lt "$bound_cases"
+assert "the generated bound generated a case set at all" \
+  test "$bound_cases" -gt 100
 
 # `-o` re-run over its own output. The flag exists so a draft can be kept
 # somewhere of the caller's choosing, and a caller who audits the same skill

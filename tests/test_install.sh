@@ -940,68 +940,135 @@ resolution_refuses_a_climb_out_through_a_symlink() {
 # --- The resolved verdict, against where a write on that spelling lands -------
 #
 # Every control above and below names a spelling somebody thought of, which is
-# what the file says twice over about denylists and then does here anyway: the
-# escapes it holds out are the escapes four rounds of review produced. The
+# what this file says twice over about denylists and then did here anyway: the
+# escapes it holds out are the escapes some round of review produced. The
 # invariant underneath them does not mention a spelling at all — *the verdict is
-# where the write lands* — and it can be asked directly, so it is.
+# where the write lands* — so it is asked directly.
 #
-# Each case is performed twice over two trees built by one function. In one the
-# destination is created for real, and the filesystem says whether the bytes
-# ended up under the root; in the other the same spelling is put to
-# path_resolves_inside. The two must agree. Nothing in the table is an expected
-# verdict, so a spelling nobody here thought of is judged too.
+# The previous round asked it directly and still shipped two whole classes of
+# escape, because it asked it about **nine spellings written out by hand**. A
+# table is complete only about what its author enumerated: inserting the single
+# row `@B/ROOT/home/inner/dX` into it turned it red, and nothing about a name
+# that differs from its object by case, by Unicode normalisation or by a
+# trailing byte was anywhere in it.
+#
+# So the case set is generated rather than listed, on two axes. The root is
+# generated over **whether it exists yet**, because a root that does not exist
+# has no identity and is the one place this barrier is allowed to compare names,
+# and over **how the destination spells that root's own component**. The
+# destination is generated over a set of mutation operators, one line per
+# mechanism by which a name can name something other than what it appears to.
+# Adding a mechanism is one line, and it is then applied on every root axis.
+#
+# Each generated spelling is performed twice over two trees built by one
+# function. In one the destination is created for real by the two commands the
+# documented block runs — `mkdir -p`, then a write inside it — and the
+# filesystem says whether the bytes ended up under the root. In the other the
+# same spelling is put to path_resolves_inside. The two must agree.
+#
+# The oracle answers by identity, not by name: the directory that was created is
+# compared with the root by `-ef` and the marker is searched for under the root
+# by content. A name-matching oracle would have agreed with a name-matching
+# barrier about every case in which both were wrong, which is how this class
+# survived a round of exactly this test.
 #
 # The tree is entirely inside the harness scratch — the link that points "out"
 # of the root points at a sibling directory under it, not at anything of the
 # reader's — so the oracle can perform the escape rather than reason about it.
 # That is the only way to have an oracle at all: a case whose write must not be
 # allowed to happen cannot be measured.
+bound_nfc=$'caf\xc3\xa9'
+bound_nfd=$'cafe\xcc\x81'
+
 bound_tree() {
   local b="$1"
+  local r="$2"
+  local exists="$3"
   rm -rf "$b"
-  mkdir -p "$b/root/home/inner" "$b/root/cwd" "$b/away"
+  mkdir -p "$b/away" "$b/cwd" "${b}/${r}X" "${b}/${r}-backup"
+  if [ "$exists" != yes ]; then
+    return 0
+  fi
+  mkdir -p "$b/$r/inner"
   # Inside the root, pointing out of it — absolute and relative targets, since a
   # relative target resolves against the link's own directory and that is a
   # second thing to get wrong.
-  ln -s "$b/away" "$b/root/home/aside"
-  ln -s "../../away" "$b/root/home/rel"
+  ln -s "$b/away" "$b/$r/aside"
+  ln -s "../away" "$b/$r/rel"
   # Outside the root, pointing back into it. The other direction of the same
-  # defect, where the fold refuses a destination that is in fact contained.
-  ln -s "$b/root/home" "$b/away/back"
+  # defect, where the verdict refuses a destination that is in fact contained.
+  ln -s "$b/$r" "$b/away/back"
+  # A link at the *leaf*, pointing into the root. `mkdir -p` on a link to a
+  # directory succeeds and writes through it, so this is a write inside the root
+  # under a name that is outside it. It is the case the previous round's walk
+  # appended as named and never followed, and the one its oracle could not
+  # express, because that oracle modelled the destination as a file and
+  # `mkdir -p` fails on a link to one.
+  ln -s "$b/$r/inner" "$b/away/leaflink"
+  # And the same at the leaf pointing out, so the repair cannot be "follow the
+  # leaf and refuse".
+  ln -s "$b/away" "$b/$r/outleaf"
+  # Two links with a trailing newline in their own names. The previous round
+  # decided the verdict on the name a command substitution gave back, which is
+  # this name with the newline stripped — a different entry, pointing somewhere
+  # else.
+  ln -s "$b/away" "$b/$r/nl-out"$'\n'
+  ln -s "$b/$r/inner" "$b/away/nl-in"$'\n'
 }
 
-# <destination template> — path_resolves_inside's verdict for this spelling is
-# the answer the filesystem gives for it. `@B` stands for the tree's own root,
-# so one template can be instantiated in two trees.
-bound_agrees() {
-  local template="$1"
-  local oracle_base="$install_scratch/bound-oracle"
-  local verdict_base="$install_scratch/bound-verdict"
-  local oracle_dest verdict_dest marker landed verdict
-  bound_tree "$oracle_base"
-  bound_tree "$verdict_base"
-  oracle_dest="${template//@B/$oracle_base}"
-  verdict_dest="${template//@B/$verdict_base}"
-
-  if ! mkdir -p "$oracle_dest" 2>/dev/null; then
-    printf 'the oracle could not create %s, so this case has no verdict to compare against\n' \
-      "$oracle_dest" >&2
-    return 1
+# <root> <destination> — inside, outside or nowrite: where the two commands the
+# documented block runs put their bytes, answered by identity and by content and
+# never by comparing the destination's name with the root's.
+bound_landed() {
+  local root="$1" dest="$2" marker
+  if ! mkdir -p "$dest" 2>/dev/null; then
+    printf 'nowrite\n'
+    return 0
   fi
   marker="where-did-this-land-$$-${RANDOM}"
-  if ! printf '%s\n' "$marker" > "$oracle_dest/$marker" 2>/dev/null; then
-    printf 'the oracle could not write into %s\n' "$oracle_dest" >&2
-    return 1
+  if ! printf '%s\n' "$marker" > "$dest/$marker" 2>/dev/null; then
+    printf 'nowrite\n'
+    return 0
+  fi
+  if [ -e "$root" ] && [ "$dest" -ef "$root" ]; then
+    # The destination *is* the root. The verdict below is strict containment, so
+    # this is not inside it.
+    printf 'outside\n'
+    return 0
   fi
   # `find` does not follow the links this tree hangs out of the root, so a file
   # it reports under the root really is under it.
-  if [ -n "$(find "$oracle_base/root" -type f -exec grep -lF -- "$marker" {} + 2>/dev/null || true)" ]; then
-    landed=inside
+  if [ -d "$root" ] &&
+    [ -n "$(find "$root" -type f -exec grep -lF -- "$marker" {} + 2>/dev/null || true)" ]; then
+    printf 'inside\n'
   else
-    landed=outside
+    printf 'outside\n'
+  fi
+}
+
+# <root component> <exists> <destination template> — the verdict for this
+# spelling is the answer the filesystem gives for it. `@B` stands for the tree's
+# own base, so one template can be instantiated in two trees.
+bound_agrees() {
+  local root_component="$1"
+  local exists="$2"
+  local template="$3"
+  local oracle_base="$install_scratch/bound-oracle"
+  local verdict_base="$install_scratch/bound-verdict"
+  local oracle_dest verdict_dest landed verdict
+  bound_tree "$oracle_base" "$root_component" "$exists"
+  bound_tree "$verdict_base" "$root_component" "$exists"
+  oracle_dest="${template//@B/$oracle_base}"
+  verdict_dest="${template//@B/$verdict_base}"
+
+  bound_cases=$((bound_cases + 1))
+  landed="$(bound_landed "$oracle_base/$root_component" "$oracle_dest")"
+  if [ "$landed" = nowrite ]; then
+    bound_unperformable=$((bound_unperformable + 1))
+    return 0
   fi
 
-  if path_resolves_inside "$verdict_dest" "$verdict_base/root"; then
+  if path_resolves_inside "$verdict_dest" "$verdict_base/$root_component"; then
     verdict=inside
   else
     verdict=outside
@@ -1010,30 +1077,111 @@ bound_agrees() {
   if [ "$landed" = "$verdict" ]; then
     return 0
   fi
-  printf 'the destination %s: a write on that spelling lands %s the root, and the resolved verdict says %s\n  it resolves to %s\n' \
-    "$template" "$landed" "$verdict" "$(path_resolved "$verdict_dest" 2>/dev/null || echo '<no answer>')" >&2
+  # %q, because two of the axes differ from each other only in bytes a terminal
+  # renders identically: an NFD spelling and its NFC root look like the same
+  # word, and a trailing newline looks like nothing at all.
+  printf 'the destination %q under the root %q (exists=%s): a write on that spelling lands %s the root, and the resolved verdict says %s\n' \
+    "$template" "$root_component" "$exists" "$landed" "$verdict" >&2
   return 1
 }
 
-# Four of these nine are the defect, in both of its directions; five are the
-# controls that stop the repair from being "refuse everything". One list,
-# because the resolution cannot tell them apart either.
+# The operators. One line per mechanism by which a spelling can name an object
+# other than the one it appears to name. `@R` is whatever the destination calls
+# the root's own component, so the same list is applied to every root axis
+# below: to a root that exists and to one that does not, spelled exactly and
+# spelled the ways this volume folds to the same directory.
+#
+# Both directions are here. A path that resolves *into* the root while its name
+# says otherwise is the hole; a path that resolves *out* of it while its name
+# says inside is the false refusal, which costs a legitimate destination. A
+# repair closing only the first passes half of this.
+bound_operators=(
+  '@B/@R/inner/d-exact'
+  '@B/@R'
+  '@B/@R/not-created-yet/d-new'
+  '@B/@RX/d-sibling'
+  '@B/@R-backup/d-sibling'
+  '@B/away/d-outside'
+  '@B/@R/aside/d-out-through-link'
+  '@B/@R/aside/../d-climb-out'
+  '@B/@R/rel/../d-climb-out-rel'
+  '@B/away/back/d-back-in'
+  '@B/away/back/../d-back-out'
+  '@B/@R/../away/d-climb'
+  '@B/@R/not-created-yet/../../d-fold-past-missing'
+  '@B/@R/inner/../aside/../d-interleaved'
+  '@B/away/leaflink'
+  '@B/away/leaflink/d-under-leaflink'
+  '@B/@R/outleaf'
+  '@B/@R/outleaf/d-under-outleaf'
+  '@B//@R///inner//d-doubled'
+  '@B/./@R/./inner/./d-dots'
+  '@B/@R/inner/d-trailing-nl'$'\n'
+  '@B/away/d-trailing-nl'$'\n'
+  '@B/@R/nl-out'$'\n'
+  '@B/away/nl-in'$'\n'
+  '@B/@R/nl-out'$'\n''/d-under-nl-out'
+  '@B/away/nl-in'$'\n''/d-under-nl-in'
+)
+
+# The root axis. Each entry is the component the root really is, whether it
+# exists, and the way the destination spells that same component.
+#
+# Where the root exists, every spelling in a group names one object and the
+# verdict has to be the same for all of them — which it was not at the head this
+# replaces, for any of the six protected roots. Where the root does not exist
+# there is no identity on either side, and the fold is the one comparison this
+# barrier is allowed to make on a name.
+#
+# The non-ASCII rows are the ones that need the root itself to carry the
+# component: an NFD spelling *below* an ASCII root still shares a prefix with
+# it, so the escape only shows when the differing component is the root's own.
+bound_roots=(
+  "root|yes|root"
+  "root|yes|ROOT"
+  "root|yes|Root"
+  "$bound_nfc|yes|$bound_nfc"
+  "$bound_nfc|yes|$bound_nfd"
+  "$bound_nfc|yes|CAF${bound_nfc#caf}"
+  "notyet|no|notyet"
+  "notyet|no|NOTYET"
+  "$bound_nfc|no|$bound_nfc"
+  "$bound_nfc|no|$bound_nfd"
+)
+
+bound_cases=0
+bound_unperformable=0
+
 the_resolved_verdict_is_where_the_write_lands() {
-  local case_template
-  for case_template in \
-    '@B/root/home/inner/d1' \
-    '@B/root/home/aside/d2' \
-    '@B/root/home/aside/../d3' \
-    '@B/root/home/rel/../d4' \
-    '@B/away/back/d5' \
-    '@B/away/back/../d6' \
-    '@B/root/home/../../away/d7' \
-    '@B/root/home/not-created-yet/../../d8' \
-    '@B/root/home/inner/../aside/../d9'
-  do
-    bound_agrees "$case_template" || return 1
+  local axis root_component exists spelling case_template failed=0
+  for axis in "${bound_roots[@]}"; do
+    root_component="${axis%%|*}"
+    exists="${axis#*|}"
+    exists="${exists%%|*}"
+    spelling="${axis##*|}"
+    for case_template in "${bound_operators[@]}"; do
+      bound_agrees "$root_component" "$exists" "${case_template//@R/$spelling}" \
+        || failed=$((failed + 1))
+    done
   done
-  return 0
+  printf 'the generated bound drove %s spellings, %s of which the kernel would not perform a write on at all, %s disagreeing\n' \
+    "$bound_cases" "$bound_unperformable" "$failed" >&2
+  # A generated set that had quietly become unperformable would look exactly
+  # like one that passed — every case returning 0 having asserted nothing — so
+  # the proportion is part of the verdict. A proportion and not an exact count,
+  # because an exact count is a number the next operator invalidates, which is
+  # the brittleness this generator replaces.
+  if [ "$bound_cases" -lt 100 ]; then
+    printf 'the generated bound produced only %s cases, so it is not the case set this claims to be\n' \
+      "$bound_cases" >&2
+    return 1
+  fi
+  if [ "$((bound_unperformable * 3))" -ge "$bound_cases" ]; then
+    printf 'the generated bound could perform a write for only %s of %s cases, so most of it asserted nothing\n' \
+      "$((bound_cases - bound_unperformable))" "$bound_cases" >&2
+    return 1
+  fi
+  [ "$failed" -eq 0 ]
 }
 
 # --- The destination is expanded, and evaluating it is not how ----------------
