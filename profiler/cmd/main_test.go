@@ -120,16 +120,14 @@ func TestCapture_ExitStatusSaysWhetherAnythingWasRead(t *testing.T) {
 			if tc.otel != "" {
 				args = append(args, "--otel-file", tc.otel)
 			}
-			cmd := exec.Command(bin, args...)
-			out, err := cmd.Output()
-			got := cmd.ProcessState.ExitCode()
+			out, stderr, got := runCLI(t, bin, args...)
 			if got != tc.want {
-				t.Errorf("exit status = %d, want %d — %s (err %v)", got, tc.want, tc.about, err)
+				t.Errorf("exit status = %d, want %d — %s\n%s", got, tc.want, tc.about, stderr)
 			}
 			// Whatever the status, the profile is still written: a caller that
 			// wants the reasons must be able to read them.
 			var profile profiler.Profile
-			if err := json.Unmarshal(out, &profile); err != nil {
+			if err := json.Unmarshal([]byte(out), &profile); err != nil {
 				t.Fatalf("stdout is not a profile: %v\n%s", err, out)
 			}
 			if profile.Schema != profiler.ProfileSchema {
@@ -253,9 +251,9 @@ func TestRequestedHelpExitsZero(t *testing.T) {
 		{"-h on experiment run", []string{"experiment", "run", "-h"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command(bin, tc.args...)
-			out, _ := cmd.CombinedOutput()
-			if got := cmd.ProcessState.ExitCode(); got != 0 {
+			stdout, stderr, got := runCLI(t, bin, tc.args...)
+			out := stdout + stderr
+			if got != 0 {
 				t.Errorf("exit status = %d, want 0 — help was asked for and given\n%s", got, out)
 			}
 			// Exiting 0 having printed nothing would satisfy the status and
@@ -263,7 +261,7 @@ func TestRequestedHelpExitsZero(t *testing.T) {
 			if len(out) == 0 {
 				t.Error("help exited 0 and printed nothing at all")
 			}
-			if !strings.Contains(string(out), "usage:") && !strings.Contains(string(out), "Usage of") {
+			if !strings.Contains(out, "usage:") && !strings.Contains(out, "Usage of") {
 				t.Errorf("help printed no usage text:\n%s", out)
 			}
 		})
@@ -350,10 +348,9 @@ func TestUsageErrorsExitOneSoThatTwoMeansOneThing(t *testing.T) {
 		{"a design given where a plan is wanted", []string{"experiment", "run", "--plan", design}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command(bin, tc.args...)
-			out, _ := cmd.CombinedOutput()
-			if got := cmd.ProcessState.ExitCode(); got != 1 {
-				t.Errorf("exit status = %d, want 1 — a usage error is not a capture that read nothing\n%s", got, out)
+			stdout, stderr, got := runCLI(t, bin, tc.args...)
+			if got != 1 {
+				t.Errorf("exit status = %d, want 1 — a usage error is not a capture that read nothing\n%s%s", got, stdout, stderr)
 			}
 		})
 	}
@@ -396,19 +393,16 @@ func TestProbe_SaysOnStderrWhyACapabilityIsNone(t *testing.T) {
 			if tc.otel != "" {
 				args = append(args, "--otel-file", tc.otel)
 			}
-			cmd := exec.Command(bin, args...)
-			var stderr strings.Builder
-			cmd.Stderr = &stderr
-			out, _ := cmd.Output()
+			out, stderrOut, got := runCLI(t, bin, args...)
 
-			if got := cmd.ProcessState.ExitCode(); got != 0 {
+			if got != 0 {
 				t.Errorf("exit status = %d, want 0 — probe has no exit contract to break", got)
 			}
 
 			// stdout is the report, and it is the same report either way: the
 			// diagnostic must not have widened what a caller parses.
 			var report profiler.CapabilityReport
-			if err := json.Unmarshal(out, &report); err != nil {
+			if err := json.Unmarshal([]byte(out), &report); err != nil {
 				t.Fatalf("stdout is not a capability report: %v\n%s", err, out)
 			}
 			// One capability per signal a profile carries, asked of the profile
@@ -420,7 +414,7 @@ func TestProbe_SaysOnStderrWhyACapabilityIsNone(t *testing.T) {
 					len(report.Capabilities), want)
 			}
 
-			noise := strings.TrimSpace(stderr.String())
+			noise := strings.TrimSpace(stderrOut)
 			switch {
 			case tc.wantNoise && noise == "":
 				t.Errorf("stderr is empty — %s", tc.about)
@@ -503,14 +497,251 @@ func writeProfileFile(t *testing.T, dir, name string, p profiler.Profile) string
 // runCLI runs the command and returns everything a caller can observe: the two
 // streams apart, because which of them a thing was said on is part of the
 // contract, and the status, because it is what a script branches on.
+//
+// It runs the process with HOME pointed at a directory of this test's own. That
+// is not tidiness. `hooks install` writes $HOME/.cursor/hooks.json and `ingest`
+// writes $HOME/.skill-architect/spool, so a subcommand invoked here without
+// --home or --spool-dir would otherwise rewrite the machine's real Cursor
+// configuration — and this repo has already shipped a suite that did exactly
+// that kind of thing. Overriding HOME means a case that forgets the flag writes
+// into the sandbox, and TestEverySubprocessRunsThroughTheSandboxedRunner holds
+// every other call site in this file to coming through here.
 func runCLI(t *testing.T, bin string, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
+	return runCLIIn(t, bin, cliRun{home: sandboxHome(t)}, args...)
+}
+
+// cliRun is what a run needs that is not an argument: the home the process
+// sees, and what it reads on stdin.
+type cliRun struct {
+	home  string
+	stdin string
+}
+
+// runCLIIn is the one place in this file that starts the profiler binary.
+func runCLIIn(t *testing.T, bin string, run cliRun, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	mustBeOutsideRealHome(t, run.home)
+
 	cmd := exec.Command(bin, args...)
+	// HOME is replaced rather than appended to, so there is exactly one and no
+	// question of which the child resolves.
+	cmd.Env = append(envWithout(os.Environ(), "HOME"), "HOME="+run.home)
+	if run.stdin != "" {
+		cmd.Stdin = strings.NewReader(run.stdin)
+	}
 	var outBuf, errBuf strings.Builder
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 	_ = cmd.Run()
 	return outBuf.String(), errBuf.String(), cmd.ProcessState.ExitCode()
+}
+
+func envWithout(env []string, name string) []string {
+	var out []string
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, name+"=") {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// --- The home-directory barrier ---
+//
+// A sibling of this lives in package profiler's own tests. It is duplicated
+// rather than shared because these are two packages and the alternative —
+// exporting it from profiler — would be production surface existing only for
+// tests. S8 adds `doctor`, which takes a home as well; at a third copy it
+// should be lifted into an internal package rather than copied again.
+
+// sandboxHome returns a directory standing in for a home, proved to be outside
+// the real one before it is handed back.
+func sandboxHome(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	mustBeOutsideRealHome(t, dir)
+	return dir
+}
+
+// fatalTB is the part of *testing.T the barrier is allowed to use.
+//
+// It is this narrow on purpose. The bug this barrier replaces was a guard that
+// called Errorf, which marks the test failed and then *returns* — so the
+// install on the next line ran anyway. An interface carrying only Fatalf makes
+// writing that bug a compile error rather than something a reviewer has to
+// catch again, and a mutation that tried it does not build.
+type fatalTB interface {
+	Helper()
+	Fatalf(format string, args ...any)
+}
+
+// mustBeOutsideRealHome aborts unless dir is somewhere other than the real
+// user's home directory.
+//
+// The explicit return after each Fatalf is not redundant: with a *testing.T,
+// Fatalf does not come back, and the return says the barrier does not depend on
+// that — the guarantee is this function's own rather than borrowed.
+func mustBeOutsideRealHome(tb fatalTB, dir string) {
+	tb.Helper()
+	contained, why, err := realHomeContains(dir)
+	if err != nil {
+		tb.Fatalf("refusing to run: %s: %v", why, err)
+		return
+	}
+	if contained {
+		tb.Fatalf("refusing to run: %s", why)
+		return
+	}
+}
+
+// realHomeContains is the decision, split out from the abort so it can be
+// asserted in both directions. A guard with no negative test is a guard nobody
+// has watched work: this one degraded to a string prefix test and the whole
+// suite stayed green until the two tests below existed.
+func realHomeContains(dir string) (contained bool, why string, err error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return true, "the real home could not be named, so nothing can be shown to be outside it", err
+	}
+	contained, err = pathContains(home, dir)
+	if err != nil {
+		return true, dir + " could not be placed relative to the real home " + home, err
+	}
+	if !contained {
+		return false, "", nil
+	}
+	return true, dir + " is inside the real home " + home, nil
+}
+
+// pathContains reports whether child is parent or something inside it, deciding
+// after both are resolved.
+//
+// Resolution is the point. The question is which directory will be written, not
+// how the path was spelled: on macOS t.TempDir() sits under /var/folders, a
+// symlink to /private/var/folders, and $HOME can be a symlink of its own. A
+// comparison of the unresolved strings answers a different question.
+//
+// Containment is filepath.Rel rather than a prefix test, because a parent's
+// name is a prefix of every sibling beginning with the same letters —
+// strings.HasPrefix calls /Users/alice-backup a part of /Users/alice.
+func pathContains(parent, child string) (bool, error) {
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return false, err
+	}
+	resolvedChild, err := filepath.EvalSymlinks(child)
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(resolvedParent, resolvedChild)
+	if err != nil {
+		return false, err
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
+}
+
+// TestPathContains_DecidesAfterResolution is the negative half of the barrier:
+// the two cases a test on the spelling of the paths gets wrong.
+//
+// Both are built out of directories this test creates, so neither depends on
+// what happens to exist beside the real home and neither is skipped. A skipped
+// case here would be the barrier's proof passing by not running.
+func TestPathContains_DecidesAfterResolution(t *testing.T) {
+	root := t.TempDir()
+	stands := filepath.Join(root, "alice") // stands for the home
+	inside := filepath.Join(stands, ".cursor")
+	sibling := filepath.Join(root, "alice-backup") // shares its name as a prefix
+	for _, d := range []string{stands, inside, sibling} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+	// A symlink elsewhere that points into the protected directory: outside by
+	// every string comparison, inside in fact.
+	link := filepath.Join(root, "looks-harmless")
+	if err := os.Symlink(inside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		child string
+		want  bool
+	}{
+		{"the directory itself", stands, true},
+		{"something inside it", inside, true},
+		{"a symlink from elsewhere pointing inside it", link, true},
+		{"a sibling whose name starts with the same letters", sibling, false},
+		{"the parent of both", root, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := pathContains(stands, tc.child)
+			if err != nil {
+				t.Fatalf("pathContains(%q, %q): %v", stands, tc.child, err)
+			}
+			if got != tc.want {
+				t.Errorf("pathContains(%q, %q) = %v, want %v", stands, tc.child, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRealHomeContains_RefusesRatherThanGuessesWhenItCannotResolve pins the
+// answer on the side of safety. A path the barrier cannot resolve is not a path
+// it has shown to be outside the home, and "I could not tell" must not read as
+// "go ahead".
+func TestRealHomeContains_RefusesRatherThanGuessesWhenItCannotResolve(t *testing.T) {
+	// A path under no directory at all: unresolvable, and the case a barrier
+	// that shrugged would wave through.
+	unresolvable := filepath.Join(t.TempDir(), "never-created", ".cursor")
+
+	// Whether the case is reachable is asked of the filesystem, not of the
+	// function under test — skipping on what it returned would make this pass
+	// by not running the moment the answer went wrong.
+	if _, err := filepath.EvalSymlinks(unresolvable); err == nil {
+		t.Skipf("this filesystem resolved %s, so the case is not reachable here", unresolvable)
+	}
+
+	contained, why, err := realHomeContains(unresolvable)
+	if err == nil {
+		t.Error("realHomeContains reported no error for a path that cannot be resolved")
+	}
+	if !contained {
+		t.Error("a path that could not be resolved was reported as outside the real home")
+	}
+	if why == "" {
+		t.Error("no reason was given for the refusal")
+	}
+}
+
+// TestRealHomeContains_KnowsTheRealHome joins the decision to the directory it
+// is protecting. Only paths that already exist are asked about, and nothing is
+// created: this is the one assertion in the file that looks at the real home,
+// and it looks only.
+func TestRealHomeContains_KnowsTheRealHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		dir  string
+		want bool
+	}{
+		{"the real home itself", home, true},
+		{"the temp dir", t.TempDir(), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, why, err := realHomeContains(tc.dir)
+			if err != nil {
+				t.Fatalf("realHomeContains(%q): %v", tc.dir, err)
+			}
+			if got != tc.want {
+				t.Errorf("realHomeContains(%q) = %v, want %v (reason %q)", tc.dir, got, tc.want, why)
+			}
+		})
+	}
 }
 
 // runCompare runs the command and returns everything a caller can observe.
@@ -972,6 +1203,460 @@ func TestExperimentDesignAndPlan_AnswerBeforeAnythingIsExecuted(t *testing.T) {
 	})
 }
 
+// --- ingest and hooks: the two subcommands that write outside the cwd ---
+//
+// Everything else the CLI does reads a file the caller named and prints a
+// document. These two write into a directory belonging to the user, which makes
+// where they resolve that directory the thing worth testing hardest.
+
+// homeTheBinaryResolves asks the binary where it thinks the user's home is, and
+// refuses to go further unless the answer is the sandbox.
+//
+// This is the pre-flight for every case that exercises a default home. It is
+// `hooks uninstall`, which on a home with no hooks.json reads, finds nothing and
+// returns without writing — so the question is answered by the same resolution
+// the write would use, before any write happens. Deciding from the shape of a
+// path string instead would be deciding about the spelling rather than about
+// the directory.
+//
+// The command is a sentinel that cannot match anything: even against a real
+// hooks.json, an uninstall of a command nobody registered removes nothing and
+// writes nothing.
+func homeTheBinaryResolves(t *testing.T, bin, home string) string {
+	t.Helper()
+	const sentinel = "/nonexistent/sentinel/never-registered-anywhere"
+
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "hooks", "uninstall", "--command", sentinel)
+	if code != 0 {
+		t.Fatalf("the pre-flight itself failed with status %d: %s%s", code, stdout, stderr)
+	}
+	var res profiler.HookInstallResult
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil {
+		t.Fatalf("the pre-flight printed no result: %v\n%s", err, stdout)
+	}
+	if res.EventsRemoved != 0 {
+		t.Fatalf("the pre-flight removed %d entries; it was supposed to be a read", res.EventsRemoved)
+	}
+
+	resolved := filepath.Dir(filepath.Dir(res.HooksJSON))
+	mustBeOutsideRealHome(t, resolved)
+	if resolved != home {
+		t.Fatalf("the binary resolved its home to %s, not to the sandbox %s — the HOME override did not take, and a default-home case would write outside the sandbox", resolved, home)
+	}
+	return resolved
+}
+
+func TestIngest_WritesOneSpoolLinePerInvocationAndSaysNothing(t *testing.T) {
+	bin := buildProfiler(t)
+	home := sandboxHome(t)
+	spool := filepath.Join(home, "spool")
+
+	payload := `{"hook_event_name":"beforeSubmitPrompt","conversation_id":"conv-1","prompt":"do the thing"}`
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home, stdin: payload}, "ingest", "--spool-dir", spool)
+
+	if code != 0 {
+		t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+	}
+
+	// A hook runs inside the user's session. Echoing the payload back is how a
+	// capture tool becomes visible in the thing it is capturing.
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("ingest printed to stdout:\n%s", stdout)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Errorf("ingest printed to stderr on success:\n%s", stderr)
+	}
+
+	lines := readSpool(t, spool)
+	if len(lines) != 1 {
+		t.Fatalf("%d lines in the spool, want 1", len(lines))
+	}
+	if lines[0].Event != "beforeSubmitPrompt" {
+		t.Errorf("event = %q, want beforeSubmitPrompt", lines[0].Event)
+	}
+	if lines[0].SchemaVersion != profiler.SpoolSchemaVersion {
+		t.Errorf("schema_version = %q, want %q", lines[0].SchemaVersion, profiler.SpoolSchemaVersion)
+	}
+	if !strings.Contains(string(lines[0].Raw), "do the thing") {
+		t.Errorf("the payload is not in the line: %s", lines[0].Raw)
+	}
+
+	// Two invocations are two lines: the hook fires once per event and the file
+	// is appended to, not replaced.
+	runCLIIn(t, bin, cliRun{home: home, stdin: payload}, "ingest", "--spool-dir", spool)
+	if lines := readSpool(t, spool); len(lines) != 2 {
+		t.Errorf("%d lines after a second invocation, want 2", len(lines))
+	}
+}
+
+func TestIngest_StrictStripsContentAndSaysSo(t *testing.T) {
+	bin := buildProfiler(t)
+	home := sandboxHome(t)
+	spool := filepath.Join(home, "spool")
+	payload := `{"hook_event_name":"beforeSubmitPrompt","cwd":"/work","prompt":"do the thing"}`
+
+	_, stderr, code := runCLIIn(t, bin, cliRun{home: home, stdin: payload}, "ingest", "--spool-dir", spool, "--strict")
+	if code != 0 {
+		t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+	}
+
+	line := readSpool(t, spool)[0]
+	if !line.Strict {
+		t.Error("the stored line does not say it was stripped")
+	}
+	if strings.Contains(string(line.Raw), "do the thing") {
+		t.Errorf("--strict did not reach the write: %s", line.Raw)
+	}
+	if !strings.Contains(string(line.Raw), "/work") {
+		t.Errorf("--strict took the metadata with it: %s", line.Raw)
+	}
+}
+
+// TestIngest_DefaultsToTheSpoolUnderTheResolvedHome exercises the wiring that
+// supplies the real home — the risky half, and the reason for the pre-flight.
+func TestIngest_DefaultsToTheSpoolUnderTheResolvedHome(t *testing.T) {
+	bin := buildProfiler(t)
+	home := sandboxHome(t)
+	homeTheBinaryResolves(t, bin, home)
+
+	payload := `{"hook_event_name":"sessionStart","conversation_id":"conv-1"}`
+	_, stderr, code := runCLIIn(t, bin, cliRun{home: home, stdin: payload}, "ingest")
+	if code != 0 {
+		t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+	}
+
+	if lines := readSpool(t, filepath.Join(home, ".skill-architect", "spool")); len(lines) != 1 {
+		t.Errorf("%d lines under the default spool directory, want 1", len(lines))
+	}
+}
+
+// TestIngest_SaysSoWhenItCannotWrite. The hook is registered as `… ingest ||
+// true` so a failure cannot take the Cursor session down, which means nothing
+// in Cursor will ever look at this status. A human running it by hand is the
+// one who will, and telling them nothing is how a spool that has been silently
+// empty for a week gets discovered a week late.
+func TestIngest_SaysSoWhenItCannotWrite(t *testing.T) {
+	bin := buildProfiler(t)
+	home := sandboxHome(t)
+	sealed := filepath.Join(home, "sealed")
+	if err := os.Mkdir(sealed, 0o500); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sealed, 0o700) })
+	if probe := filepath.Join(sealed, "probe"); os.WriteFile(probe, nil, 0o600) == nil {
+		_ = os.Remove(probe)
+		t.Skip("this filesystem allowed a write into a read-only directory; the case is not reachable here")
+	}
+
+	stdout, stderr, code := runCLIIn(t, bin,
+		cliRun{home: home, stdin: `{"hook_event_name":"stop"}`},
+		"ingest", "--spool-dir", filepath.Join(sealed, "spool"))
+
+	if code != 1 {
+		t.Errorf("exit status = %d, want 1 — the caller can fix this by naming a writable directory", code)
+	}
+	if !strings.Contains(stderr, "ingest") {
+		t.Errorf("stderr = %q, want it to say which command failed", stderr)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("a failed ingest printed to stdout:\n%s", stdout)
+	}
+}
+
+func TestHooksInstall_IsIdempotentAndPreservesAForeignHook(t *testing.T) {
+	bin := buildProfiler(t)
+	home := sandboxHome(t)
+
+	// Somebody else's hook, already registered on an event we also register.
+	cursorDir := filepath.Join(home, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const foreign = "/opt/someone-else/hook"
+	existing := `{"version":2,"hooks":{"sessionStart":[{"command":"` + foreign + `"}]}}`
+	if err := os.WriteFile(filepath.Join(cursorDir, "hooks.json"), []byte(existing+"\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	first := hooksCLI(t, bin, home, "install")
+	if first.EventsRegistered == 0 {
+		t.Fatal("the first install registered nothing, so everything below proves nothing")
+	}
+
+	second := hooksCLI(t, bin, home, "install")
+	if second.EventsRegistered != 0 {
+		t.Errorf("the second install registered %d events, want 0", second.EventsRegistered)
+	}
+
+	doc := readHooksJSON(t, home)
+	hooks, _ := doc["hooks"].(map[string]any)
+
+	t.Run("one entry per event after two installs", func(t *testing.T) {
+		for event, raw := range hooks {
+			entries, _ := raw.([]any)
+			want := 1
+			if event == "sessionStart" {
+				want = 2 // ours beside the foreign one
+			}
+			if len(entries) != want {
+				t.Errorf("event %q has %d entries, want %d", event, len(entries), want)
+			}
+		}
+	})
+
+	t.Run("the foreign hook is still there", func(t *testing.T) {
+		if !strings.Contains(mustMarshal(t, hooks["sessionStart"]), foreign) {
+			t.Errorf("sessionStart = %s, want the foreign entry preserved", mustMarshal(t, hooks["sessionStart"]))
+		}
+	})
+
+	t.Run("the top-level field nobody here reads is still there", func(t *testing.T) {
+		if doc["version"] == nil {
+			t.Error("the top-level `version` field was dropped")
+		}
+	})
+
+	t.Run("uninstall takes ours back out and leaves theirs", func(t *testing.T) {
+		res := hooksCLI(t, bin, home, "uninstall")
+		if res.EventsRemoved == 0 {
+			t.Fatal("uninstall removed nothing")
+		}
+		after := readHooksJSON(t, home)
+		afterHooks, _ := after["hooks"].(map[string]any)
+		if got := mustMarshal(t, afterHooks); !strings.Contains(got, foreign) {
+			t.Errorf("hooks = %s, want the foreign entry left alone", got)
+		}
+		if len(afterHooks) != 1 {
+			t.Errorf("hooks holds %d events after uninstall, want only the foreign one: %s", len(afterHooks), mustMarshal(t, afterHooks))
+		}
+	})
+}
+
+// TestHooks_DefaultHomeIsTheOneTheBinaryResolves exercises the other half of
+// the risky wiring: `hooks install` with no --home.
+func TestHooks_DefaultHomeIsTheOneTheBinaryResolves(t *testing.T) {
+	bin := buildProfiler(t)
+	home := sandboxHome(t)
+	homeTheBinaryResolves(t, bin, home)
+
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "hooks", "install")
+	if code != 0 {
+		t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+	}
+	var res profiler.HookInstallResult
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil {
+		t.Fatalf("stdout is not a result: %v\n%s", err, stdout)
+	}
+	if want := filepath.Join(home, ".cursor", "hooks.json"); res.HooksJSON != want {
+		t.Errorf("HooksJSON = %q, want %q", res.HooksJSON, want)
+	}
+	if _, err := os.Stat(res.HooksJSON); err != nil {
+		t.Errorf("the file the result names was not written: %v", err)
+	}
+
+	t.Run("the command it registered is this binary's own ingest", func(t *testing.T) {
+		body, err := os.ReadFile(res.HooksJSON)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		// An absolute path, because PATH inside a hook's environment is not
+		// something this tool gets to assume.
+		if !strings.Contains(string(body), bin+" ingest") {
+			t.Errorf("the registered command is not this binary's ingest:\n%s", body)
+		}
+	})
+}
+
+// TestHooks_RefusesAFileItCannotParseAndSaysWhich is the destructive case at
+// the command layer. A hooks.json this build cannot read is one whose contents
+// it cannot preserve, and the user is the only one who can decide what to do
+// about it — so the path is named and the file is left exactly as it was.
+func TestHooks_RefusesAFileItCannotParseAndSaysWhich(t *testing.T) {
+	bin := buildProfiler(t)
+
+	for _, sub := range []string{"install", "uninstall"} {
+		t.Run(sub, func(t *testing.T) {
+			home := sandboxHome(t)
+			cursorDir := filepath.Join(home, ".cursor")
+			if err := os.MkdirAll(cursorDir, 0o700); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			path := filepath.Join(cursorDir, "hooks.json")
+			const garbage = "{ not JSON — perhaps a config with comments }"
+			if err := os.WriteFile(path, []byte(garbage), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+
+			stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "hooks", sub, "--home", home)
+
+			if code != 1 {
+				t.Errorf("exit status = %d, want 1 — the caller can fix this by fixing the file", code)
+			}
+			if !strings.Contains(stderr, path) {
+				t.Errorf("stderr = %q, want it to name the file the user has to fix", stderr)
+			}
+			if strings.TrimSpace(stdout) != "" {
+				t.Errorf("a refused run printed a result on stdout:\n%s", stdout)
+			}
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if string(body) != garbage {
+				t.Errorf("the file was modified after the refusal:\n%s", body)
+			}
+		})
+	}
+}
+
+// TestTheFlagWinsOverTheEnvironment separates the two homes that the sandbox
+// otherwise makes indistinguishable.
+//
+// Every other case here runs with HOME pointed at the same directory it passes
+// as --home, which is what keeps the suite off the real home — and it means
+// those cases cannot tell whether the flag was read at all. A mutation that
+// ignored --home entirely and always resolved the environment's home survived
+// the whole suite. It was harmless *here*, because the environment's home was
+// the sandbox; in a user's hands it would write to ~/.cursor while the flag
+// named somewhere else.
+//
+// So this case gives the two different sandboxes and asserts which one was
+// written. Both are sandboxes, so the separation costs no safety.
+func TestTheFlagWinsOverTheEnvironment(t *testing.T) {
+	bin := buildProfiler(t)
+
+	t.Run("hooks --home", func(t *testing.T) {
+		flagHome := sandboxHome(t)
+		envHome := sandboxHome(t)
+		if flagHome == envHome {
+			t.Fatal("the two sandboxes are the same directory, so this case separates nothing")
+		}
+
+		stdout, stderr, code := runCLIIn(t, bin, cliRun{home: envHome}, "hooks", "install", "--home", flagHome)
+		if code != 0 {
+			t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+		}
+		var res profiler.HookInstallResult
+		if err := json.Unmarshal([]byte(stdout), &res); err != nil {
+			t.Fatalf("stdout is not a result: %v\n%s", err, stdout)
+		}
+
+		if want := filepath.Join(flagHome, ".cursor", "hooks.json"); res.HooksJSON != want {
+			t.Errorf("HooksJSON = %q, want %q — the flag was not read", res.HooksJSON, want)
+		}
+		if _, err := os.Stat(filepath.Join(flagHome, ".cursor", "hooks.json")); err != nil {
+			t.Errorf("nothing was written under the home the flag named: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(envHome, ".cursor")); err == nil {
+			t.Error("the home from the environment was written even though --home named another")
+		}
+	})
+
+	t.Run("ingest --spool-dir", func(t *testing.T) {
+		envHome := sandboxHome(t)
+		flagSpool := filepath.Join(sandboxHome(t), "elsewhere")
+
+		_, stderr, code := runCLIIn(t, bin,
+			cliRun{home: envHome, stdin: `{"hook_event_name":"stop"}`},
+			"ingest", "--spool-dir", flagSpool)
+		if code != 0 {
+			t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+		}
+
+		if lines := readSpool(t, flagSpool); len(lines) != 1 {
+			t.Errorf("%d lines under the directory the flag named, want 1", len(lines))
+		}
+		if _, err := os.Stat(filepath.Join(envHome, ".skill-architect")); err == nil {
+			t.Error("the default spool under the environment's home was written even though --spool-dir named another")
+		}
+	})
+}
+
+func TestHooks_UsageErrors(t *testing.T) {
+	bin := buildProfiler(t)
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"no subcommand", []string{"hooks"}},
+		{"a subcommand that does not exist", []string{"hooks", "reinstall"}},
+		{"an unknown flag", []string{"hooks", "install", "--bogus"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, _, code := runCLI(t, bin, tc.args...)
+			if code != 1 {
+				t.Errorf("exit status = %d, want 1", code)
+			}
+			if strings.TrimSpace(stdout) != "" {
+				t.Errorf("a usage error printed a document on stdout:\n%s", stdout)
+			}
+		})
+	}
+}
+
+// --- helpers for the two ---
+
+func hooksCLI(t *testing.T, bin, home, sub string) profiler.HookInstallResult {
+	t.Helper()
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "hooks", sub, "--home", home)
+	if code != 0 {
+		t.Fatalf("hooks %s exited %d: %s%s", sub, code, stdout, stderr)
+	}
+	var res profiler.HookInstallResult
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil {
+		t.Fatalf("hooks %s printed no result: %v\n%s", sub, err, stdout)
+	}
+	return res
+}
+
+func readSpool(t *testing.T, dir string) []profiler.SpoolEvent {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read spool dir %s: %v", dir, err)
+	}
+	var out []profiler.SpoolEvent
+	for _, e := range entries {
+		body, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		for _, line := range strings.Split(strings.TrimRight(string(body), "\n"), "\n") {
+			if line == "" {
+				continue
+			}
+			var ev profiler.SpoolEvent
+			if err := json.Unmarshal([]byte(line), &ev); err != nil {
+				t.Fatalf("spool line is not an event: %v\n%s", err, line)
+			}
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+func readHooksJSON(t *testing.T, home string) map[string]any {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(home, ".cursor", "hooks.json"))
+	if err != nil {
+		t.Fatalf("read hooks.json: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("hooks.json is not JSON: %v\n%s", err, body)
+	}
+	return doc
+}
+
+func mustMarshal(t *testing.T, v any) string {
+	t.Helper()
+	body, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(body)
+}
+
 // --- The help and the dispatcher cannot come to disagree ---
 //
 // Every slice from here to the release adds a subcommand. A command the
@@ -986,9 +1671,9 @@ func TestTheHelpListsEveryCommandTheDispatcherAccepts(t *testing.T) {
 	}
 
 	bin := buildProfiler(t)
-	cmd := exec.Command(bin, "help")
-	helpText, _ := cmd.CombinedOutput()
-	listed := commandsUnder(string(helpText), "commands:")
+	helpStdout, helpStderr, _ := runCLI(t, bin, "help")
+	helpText := helpStdout + helpStderr
+	listed := commandsUnder(helpText, "commands:")
 	if len(listed) == 0 {
 		t.Fatalf("no command was read out of the help text, so this check reads nothing:\n%s", helpText)
 	}
@@ -1027,6 +1712,128 @@ func TestTheExperimentHelpListsEverySubcommandItDispatches(t *testing.T) {
 	if !reflect.DeepEqual(dispatched, listed) {
 		t.Errorf("experiment dispatches %v and its help lists %v", dispatched, listed)
 	}
+}
+
+// A subcommand with subcommands of its own, again: `hooks` dispatches two words
+// and prints a list of two words.
+func TestTheHooksHelpListsEverySubcommandItDispatches(t *testing.T) {
+	dispatched := caseLiteralsIn(t, "cmdHooks")
+	if len(dispatched) == 0 {
+		t.Fatal("no subcommand was read out of cmdHooks's switch, so this check reads nothing")
+	}
+
+	bin := buildProfiler(t)
+	helpText, _, code := runCLI(t, bin, "hooks", "help")
+	if code != 0 {
+		t.Errorf("`hooks help` exited %d, want 0 — help that was asked for is not an error", code)
+	}
+	listed := commandsUnder(helpText, "subcommands:")
+	if len(listed) == 0 {
+		t.Fatalf("no subcommand was read out of the help text, so this check reads nothing:\n%s", helpText)
+	}
+	if !reflect.DeepEqual(dispatched, listed) {
+		t.Errorf("hooks dispatches %v and its help lists %v", dispatched, listed)
+	}
+}
+
+// TestEverySubprocessRunsThroughTheSandboxedRunner is what turns the HOME
+// override from a convention into a mechanism.
+//
+// runCLIIn points HOME at a directory of the test's own before starting the
+// process, so `hooks install` and `ingest` invoked without a flag write into
+// the sandbox rather than into the machine's real Cursor configuration. That
+// guarantee is worth exactly as much as the rule that nothing starts the binary
+// any other way — and a rule nobody derives is a rule the next test to be added
+// will not know about. So the rule is read out of this file instead of
+// remembered: a case that built its own exec.Command would fail here, whether
+// or not it happened to be the one that reached the real home.
+func TestEverySubprocessRunsThroughTheSandboxedRunner(t *testing.T) {
+	allowed := map[string]string{
+		"buildProfiler": "runs `go build`, which starts no profiler and writes only into t.TempDir()",
+		"runCLIIn":      "the sandboxed runner itself",
+	}
+
+	file, err := parser.ParseFile(token.NewFileSet(), "main_test.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse main_test.go: %v", err)
+	}
+
+	found := 0
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		ast.Inspect(fn, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Command" {
+				return true
+			}
+			pkg, ok := sel.X.(*ast.Ident)
+			if !ok || pkg.Name != "exec" {
+				return true
+			}
+			found++
+			if _, ok := allowed[fn.Name.Name]; !ok {
+				t.Errorf("%s starts a subprocess directly; every run of the profiler goes through runCLIIn, which points HOME at a sandbox before the process starts", fn.Name.Name)
+			}
+			return true
+		})
+	}
+
+	if found == 0 {
+		t.Fatal("no exec.Command was found in main_test.go, so this check reads nothing")
+	}
+	for name := range allowed {
+		if !declaresFunc(file, name) {
+			t.Errorf("this check allows %q, which main_test.go does not declare — the allowance has gone stale", name)
+		}
+	}
+
+	// And the runner every call goes through checks the home before it starts
+	// the process. This half is derived rather than tested by running, because
+	// in a healthy tree the barrier never fires: deleting the call changes
+	// nothing observable, which makes it exactly the kind of safety line that
+	// disappears in a refactor nobody reviews closely.
+	if !callsFunc(file, "runCLIIn", "mustBeOutsideRealHome") {
+		t.Error("runCLIIn starts the process without checking the home it was handed; every subprocess in this file gets its home from here, so this is the one call that makes the sandbox a guarantee")
+	}
+}
+
+func declaresFunc(file *ast.File, name string) bool {
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// callsFunc reports whether the named function's body calls the other.
+func callsFunc(file *ast.File, funcName, callee string) bool {
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != funcName {
+			continue
+		}
+		found := false
+		ast.Inspect(fn, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if id, ok := call.Fun.(*ast.Ident); ok && id.Name == callee {
+				found = true
+			}
+			return true
+		})
+		return found
+	}
+	return false
 }
 
 // caseLiteralsIn reads the string literals of the switch inside one named

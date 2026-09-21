@@ -480,6 +480,179 @@ ran and some run did not, and **1** for every usage error and every failed step.
 The result is on stdout for 0 and 2; a failed step leaves no result to print.
 `design` and `plan` execute nothing and exit **0** or **1**.
 
+## Hook spool contract (`skill-architect/spool/v1`)
+
+Cursor can be configured to run a command on each of its lifecycle events,
+handing it a payload. `profiler ingest` is that command: it reads one payload
+and appends one line to a daily file. `profiler hooks install` registers it.
+
+This is **capture only**. Nothing in this release reads a spool and reports a
+measurement: there is no Cursor adapter, `profiler capture --harness cursor`
+does not exist, and no `Profile` is produced from a spool line. What the spool
+does is put on disk what was handed to it, so that a reader written later — once
+somebody has run Cursor and seen what it actually sends — works from files that
+already exist instead of needing the sessions captured again.
+
+### What has been observed, and what has not
+
+**No part of this has been checked against a running Cursor.** Cursor was not
+installed on the machine where it was written, no spool line in this repository
+was produced by Cursor, and no `hooks.json` this code wrote has been read by
+Cursor. Every statement below about *Cursor* is taken from Cursor's published
+hooks documentation. Specifically, these are unverified:
+
+- that Cursor reads `~/.cursor/hooks.json`, that its `hooks` member is keyed by
+  event name, and that an entry is an object with a `command` string;
+- that the 21 names in `CursorHookEvents` are the events Cursor invokes;
+- that a hook is invoked with one JSON document on stdin;
+- that the document is an object carrying `hook_event_name`, `cursor_version`,
+  `cwd` and `conversation_id`.
+
+If any of those is wrong, `hooks install` writes a file Cursor ignores and the
+spool stays empty, or lines arrive whose promoted envelope fields are blank.
+**Neither loses data**, which is the reason this ships ahead of an adapter: a
+wrong guess about a field name costs a re-read of files that are still on disk,
+where a wrong capability claim in a stored profile is subtracted and reported by
+callers who never see this file. The three unlanded adapters are what that looks
+like, and none of them lands.
+
+Everything below about *this code* is verified by its tests.
+
+### The line
+
+One JSONL line per invocation, appended to `<spool>/<YYYY-MM-DD>.jsonl`, where
+the day is the UTC day of the capture time. Directory `0700`, file `0600`: a
+line can carry prompt text and paths, and it outlives the session. An event
+carrying no capture time is **refused** rather than filed — there is no daily
+file for it, and `.jsonl` is hidden from every reader listing the spool by date.
+
+| field | |
+|---|---|
+| `ts` | capture time, RFC3339 UTC. Read by this tool, not taken from the payload |
+| `event` | the payload's `hook_event_name`, verbatim, or `"unknown"` |
+| `schema_version` | `skill-architect/spool/v1` |
+| `cursor_version`, `cwd`, `conversation_id` | promoted from the payload when present |
+| `strict` | present and true when content fields were replaced by their sizes |
+| `raw` | the payload |
+
+The promoted fields are a **convenience for filtering a large spool without
+decoding every line, and not the record**: `raw` keeps the payload's own copy of
+everything they were taken from. A field that is present but not a string is
+treated as absent rather than rendered, because a rendering of some other value
+is not the payload's text.
+
+### What "nothing is lost" means, exactly
+
+- **No field is dropped.** An event name this build has never heard of is kept
+  verbatim rather than mapped into the known set; a field nobody reads is
+  carried through.
+- **No value is changed.** Numeric literals are decoded with `UseNumber` and
+  re-encoded as they arrived. Decoding into `any` without it sends every number
+  through `float64`, so an integer above 2⁵³ comes back rounded — and a
+  nanosecond epoch timestamp is about 1.7×10¹⁸, which is exactly the kind of
+  field a payload carries and the kind this repo already pairs runs on.
+- **A payload that is not one JSON document is still captured**, stored as a
+  JSON string holding the bytes as received. That covers input that is not JSON
+  at all, a truncated document, and two documents concatenated.
+- **What is not preserved**, stated rather than glossed: the order of an
+  object's keys, and a duplicate key, which collapses to its last occurrence.
+  Both are consequences of decoding and re-encoding, neither changes the value
+  of any field, and the JSON object model gives neither meaning.
+- **A credential is removed**, and that is the one deliberate loss. Fields whose
+  normalized name ends in `token`, `secret`, `password`, `passwd`, `apikey`,
+  `privatekey`, `accesskey` or `sessionkey`, and the names `auth`,
+  `authorization`, `credential`, `credentials`, are replaced wholesale.
+  Credential-shaped substrings — a bearer token, an `sk-`, `AKIA` or `ghp_`
+  key, a PEM header — are replaced in place, so the text around one survives: a
+  command with a token in it is still the command that ran. Measurement names
+  like `context_tokens` and `tokenUsage` survive, and so do file paths and
+  prompts, which on this tool are the data. Redaction runs over every decoded
+  shape and not only objects, because a credential inside a JSON array is still
+  a credential.
+
+`--strict` additionally replaces each content field — `prompt`, `text`,
+`content`, `tool_input`, `tool_output`, `output`, `command`, `edits`,
+`result_json`, `description`, `summary`, `agent_message`, `task`,
+`attachments` — with `{"_stripped_bytes": N}`, keeping metadata. It is the
+metadata-only mode for a shared machine, and it is a deliberate loss, so the
+line records `strict: true`: a stripped line that did not say so would be
+indistinguishable from one that simply carried no prompt.
+
+### Reading it back
+
+`LoadSessionEvents(dir, sessionID)` returns the lines belonging to one session,
+ordered by capture time across every `*.jsonl` file in the directory. Files are
+read oldest-first, which `os.ReadDir`'s filename ordering already gives.
+
+- **An empty `sessionID` is refused.** It is not a session that matched nothing:
+  every comparison is an equality against a field that reads as `""` when
+  absent, so an empty id would select every line naming no session and hand
+  back a machine's whole spool as one session. That is the session-scoping
+  defect this release spent four versions closing.
+- A session is matched on `conversation_id`, `session_id` or `generation_id`,
+  because which of the three a payload carries is documentary.
+- **A line that cannot be decoded is skipped and the file keeps being read.** A
+  hook killed mid-write leaves a truncated last line, and losing the rest of the
+  day over it would break the spool's one promise exactly when it matters.
+- Only `*.jsonl` files are read, and not subdirectories. The spool sits under
+  the user's home and collects other things.
+- A spool directory that is not there is an **error**, not an empty session: a
+  caller who cannot tell them apart reports "nothing happened" for a capture
+  that never ran.
+
+### Registration
+
+`hooks install` merges the command into every event in `CursorHookEvents`;
+`hooks uninstall` removes the entries whose command is exactly ours. `hooks.json`
+is somebody else's file — Cursor owns the format, the user owns the contents —
+so:
+
+- **Idempotent.** A second install registers nothing and does not rewrite the
+  file. It also leaves no backup: a backup named for a write that did not happen
+  is a claim the result cannot support, and rerunning the install would
+  otherwise drop one beside the file each time.
+- **Additive.** Foreign entries on an event we also register, events we do not
+  register, and top-level fields this build has never heard of all survive. The
+  document is decoded into a map rather than a struct of the known fields, which
+  is what makes the merge safe against a file written by a newer Cursor.
+- **Backed up before any write**, install and uninstall alike, to
+  `hooks.json.bak-<timestamp>`. Removing entries from a user's configuration is
+  the more destructive of the two.
+- **Refused, not replaced, when the file cannot be parsed.** A file this build
+  cannot read is one whose contents it cannot preserve, so the error names the
+  path and the file is left exactly as it was.
+- An entry is matched by its `command` **as a string**. An entry whose `command`
+  is a number that reads the same is not the same entry.
+- An event left with no entries is removed with them: an empty registration is a
+  trace of us in a file we are meant to have left as we found it.
+
+The command registered by default is this binary's **absolute path** plus
+`ingest || true`. Absolute because `PATH` inside a hook's environment is not
+something this tool gets to assume; `|| true` so a failure of ours cannot take
+the user's session down.
+
+### The home directory
+
+`InstallHooks(home, …)`, `UninstallHooks(home, …)`, `AppendSpool(dir, …)` and
+`Ingest(…, dir, …)` all take the directory they write as a parameter.
+`DefaultSpoolDir()` is the only function that reads the real user's home, and it
+only computes `~/.skill-architect/spool` — nothing in the library creates it.
+The CLI resolves the home once, from `--home`/`--spool-dir` or from the user's
+own, and passes it in.
+
+### Exit statuses
+
+`ingest` exits **0** and prints nothing at all on success: a hook runs inside
+the user's session, and a capture tool that echoes the payload back is one the
+user can see in the thing it is capturing. It exits **1** and says why on stderr
+when the spool cannot be written. Cursor never sees that status — the
+registration ends in `|| true` — but a human running it by hand does, and a
+spool that has been silently empty for a week is otherwise found a week late.
+
+`hooks install|uninstall` print their result on stdout and exit **0**, or exit
+**1** with the reason on stderr for a usage error and for a file that could not
+be parsed.
+
 ## Adapter implementations (Slice 1 scope)
 
 ### Claude Code adapter (Slice 1)

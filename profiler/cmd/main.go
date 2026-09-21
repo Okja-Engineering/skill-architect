@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/Okja-Engineering/skill-architect/profiler"
 )
@@ -16,6 +17,8 @@ import (
 //	profiler probe --harness claude_code [--otel-file <path>]
 //	profiler compare --baseline <profile.json> --candidate <profile.json>
 //	profiler experiment {design,plan,run} …
+//	profiler ingest [--spool-dir <dir>] [--strict]        (reads one hook payload on stdin)
+//	profiler hooks {install,uninstall} [--home <dir>] [--command <cmd>]
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -31,6 +34,10 @@ func main() {
 		cmdCompare(os.Args[2:])
 	case "experiment":
 		cmdExperiment(os.Args[2:])
+	case "ingest":
+		cmdIngest(os.Args[2:])
+	case "hooks":
+		cmdHooks(os.Args[2:])
 	case "version":
 		fmt.Println("profiler " + profiler.AdapterVersion)
 	case "-h", "--help", "help":
@@ -414,6 +421,144 @@ func loadOrGeneratePlan(planFile, designFile string) (profiler.ExperimentPlan, e
 	return profiler.GeneratePlan(design)
 }
 
+// --- ingest and hooks ---
+//
+// These two are the only subcommands that write outside the working directory,
+// so they are the only two that need a home directory. Where it comes from is
+// the same in both: the flag when the caller gave one, and otherwise the user's
+// own, resolved here and passed in. The library never reads it — every function
+// that writes takes the directory as a parameter — which is what keeps the one
+// risky resolution in one place instead of one per call.
+
+// cmdIngest reads one Cursor hook payload from stdin and appends it to the
+// daily spool file.
+//
+// It says nothing on success. A hook runs inside the user's session, and a
+// capture tool that echoes the payload back is one the user can see in the
+// thing it is capturing.
+func cmdIngest(args []string) {
+	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
+	spoolDir := fs.String("spool-dir", "", "spool directory (default: <home>/.skill-architect/spool)")
+	strict := fs.Bool("strict", false, "replace prompt and tool content with its size, keeping only metadata")
+	parseFlags(fs, args)
+
+	dir := *spoolDir
+	if dir == "" {
+		var err error
+		if dir, err = profiler.DefaultSpoolDir(); err != nil {
+			fmt.Fprintf(os.Stderr, "ingest error: cannot resolve the home directory, pass --spool-dir: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	if _, err := profiler.IngestMode(profiler.StdinSource{In: os.Stdin}, dir, time.Now(), *strict); err != nil {
+		// Registered as `… ingest || true`, so Cursor will never look at this
+		// status. A human running it by hand is the one who will, and a spool
+		// that has been silently empty for a week is found a week late.
+		fmt.Fprintf(os.Stderr, "ingest error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// cmdHooks registers or removes the ingest command in Cursor's hooks.json.
+//
+// The help words are taken before the switch, so the switch holds the
+// subcommands and nothing else — which is what the help/dispatcher derivation
+// in the tests reads.
+func cmdHooks(args []string) {
+	if len(args) == 0 {
+		hooksUsage(os.Stderr)
+		os.Exit(1)
+	}
+	if helpRequested(args[0]) {
+		hooksUsage(os.Stdout)
+		return
+	}
+	switch args[0] {
+	case "install":
+		cmdHooksInstall(args[1:])
+	case "uninstall":
+		cmdHooksUninstall(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown hooks subcommand: %s\n", args[0])
+		hooksUsage(os.Stderr)
+		os.Exit(1)
+	}
+}
+
+func cmdHooksInstall(args []string) {
+	home, command := hooksFlags("install", args)
+	res, err := profiler.InstallHooks(home, command)
+	reportHooks("install", res, err)
+}
+
+func cmdHooksUninstall(args []string) {
+	home, command := hooksFlags("uninstall", args)
+	res, err := profiler.UninstallHooks(home, command)
+	reportHooks("uninstall", res, err)
+}
+
+// hooksFlags resolves the two things both subcommands need. One function, so
+// the pair cannot come to disagree about what --home defaults to — which is the
+// resolution that decides whether a run writes into the user's real
+// configuration.
+func hooksFlags(sub string, args []string) (home, command string) {
+	fs := flag.NewFlagSet("hooks "+sub, flag.ContinueOnError)
+	homeFlag := fs.String("home", "", "home directory holding .cursor/hooks.json (default: the current user's)")
+	commandFlag := fs.String("command", "", "the hook command to register (default: this binary's own `ingest`)")
+	parseFlags(fs, args)
+
+	home = *homeFlag
+	if home == "" {
+		var err error
+		if home, err = os.UserHomeDir(); err != nil {
+			fmt.Fprintf(os.Stderr, "hooks %s error: cannot resolve the home directory, pass --home: %v\n", sub, err)
+			os.Exit(1)
+		}
+	}
+
+	command = *commandFlag
+	if command == "" {
+		// An absolute path, because PATH inside a hook's environment is not
+		// something this tool gets to assume. `|| true` so a failure of ours
+		// can never take the user's session down with it.
+		self, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hooks %s error: cannot resolve this binary's path, pass --command: %v\n", sub, err)
+			os.Exit(1)
+		}
+		command = self + " ingest || true"
+	}
+	return home, command
+}
+
+func reportHooks(sub string, res profiler.HookInstallResult, err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hooks %s error: %v\n", sub, err)
+		os.Exit(1)
+	}
+	printJSON(res)
+}
+
+func hooksUsage(w *os.File) {
+	fmt.Fprintln(w, `usage: profiler hooks <subcommand> [flags]
+
+subcommands:
+  install    Register this binary's `+"`ingest`"+` for every documented Cursor hook event
+  uninstall  Remove the entries this binary registered, and only those
+
+flags:
+  --home <dir>     the directory holding .cursor/hooks.json (default: the current user's)
+  --command <cmd>  the hook command to register or remove (default: this binary's own `+"`ingest`"+`)
+
+The merge is additive and idempotent: hooks you or another tool registered are
+preserved, the file is backed up before any write, and one this build cannot
+parse is refused rather than replaced.
+
+The file's location and format are taken from Cursor's published hooks
+documentation and have not been checked against a running Cursor.`)
+}
+
 // printJSON writes the document this command exists to produce. Every
 // subcommand prints one and only to stdout, so a shell redirect stores it and
 // nothing else has to be offered to write a file.
@@ -470,6 +615,8 @@ commands:
   capture     Capture a session profile
   compare     Compare two captured profiles
   experiment  Design, plan or run a paired experiment
+  hooks       Register or remove this binary's ingest in Cursor's hooks.json
+  ingest      Append one Cursor hook payload, read on stdin, to the spool
   version     Print version
   help        Print this help (also -h, --help)
 
@@ -478,5 +625,7 @@ examples:
   profiler capture --harness claude_code --session abc123 --snapshot sha123 --skill-dir ./skills/my-skill --otel-file ./otel-export.json
   profiler compare --baseline ./before.json --candidate ./after.json
   profiler experiment plan --file ./design.json
-  profiler experiment run --design ./design.json > ./result.json`)
+  profiler experiment run --design ./design.json > ./result.json
+  profiler hooks install
+  echo '{"hook_event_name":"sessionStart"}' | profiler ingest`)
 }

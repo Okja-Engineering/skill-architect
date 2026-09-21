@@ -32,7 +32,7 @@ The profiler uses an adapter-per-harness architecture:
 | Adapter | Status | Telemetry surface |
 |---|---|---|
 | Claude Code | ✅ Slice 1 | OTel export (tokens, tool calls, timing) |
-| Cursor | Planned | OTel + SQLite fallback |
+| Cursor | Planned | Lifecycle hooks. The [spool that captures them](#capturing-cursor-hooks-to-a-spool) ships now; the adapter that reads it does not |
 | Codex | Planned | OTel logs + hooks |
 | Devin | Planned | ATIF export + server API |
 
@@ -443,8 +443,71 @@ delta rather than the reader's changes as the skill's.
 run compared nothing, and **1** for a usage error or a failed step. The result
 document is on stdout; the refusals are also on stderr, one line per run.
 
+### Capturing Cursor hooks to a spool
+
+Cursor can run a command on each of its lifecycle events. `profiler ingest` is
+that command: it reads one event payload on stdin and appends one line to a
+daily file under `~/.skill-architect/spool`. `profiler hooks install` registers
+it for every documented event.
+
+```bash
+# Register this binary's ingest in ~/.cursor/hooks.json
+./profiler hooks install
+
+# …or somewhere else entirely, which is how you try it out first
+./profiler hooks install --home /tmp/try-it
+
+# Metadata only: prompts and tool I/O become their sizes
+CURSOR_HOOK_PAYLOAD='{"hook_event_name":"sessionStart"}'
+echo "$CURSOR_HOOK_PAYLOAD" | ./profiler ingest --strict
+
+# Take it back out. Only our entries; yours are left alone
+./profiler hooks uninstall
+```
+
+**This is capture only, and this release reads nothing back out of it.** There
+is no Cursor adapter: `profiler capture --harness cursor` does not exist, and no
+profile is produced from a spool. What the spool does is put on disk what it was
+handed, so a reader written later works from files that already exist.
+
+**None of it has been checked against a running Cursor.** No Cursor install was
+reachable here, so that `~/.cursor/hooks.json` is the file Cursor reads, that
+the 21 event names are the ones it invokes, and that a payload arrives as one
+JSON object carrying `hook_event_name`, `cursor_version`, `cwd` and
+`conversation_id` are all Cursor's documentation rather than ours. If any of
+that is wrong, `hooks install` writes a file Cursor ignores and the spool stays
+empty, or lines arrive with blank envelope fields. **We cannot tell you it
+works.** What we can tell you is what it does with what it is given, and that is
+tested:
+
+- **One line per invocation**, appended, never replacing. Directory `0700` and
+  file `0600`, because a line can carry prompt text and paths.
+- **Nothing is dropped.** An event name this build has never heard of is kept
+  verbatim, a field nobody reads is carried through, and a payload that is not
+  JSON at all is stored as a string holding the bytes as received. Numbers keep
+  their exact value, including integers too large for a float. What is *not*
+  preserved is the order of an object's keys and a duplicate key — neither
+  changes any field's value.
+- **Credentials are removed**, and that is the one deliberate loss. Fields named
+  like a credential go wholesale; a bearer token or an `sk-` key inside a string
+  is replaced in place, so the command around it survives. Measurement names
+  like `context_tokens` are not credentials and stay.
+- **`hooks install` is idempotent and additive.** Running it twice leaves one
+  entry and rewrites nothing. Hooks you or another tool registered survive, so
+  do events we do not register and top-level fields we have never heard of. The
+  file is backed up before any write — install *and* uninstall — and one this
+  build cannot parse is refused with its path named rather than replaced.
+- **`ingest` prints nothing on success**, because a capture tool that echoes the
+  payload back is one you can see in the thing it is capturing. It exits 1 and
+  says why if the spool cannot be written.
+
+The registered command is this binary's absolute path plus `ingest || true`:
+absolute because `PATH` inside a hook's environment is not ours to assume, and
+`|| true` so a failure of ours cannot take your Cursor session down.
+
 See [`docs/profiler-spec.md`](docs/profiler-spec.md) for the adapter interface
-contract, the comparison contract and the experiment contract.
+contract, the comparison contract, the experiment contract and the spool
+contract.
 
 ## Install
 
