@@ -247,9 +247,14 @@ type ToolCallResult struct {
 }
 
 // ActivationResult is the metric result for skill activation events. Value is a
-// slice, like ToolCallResult's, and has no Error constructor: skill activation
-// is a property of the harness and of this adapter, not of any export, so no
-// export can fail it.
+// slice, like ToolCallResult's.
+//
+// It has all three constructors, unlike AttributionResult: an activation is
+// read out of a source — Claude Code logs one event per invocation — so a
+// source that exists and fails is a failure of this signal, the same as it is
+// for tokens, tool calls and timing. It carried no Error constructor while no
+// adapter read it, which was true until the read existed and is the kind of
+// claim that has to move with the code rather than outlive it.
 type ActivationResult struct {
 	RawMetricResult
 	Value []ActivationEntry `json:"value,omitempty"`
@@ -264,7 +269,9 @@ type TimingResult struct {
 
 // AttributionResult is the metric result for attribution data. Value is a
 // pointer so omitempty drops the key for unknown states, and there is no Error
-// constructor for the same reason ActivationResult has none.
+// constructor: attribution is a property of the harness rather than of any
+// export — no telemetry maps an output back to the skill that produced it — so
+// there is no source that could exist and fail.
 type AttributionResult struct {
 	RawMetricResult
 	Value *AttributionData `json:"value,omitempty"`
@@ -432,6 +439,12 @@ func UnknownActivationResult(reason string) ActivationResult {
 	return ActivationResult{RawMetricResult: RawMetricResult{State: MetricUnknown, Reason: reason}}
 }
 
+// ErrorActivationResult creates an ActivationResult with state "error", for an
+// activation source that existed and could not be read.
+func ErrorActivationResult(reason string) ActivationResult {
+	return ActivationResult{RawMetricResult: RawMetricResult{State: MetricError, Reason: reason}}
+}
+
 // --- TimingResult constructors ---
 
 // PresentTimingResult creates a TimingResult with state "present".
@@ -469,7 +482,7 @@ func UnknownAttributionResult(reason string) AttributionResult {
 
 // --- EstimatedTokensResult constructors ---
 //
-// There is no Error constructor, for the same reason ActivationResult has
+// There is no Error constructor, for the same reason AttributionResult has
 // none: an estimate is derived from payloads already in hand, so there is no
 // separate source that can fail it. A payload that could not be read fails the
 // signal that reads it.

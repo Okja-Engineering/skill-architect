@@ -65,6 +65,7 @@ only when the export yields a value the adapter can actually read:
 |---|---|
 | `tokens` | a `claude_code.token.usage` sum that declares an `aggregationTemporality` of 1 or 2 — as a bare number, as a quoted digit, or as the protobuf JSON enum name (`AGGREGATION_TEMPORALITY_DELTA` / `AGGREGATION_TEMPORALITY_CUMULATIVE`) — with a data point carrying a `type` attribute of `input`, `output`, `cacheRead` or `cacheCreation` and a value that is a token count — a whole number from 0 to 2⁶³−1, from `asDouble` or `asInt` |
 | `tool_calls` | `claude_code.tool_result` events carrying a tool name and a readable `success` value, **or** `claude_code.tool_decision` events recording a reject with a tool name. Either alone is enough |
+| `skill_activation` | `claude_code.skill_activated` events carrying a `skill.name`. The **event**, not the `skill.name` attribute that rides along on request-scoped signals — see below |
 | `timing` | `claude_code.api_request` events carrying a parseable timestamp |
 
 Anything else is `none`.
@@ -118,7 +119,7 @@ extractor that produced its values.
 
 A file you supplied is never reported as "unconfigured". If it cannot be read as an
 OTLP/JSON export — unreadable, empty, not a JSON object at the top level, malformed, or
-carrying a value that does not fit the OTLP schema — all three OTel signals come back
+carrying a value that does not fit the OTLP schema — all four OTel signals come back
 `error`, naming the failure. Two of those five sit inside a batch and name it (1-based):
 malformed JSON, and a value that does not fit the OTLP schema, which also names the field
 path when the decoder reports one — a batch whose own top level is the wrong shape (an
@@ -181,20 +182,34 @@ path becomes a row of zeros in a comparison. Every usage error — an unknown co
 harness, a missing required flag, an unrecognised flag, `--export-file` — exits **1**, so
 2 means the capture and nothing else.
 
-`skill_activation` and `attribution` are always `none`, for two different reasons. Claude
-Code *does* emit skill telemetry: `claude_code.skill_activated` is logged whenever a skill
-is invoked, whether Claude calls it through the Skill tool or you run it as a `/` command,
-and it carries `skill.name`, `invocation_trigger`, `skill.source` and `skill.kind`. A
-`skill.name` attribute rides along on request-scoped signals too — `claude_code.token.usage`,
-`claude_code.cost.usage`, `claude_code.api_request`, `claude_code.api_error` and
-`claude_code.api_refusal` — marking the skill active for that request; on those, built-in,
-bundled, user-defined and official-marketplace skill names appear verbatim and only
-third-party plugin skills are replaced with `"third-party"`, while on `skill_activated`
-itself user-defined *and* third-party plugin skills read as `"custom_skill"` unless
-`OTEL_LOG_TOOL_DETAILS=1`. This adapter reads none of it yet, which is why activation is
-`none`: the gap is in the reader, not in the harness. Reading
-`claude_code.skill_activated` is 0.5.0. Attribution is the other case — it has no source
-at all, because nothing in the telemetry maps an output back to the skill that produced it.
+`skill_activation` is read from `claude_code.skill_activated`, which Claude Code logs
+whenever a skill is invoked — whether Claude calls it through the Skill tool or you run it
+as a `/` command — and only then. One event is one activation, so you get one entry per
+event carrying a `skill.name`, in timestamp order, with the `invocation_trigger` the event
+named when it named one. An event that carries no `skill.name` is not listed: an
+activation of no named skill is one you can do nothing with.
+
+**The event is the source, and the attribute is not.** A `skill.name` attribute also rides
+along on request-scoped signals — `claude_code.token.usage`, `claude_code.cost.usage`,
+`claude_code.api_request`, `claude_code.api_error` and `claude_code.api_refusal` — where it
+marks the skill active *for that request*. One skill used across five requests carries it
+five times, and those records are stamped with flush and request times rather than with
+the time the skill was invoked. Reading them as activations would report a count and a set
+of times the harness never recorded, so an export carrying the attribute and no
+`skill_activated` event reports `skill_activation: none`, and the reason names the event
+that was looked for.
+
+Redaction differs between the two, which is the other reason not to pool them: on the
+request-scoped signals, built-in, bundled, user-defined and official-marketplace skill
+names appear verbatim and only third-party plugin skills are replaced with
+`"third-party"`, while on `skill_activated` itself user-defined *and* third-party plugin
+skills read as `"custom_skill"` unless `OTEL_LOG_TOOL_DETAILS=1`. Names are reported
+exactly as the export spelled them — un-redacting one would be inventing a name nobody
+recorded.
+
+`attribution` is the signal that is still always `none`, and for a different reason
+entirely: it has no source at all, because nothing in the telemetry maps an output back to
+the skill that produced it.
 
 ### Capturing an OTel export
 

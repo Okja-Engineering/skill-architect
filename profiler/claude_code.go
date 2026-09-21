@@ -16,6 +16,15 @@ const (
 	otelToolResultLog    = "claude_code.tool_result"
 	otelToolDecisionLog  = "claude_code.tool_decision"
 	otelAPIRequestLog    = "claude_code.api_request"
+	// otelSkillActivatedLog is logged when a skill is invoked, through the
+	// Skill tool or a / command, and only then — so one record is one
+	// activation. A skill.name attribute also rides along on request-scoped
+	// signals (token.usage, cost.usage, api_request, api_error, api_refusal),
+	// marking the skill active for that request; those are not read as
+	// activations, because a skill used across five requests carries the
+	// attribute five times and reporting five activations would be a count
+	// nobody measured.
+	otelSkillActivatedLog = "claude_code.skill_activated"
 
 	// Every Claude Code event name is qualified with this prefix in a record's
 	// body and unqualified in its event.name attribute.
@@ -49,12 +58,11 @@ const (
 // than a live endpoint keeps the adapter self-contained and testable without a
 // running collector.
 //
-// Skill activation and attribution are always unknown for Claude Code, for two
-// different reasons. Activation is unknown because this adapter does not read
-// the telemetry yet: Claude Code logs a claude_code.skill_activated event, and
-// attaches skill.name to request-scoped signals besides. Attribution is unknown
-// because there is nothing to read: no signal maps an output back to the skill
-// that produced it. Reporting either today would mean inventing it.
+// Attribution is always unknown for Claude Code, because there is nothing to
+// read: no signal maps an output back to the skill that produced it, and
+// reporting one would mean inventing it. Skill activation is a different case
+// and is read — from claude_code.skill_activated, the event the harness logs
+// once per invocation.
 type ClaudeCodeAdapter struct {
 	// OtelExportFile is the path to a file containing an OTLP/JSON export.
 	// It is the adapter's only input: Probe and Capture both resolve this one
@@ -65,7 +73,7 @@ type ClaudeCodeAdapter struct {
 // Name returns the harness identifier.
 func (a ClaudeCodeAdapter) Name() string { return "claude_code" }
 
-// otelSignals is one export file resolved into the three signals it carries.
+// otelSignals is one export file resolved into the signals it carries.
 //
 // Probe and Capture both derive from this single resolution, so "the adapter can
 // produce this signal" and "the adapter produced this signal" are by construction
@@ -73,17 +81,47 @@ func (a ClaudeCodeAdapter) Name() string { return "claude_code" }
 // scanning for structure, one extracting values — are what let the probe
 // advertise data the capture then discarded.
 type otelSignals struct {
-	Tokens    TokenResult
-	ToolCalls ToolCallResult
-	Timing    TimingResult
+	Tokens     TokenResult
+	ToolCalls  ToolCallResult
+	Activation ActivationResult
+	Timing     TimingResult
+}
+
+// resolvedSignal is one settled signal under the name the capability report and
+// the profile key it by.
+type resolvedSignal struct {
+	metric MetricName
+	raw    RawMetricResult
+}
+
+// resolved is every signal this adapter reads out of the export.
+//
+// It is the single enumeration of that set: the capability report and the probe
+// diagnostics are both derived from it, so neither can fall a signal behind the
+// other — which is how a signal comes to be advertised by one and explained by
+// neither. Ordered rather than a map, because the diagnostics are printed and a
+// reader comparing two runs should not have to sort them first.
+func (s otelSignals) resolved() []resolvedSignal {
+	return []resolvedSignal{
+		{MetricTokens, s.Tokens.RawMetricResult},
+		{MetricToolCalls, s.ToolCalls.RawMetricResult},
+		{MetricSkillActivation, s.Activation.RawMetricResult},
+		{MetricTiming, s.Timing.RawMetricResult},
+	}
 }
 
 // resolve reads and parses the export file once, projects it onto the
-// provenance it was given, and settles all three signals from the projection.
+// provenance it was given, and settles every export-backed signal from the
+// projection.
+//
+// The extractors are handed the projection and never the file, so a signal is
+// scoped to the named session by construction rather than by each extractor
+// remembering to scope itself — which is what lets a new signal join the set
+// without reopening the defect that scoping exists to close.
 //
 // It owns file resolution, provenance and failure classification for this
-// adapter; nothing below it re-decides any of them, so all three signals share
-// one error path:
+// adapter; nothing below it re-decides any of them, so every signal shares one
+// error path:
 //
 //   - no file configured — unknown, naming what to configure;
 //   - the file could not be read as an OTLP/JSON export — error, naming the
@@ -120,9 +158,10 @@ func (a ClaudeCodeAdapter) resolve(prov provenance) otelSignals {
 	scoped := export.scopedTo(prov)
 
 	return otelSignals{
-		Tokens:    extractTokenCounts(scoped),
-		ToolCalls: extractToolCalls(scoped),
-		Timing:    extractTiming(scoped),
+		Tokens:     extractTokenCounts(scoped),
+		ToolCalls:  extractToolCalls(scoped),
+		Activation: extractActivations(scoped),
+		Timing:     extractTiming(scoped),
 	}
 }
 
@@ -157,42 +196,47 @@ func (a ClaudeCodeAdapter) probeProvenance() provenance {
 
 func unknownSignals(reason string) otelSignals {
 	return otelSignals{
-		Tokens:    UnknownTokenResult(reason),
-		ToolCalls: UnknownToolCallResult(reason),
-		Timing:    UnknownTimingResult(reason),
+		Tokens:     UnknownTokenResult(reason),
+		ToolCalls:  UnknownToolCallResult(reason),
+		Activation: UnknownActivationResult(reason),
+		Timing:     UnknownTimingResult(reason),
 	}
 }
 
 func erroredSignals(reason string) otelSignals {
 	return otelSignals{
-		Tokens:    ErrorTokenResult(reason),
-		ToolCalls: ErrorToolCallResult(reason),
-		Timing:    ErrorTimingResult(reason),
+		Tokens:     ErrorTokenResult(reason),
+		ToolCalls:  ErrorToolCallResult(reason),
+		Activation: ErrorActivationResult(reason),
+		Timing:     ErrorTimingResult(reason),
 	}
 }
 
 // capabilityReport derives the capability report from resolved signals, so a
 // capability is advertised exactly when a value was read for it.
 func (a ClaudeCodeAdapter) capabilityReport(sig otelSignals) CapabilityReport {
+	caps := map[MetricName]MetricSource{
+		// Nothing Claude Code emits maps an output back to the skill that
+		// produced it, so this adapter can offer no attribution signal whatever
+		// the OTel configuration.
+		MetricAttribution: SourceNone,
+		// An estimate is derived from hook payloads, and this adapter reads an
+		// OTel export. It has nothing to estimate over, so it says so rather
+		// than leaving the signal out: the report enumerates every signal a
+		// profile carries, and a signal nobody advertised is one no caller can
+		// tell was considered.
+		MetricEstimatedContextTokens: SourceNone,
+	}
+	// The signals that come out of the export are advertised from the values
+	// resolve actually read, walked rather than listed a second time here.
+	for _, s := range sig.resolved() {
+		caps[s.metric] = sourceOf(s.raw)
+	}
 	return CapabilityReport{
-		Harness:    a.Name(),
-		AdapterVer: AdapterVersion,
-		ProbedAt:   time.Now().UTC().Format(time.RFC3339),
-		Capabilities: map[MetricName]MetricSource{
-			MetricTokens:    sourceOf(sig.Tokens.RawMetricResult),
-			MetricToolCalls: sourceOf(sig.ToolCalls.RawMetricResult),
-			MetricTiming:    sourceOf(sig.Timing.RawMetricResult),
-			// This adapter reads no skill-level attributes, so it can offer no
-			// activation or attribution signal whatever the OTel configuration.
-			MetricSkillActivation: SourceNone,
-			MetricAttribution:     SourceNone,
-			// An estimate is derived from hook payloads, and this adapter reads
-			// an OTel export. It has nothing to estimate over, so it says so
-			// rather than leaving the signal out: the report enumerates every
-			// signal a profile carries, and a signal nobody advertised is one
-			// no caller can tell was considered.
-			MetricEstimatedContextTokens: SourceNone,
-		},
+		Harness:      a.Name(),
+		AdapterVer:   AdapterVersion,
+		ProbedAt:     time.Now().UTC().Format(time.RFC3339),
+		Capabilities: caps,
 	}
 }
 
@@ -249,16 +293,14 @@ func (a ClaudeCodeAdapter) ProbeWithDiagnostics() (CapabilityReport, []string) {
 // those would be noise on every ordinary run, and noise is how a real
 // diagnostic gets ignored.
 //
-// Deduplicated because a whole-export failure settles all three signals with
-// one reason, and saying it three times reads as three faults.
+// Deduplicated because a whole-export failure settles every signal with one
+// reason, and saying it four times reads as four faults.
 func failureReasons(sig otelSignals) []string {
-	seen := make(map[string]bool, 3)
+	resolved := sig.resolved()
+	seen := make(map[string]bool, len(resolved))
 	var reasons []string
-	for _, r := range []RawMetricResult{
-		sig.Tokens.RawMetricResult,
-		sig.ToolCalls.RawMetricResult,
-		sig.Timing.RawMetricResult,
-	} {
+	for _, s := range resolved {
+		r := s.raw
 		if r.State != MetricError || r.Reason == "" || seen[r.Reason] {
 			continue
 		}
@@ -302,21 +344,14 @@ func (a ClaudeCodeAdapter) Capture(sessionID string, opts CaptureOpts) (Profile,
 		SkillDir:     opts.SkillDir,
 		Capability:   a.capabilityReport(sig),
 
-		Tokens:    sig.Tokens,
-		ToolCalls: sig.ToolCalls,
-		Timing:    sig.Timing,
+		Tokens:          sig.Tokens,
+		ToolCalls:       sig.ToolCalls,
+		SkillActivation: sig.Activation,
+		Timing:          sig.Timing,
 
-		// Claude Code does emit skill telemetry: claude_code.skill_activated
-		// is logged whenever a skill is invoked, and skill.name also rides
-		// along on token.usage, cost.usage, api_request, api_error and
-		// api_refusal. This adapter reads none of it yet, which is why
-		// activation is unknown — the harness is not the thing that is
-		// missing, the read is. Nothing in the telemetry maps an output back
-		// to the skill that produced it, which is a genuine gap and why
-		// attribution is unknown for a different reason.
-		SkillActivation: UnknownActivationResult("This adapter does not yet read Claude Code's skill telemetry: the " +
-			"claude_code.skill_activated event, logged when a skill is invoked through the Skill tool or a / command, " +
-			"carries skill.name, invocation_trigger, skill.source and skill.kind. Reading it is 0.5.0."),
+		// Nothing in Claude Code's telemetry maps an output back to the skill
+		// that produced it, so attribution has no source to read and is the one
+		// signal here whose answer is the same for every export.
 		Attribution: UnknownAttributionResult("Claude Code telemetry carries no output-to-skill mapping"),
 	}, nil
 }
@@ -577,7 +612,7 @@ func isTokenType(s string) bool {
 // docs/profiler-spec.md states it. A comment claiming the reason always says so
 // would describe a channel the schema does not have.
 func extractToolCalls(export scopedExport) ToolCallResult {
-	var calls []timedCall
+	var calls []timedEntry[ToolCallEntry]
 	var c toolCallCounters
 
 	for r := range export.logRecords() {
@@ -662,43 +697,135 @@ func (c toolCallCounters) reason() string {
 	return strings.Join(clauses, "; ")
 }
 
-// timedCall keeps an entry beside the time it sorts by. A call whose timestamp
-// could not be read is kept, not dropped: the call was read, only its clock was
-// not, and dropping it would make tool_calls lie about how many calls the
-// session made.
-type timedCall struct {
-	entry ToolCallEntry
+// timedEntry keeps a profile entry beside the time it sorts by. An entry whose
+// timestamp could not be read is kept, not dropped: the record was read, only
+// its clock was not, and dropping it would make the list lie about how many
+// things the session did.
+//
+// It is generic over the entry because the rule is the same for every list the
+// profile carries in event order, and a second copy of it is a second place for
+// the untimed case to be got wrong.
+type timedEntry[T any] struct {
+	entry T
 	nanos int64
 	timed bool
 }
 
-func toolCall(name string, success bool, r otlpLogRecord) timedCall {
-	call := timedCall{entry: ToolCallEntry{Name: name, Success: success}}
-	if t, ok := nanoTime(r.TimeUnixNano); ok {
-		call.entry.Timestamp = t.Format(time.RFC3339Nano)
-		call.nanos, call.timed = t.UnixNano(), true
+// recordTime is a log record's timestamp in the two forms an entry needs: the
+// text the profile carries, and the integer the ordering compares. A record
+// whose clock could not be read yields the empty string and false, which is an
+// entry that sorts last rather than one that is dropped.
+func recordTime(r otlpLogRecord) (string, int64, bool) {
+	t, ok := nanoTime(r.TimeUnixNano)
+	if !ok {
+		return "", 0, false
 	}
-	return call
+	return t.Format(time.RFC3339Nano), t.UnixNano(), true
 }
 
-// orderedEntries sorts the calls by timestamp ascending, untimed calls last in
-// file order. ToolCallEntry.Timestamp has no omitempty, so an untimed call
-// serialises with an empty timestamp rather than borrowing a neighbour's.
-func orderedEntries(calls []timedCall) []ToolCallEntry {
-	sort.SliceStable(calls, func(i, j int) bool {
-		if calls[i].timed != calls[j].timed {
-			return calls[i].timed
+func toolCall(name string, success bool, r otlpLogRecord) timedEntry[ToolCallEntry] {
+	stamp, nanos, timed := recordTime(r)
+	return timedEntry[ToolCallEntry]{
+		entry: ToolCallEntry{Name: name, Timestamp: stamp, Success: success},
+		nanos: nanos,
+		timed: timed,
+	}
+}
+
+// orderedEntries sorts entries by timestamp ascending, untimed entries last in
+// file order. Neither ToolCallEntry.Timestamp nor ActivationEntry.Timestamp has
+// omitempty, so an untimed entry serialises with an empty timestamp rather than
+// borrowing a neighbour's.
+func orderedEntries[T any](items []timedEntry[T]) []T {
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].timed != items[j].timed {
+			return items[i].timed
 		}
-		if !calls[i].timed {
+		if !items[i].timed {
 			return false
 		}
-		return calls[i].nanos < calls[j].nanos
+		return items[i].nanos < items[j].nanos
 	})
-	entries := make([]ToolCallEntry, 0, len(calls))
-	for _, c := range calls {
-		entries = append(entries, c.entry)
+	entries := make([]T, 0, len(items))
+	for _, it := range items {
+		entries = append(entries, it.entry)
 	}
 	return entries
+}
+
+// extractActivations lists the skills this session activated.
+//
+// The source is claude_code.skill_activated, which the harness logs when a
+// skill is invoked — through the Skill tool or a / command — and only then, so
+// one record is one activation and no de-duplication is needed. skill.name also
+// rides along on request-scoped signals, and those are deliberately *not* read
+// here: that attribute marks a skill active for a request, so a skill used
+// across five requests carries it five times, and one entry per record would
+// report five activations the harness never logged. An export carrying the
+// attribute and no event therefore reports unknown, and the reason names the
+// event that was looked for.
+//
+// A name is required and a trigger is not. The name is what an activation is
+// about, and an entry naming no skill is one nothing can be done with; the
+// trigger is a detail the event does not always carry, and ActivationEntry
+// leaves it out rather than guessing at it.
+//
+// The names themselves are reported exactly as the export spelled them. Claude
+// Code redacts user-defined and third-party plugin skills to custom_skill on
+// this event unless OTEL_LOG_TOOL_DETAILS=1, and un-redacting that would be
+// inventing a name nobody recorded.
+func extractActivations(export scopedExport) ActivationResult {
+	var activations []timedEntry[ActivationEntry]
+	var c activationCounters
+
+	for r := range export.logRecords() {
+		if eventName(r) != otelSkillActivatedLog {
+			continue
+		}
+		c.seen++
+		name, ok := r.Attributes.String("skill.name")
+		if !ok || name == "" {
+			c.unnamed++
+			continue
+		}
+		trigger, _ := r.Attributes.String("invocation_trigger")
+		stamp, nanos, timed := recordTime(r)
+		activations = append(activations, timedEntry[ActivationEntry]{
+			entry: ActivationEntry{SkillName: name, Timestamp: stamp, Trigger: trigger},
+			nanos: nanos,
+			timed: timed,
+		})
+	}
+
+	// Every unknown reason carries what the provenance projection removed, so a
+	// reason saying no activation was found cannot be read as saying the export
+	// carries none — it may carry several, under another session or another
+	// product's instrumentation scope.
+	switch {
+	case c.seen == 0:
+		return UnknownActivationResult("no " + otelSkillActivatedLog + " log events found in OTel export" + export.logsNotRead())
+	case len(activations) == 0:
+		return UnknownActivationResult("no skill activations in OTel export: " + c.reason() + export.logsNotRead())
+	}
+	return PresentActivationResult(orderedEntries(activations), string(SourceOtel))
+}
+
+// activationCounters is what the walk observed over claude_code.skill_activated
+// records, and the only thing the reason is built from — so a reason cannot
+// state a number the walk did not count. Composed as a clause list for the same
+// reason the token and tool-call reasons are: a second defect class adds an
+// entry rather than reshaping a sentence.
+type activationCounters struct {
+	seen    int
+	unnamed int
+}
+
+func (c activationCounters) reason() string {
+	clauses := make([]string, 0, 1)
+	if c.unnamed > 0 {
+		clauses = append(clauses, quantity(c.unnamed, otelSkillActivatedLog+" event")+" carried no skill.name")
+	}
+	return strings.Join(clauses, "; ")
 }
 
 // extractTiming reports the span the API requests cover.

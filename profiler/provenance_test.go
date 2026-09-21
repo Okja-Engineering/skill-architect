@@ -161,32 +161,47 @@ func TestProvenance_AMetricEmptiedByTheFilterIsNotReportedAsCarryingNoDataPoints
 func TestProvenance_ASessionAbsentFromTheExportYieldsNoValue(t *testing.T) {
 	profile := profileOf(t, "two_sessions.ndjson", sessionAbsent)
 
-	for _, sig := range []struct {
-		name  string
-		state MetricState
-		value any
-		nilly bool
-		why   string
-	}{
-		{"tokens", profile.Tokens.State, profile.Tokens.Value, profile.Tokens.Value == nil, profile.Tokens.Reason},
-		{"tool_calls", profile.ToolCalls.State, profile.ToolCalls.Value, profile.ToolCalls.Value == nil, profile.ToolCalls.Reason},
-		{"timing", profile.Timing.State, profile.Timing.Value, profile.Timing.Value == nil, profile.Timing.Reason},
-	} {
-		if sig.state != MetricUnknown {
-			data, _ := json.Marshal(sig.value)
-			t.Errorf("%s state = %q with value %s for a session the export does not contain, want unknown",
-				sig.name, sig.state, data)
+	// The signals walked are derived rather than listed. Every signal this
+	// adapter reads out of the export has to answer this way, and a
+	// hand-written three stopped asserting that the moment a fourth was read —
+	// which is what happened when skill_activation began coming out of the
+	// export. otelBackedSignals is that set.
+	signals := capturedSignals(profile)
+	walked := 0
+	for _, metric := range sortedMetrics(profile.Capability.Capabilities) {
+		if !otelBackedSignals[metric] {
+			continue
 		}
-		if !sig.nilly {
-			data, _ := json.Marshal(sig.value)
-			t.Errorf("%s value = %s, want none", sig.name, data)
+		walked++
+		sig := signals[metric]
+		if sig.raw.State != MetricUnknown {
+			data, _ := json.Marshal(profile)
+			t.Errorf("%s state = %q for a session the export does not contain, want unknown\n%s",
+				metric, sig.raw.State, data)
+		}
+		if sig.hasValue {
+			data, _ := json.Marshal(profile)
+			t.Errorf("%s carries a value, want none\n%s", metric, data)
 		}
 		// The export does carry token metrics, tool results and api_requests.
 		// A reason saying it carries none of them would be a second false
 		// statement in place of the first.
-		if !strings.Contains(sig.why, sessionAbsent) {
-			t.Errorf("%s reason = %q, want it to name the session that was not found", sig.name, sig.why)
+		if !strings.Contains(sig.raw.Reason, sessionAbsent) {
+			t.Errorf("%s reason = %q, want it to name the session that was not found", metric, sig.raw.Reason)
 		}
+	}
+	// A derivation that found nothing would make every assertion above
+	// vacuously true, which is the failure mode a derived denominator has and a
+	// written-down one does not. The two guards are not one guard twice:
+	// comparing walked with len(otelBackedSignals) catches the capability
+	// report falling behind that set, and is satisfied by *both* being empty —
+	// so it cannot also be what notices that nothing was walked.
+	if walked == 0 {
+		t.Error("no export-backed signal was walked, so every assertion above passed by reading nothing")
+	}
+	if want := len(otelBackedSignals); walked != want {
+		t.Errorf("walked %d export-backed signals, want %d — the capability report and otelBackedSignals disagree",
+			walked, want)
 	}
 
 	if got := profile.Capability.Capabilities[MetricTokens]; got != SourceNone {
@@ -247,6 +262,114 @@ func TestProvenance_AnAbsentScopeIsNotAForeignScope(t *testing.T) {
 	if profile.Tokens.State != MetricPresent {
 		t.Fatalf("tokens state = %q (%s), want present — no record in this export names a foreign scope",
 			profile.Tokens.State, profile.Tokens.Reason)
+	}
+}
+
+// --- the same two rules, over the signal this release added ---
+//
+// skill_activation is read out of the export like tokens, tool calls and
+// timing, so it answers to the same provenance. These cases are the ones that
+// would pass against an extractor handed the file instead of the projection —
+// which is the defect 0.4.3 closed, and the one most likely to reappear in a
+// new extractor.
+
+func activationNames(entries []ActivationEntry) []string {
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.SkillName)
+	}
+	return names
+}
+
+// One export, two sessions' activations, and a profile that names one of them.
+// Asserting each identity in turn is what proves the filter reads its argument:
+// a reader that returned every activation passes neither case, and one that
+// returned the first record's passes neither.
+func TestProvenance_ActivationsAreTheProfiledSessionsOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		session string
+		want    []string
+	}{
+		{"session A", sessionA, []string{"session-a-skill"}},
+		{"session B", sessionB, []string{"session-b-first", "session-b-second"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := profileOf(t, "two_sessions_activation.json", tc.session)
+
+			if profile.SkillActivation.State != MetricPresent {
+				t.Fatalf("skill_activation state = %q (%s), want present — this session activated a skill",
+					profile.SkillActivation.State, profile.SkillActivation.Reason)
+			}
+			got := activationNames(profile.SkillActivation.Value)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("skill_activation = %v, want %v — the other session's activations are not this profile's",
+					got, tc.want)
+			}
+			// The export also carries an activation on a record that names no
+			// session at all. An activation the adapter cannot attribute
+			// belongs to no profile: reporting it under whichever session was
+			// asked for is a guess, and the answer to a guess is to say nothing.
+			for _, name := range got {
+				if name == "unattributable-skill" {
+					t.Errorf("skill_activation = %v, want the record carrying no session.id left out — "+
+						"it cannot be attributed to any session", got)
+				}
+			}
+		})
+	}
+}
+
+// A session that activated no skill reports no activation, and the reason
+// accounts for the records the projection removed rather than claiming the
+// export carries no activation event at all — it carries four.
+func TestProvenance_ASessionWithNoActivationIsNotGivenAnothersOrToldTheExportHasNone(t *testing.T) {
+	profile := profileOf(t, "two_sessions_activation.json", sessionAbsent)
+
+	if profile.SkillActivation.State != MetricUnknown || profile.SkillActivation.Value != nil {
+		t.Fatalf("skill_activation state = %q with value %+v, want unknown and no value",
+			profile.SkillActivation.State, profile.SkillActivation.Value)
+	}
+	reason := profile.SkillActivation.Reason
+	if want := "4 log records not carrying session.id " + sessionAbsent; !strings.Contains(reason, want) {
+		t.Errorf("skill_activation reason = %q, want it to carry %q — the export holds four activation records,"+
+			" none of them this session's", reason, want)
+	}
+}
+
+// A record naming another product's instrumentation scope is that product's,
+// whatever session id it carries — so its activation is not this profile's even
+// though every other test of the identity would pass it.
+func TestProvenance_AForeignScopesActivationIsNotAttributed(t *testing.T) {
+	profile := profileOf(t, "foreign_scope_activation.json", fixtureSession)
+
+	if profile.SkillActivation.State != MetricPresent {
+		t.Fatalf("skill_activation state = %q (%s), want present — this harness's scope logged one activation",
+			profile.SkillActivation.State, profile.SkillActivation.Reason)
+	}
+	if got, want := activationNames(profile.SkillActivation.Value), []string{"my-skill"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("skill_activation = %v, want %v — some.other.product's activation carries this session's id and is still not ours",
+			got, want)
+	}
+}
+
+// The other half of it: when the foreign scope's record is the only activation
+// in the file, the signal is unknown and says what it passed over. Without this
+// case, a scope check could be deleted and the case above would still pass on
+// the surviving record.
+func TestProvenance_AnExportWhoseOnlyActivationIsForeignYieldsNone(t *testing.T) {
+	profile := profileOf(t, "foreign_scope_activation_only.json", fixtureSession)
+
+	if profile.SkillActivation.State != MetricUnknown || profile.SkillActivation.Value != nil {
+		t.Fatalf("skill_activation state = %q with value %+v, want unknown — the one activation here is another product's",
+			profile.SkillActivation.State, profile.SkillActivation.Value)
+	}
+	reason := profile.SkillActivation.Reason
+	if want := "1 log record recorded by an instrumentation scope that is not claude_code's"; !strings.Contains(reason, want) {
+		t.Errorf("skill_activation reason = %q, want it to carry %q", reason, want)
+	}
+	if got := profile.Capability.Capabilities[MetricSkillActivation]; got != SourceNone {
+		t.Errorf("capability skill_activation = %q, want none", got)
 	}
 }
 

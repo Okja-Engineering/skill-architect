@@ -1,0 +1,57 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "claude-code" } }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": { "name": "com.anthropic.claude_code.events", "version": "2.1.221" },
+          "logRecords": [
+            {
+              "timeUnixNano": "1789332595500000000",
+              "body": { "stringValue": "claude_code.skill_activated" },
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "33333333-3333-4333-8333-333333333333" } },
+                { "key": "event.name", "value": { "stringValue": "skill_activated" } },
+                { "key": "skill.name", "value": { "stringValue": "session-b-second" } },
+                { "key": "invocation_trigger", "value": { "stringValue": "skill_tool" } }
+              ]
+            },
+            {
+              "timeUnixNano": "1789332595100000000",
+              "body": { "stringValue": "claude_code.skill_activated" },
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "22222222-2222-4222-8222-222222222222" } },
+                { "key": "event.name", "value": { "stringValue": "skill_activated" } },
+                { "key": "skill.name", "value": { "stringValue": "session-a-skill" } },
+                { "key": "invocation_trigger", "value": { "stringValue": "slash_command" } }
+              ]
+            },
+            {
+              "timeUnixNano": "1789332595200000000",
+              "body": { "stringValue": "claude_code.skill_activated" },
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "skill_activated" } },
+                { "key": "skill.name", "value": { "stringValue": "unattributable-skill" } },
+                { "key": "invocation_trigger", "value": { "stringValue": "slash_command" } }
+              ]
+            },
+            {
+              "timeUnixNano": "1789332595300000000",
+              "body": { "stringValue": "claude_code.skill_activated" },
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "33333333-3333-4333-8333-333333333333" } },
+                { "key": "event.name", "value": { "stringValue": "skill_activated" } },
+                { "key": "skill.name", "value": { "stringValue": "session-b-first" } },
+                { "key": "invocation_trigger", "value": { "stringValue": "slash_command" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
