@@ -5,11 +5,12 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Okja-Engineering/skill-architect/profiler/internal/homesafe"
 )
 
 // fixedNow is the capture time every case here is stamped with, so the spool
@@ -527,7 +528,7 @@ func TestIngest_AReadThatFailedWritesNothing(t *testing.T) {
 // status is discarded — all the more reason the error must exist and travel, so
 // the caller that does look (the CLI, a replay) is told.
 func TestIngest_SaysSoWhenTheSpoolCannotBeWritten(t *testing.T) {
-	sealed := filepath.Join(sandboxHome(t), "sealed")
+	sealed := filepath.Join(homesafe.SandboxHome(t), "sealed")
 	if err := os.Mkdir(sealed, 0o500); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -619,8 +620,8 @@ func TestDefaultSpoolDir_IsUnderTheHomeAndNamedForThisProduct(t *testing.T) {
 // before anything is written into it.
 func sandboxSpoolDir(t *testing.T) string {
 	t.Helper()
-	dir := filepath.Join(sandboxHome(t), ".skill-architect", "spool")
-	mustBeOutsideRealHome(t, dir)
+	dir := filepath.Join(homesafe.SandboxHome(t), ".skill-architect", "spool")
+	homesafe.MustBeOutside(t, dir)
 	return dir
 }
 
@@ -686,358 +687,15 @@ func (errSource) Read() (json.RawMessage, error) { return nil, errSourceFailed }
 
 // --- The home-directory barrier ---
 //
-// Everything in this file and its two siblings writes into a directory that
-// stands for a home directory. The one thing none of them may do is write into
-// the real one: `hooks install` creates ~/.cursor/hooks.json and `ingest`
-// creates the spool, so a test that reached the real home would rewrite the
-// machine's Cursor configuration.
+// Everything in this file and its siblings writes into a directory that stands
+// for a home directory. The one thing none of them may do is write into the
+// real one: `hooks install` creates ~/.cursor/hooks.json, `ingest` creates the
+// spool, and `doctor`'s tests seed both inside the home they then ask about, so
+// a test that reached the real home would rewrite the machine's Cursor
+// configuration. This repo has already shipped exactly that bug.
 //
-// This repo has already shipped exactly that bug. A suite here once had a guard
-// that *reported* a violation and then ran the install anyway, because the
-// assertion helper had no abort path; a reviewer reproduced it deleting files
-// in a decoy home. So the barrier has two halves, and each is proved on its own:
-//
-//   - the decision is made after both paths are resolved, not from the shape of
-//     the strings (TestRealHomeContains_DecidesAfterResolution), and
-//   - the abort stops the statement after it from running
-//     (TestHomeBarrier_StopsTheWriteThatWouldFollow).
-
-// TestPathContains_DecidesAfterResolution pins the decision to where a path
-// lands rather than to how it is spelled.
-//
-// The two cases a spelling test gets wrong are the point of the table. A
-// symlink pointing into the protected directory is *outside* by every string
-// test and inside by every filesystem test; a sibling whose name begins with
-// the same letters is *inside* by strings.HasPrefix and outside in fact. Both
-// are reachable by accident — macOS hands t.TempDir() a symlinked path of its
-// own — so both are asserted.
-//
-// Every path here is one this test created, so no case depends on what happens
-// to exist beside the real home and no case is skipped. A skipped case would be
-// the barrier's own proof passing by not running.
-func TestPathContains_DecidesAfterResolution(t *testing.T) {
-	root := t.TempDir()
-	stands := filepath.Join(root, "alice") // stands for the home
-	inside := filepath.Join(stands, ".cursor")
-	sibling := filepath.Join(root, "alice-backup") // shares its name as a prefix
-	for _, d := range []string{stands, inside, sibling} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			t.Fatalf("mkdir %s: %v", d, err)
-		}
-	}
-	link := filepath.Join(root, "looks-harmless")
-	if err := os.Symlink(inside, link); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
-
-	for _, tc := range []struct {
-		name  string
-		child string
-		want  bool
-	}{
-		{"the directory itself", stands, true},
-		{"something inside it", inside, true},
-		{"a symlink from elsewhere pointing inside it", link, true},
-		{"something inside it that does not exist yet", filepath.Join(inside, "hooks.json"), true},
-		{"a path climbing back into it", filepath.Join(root, "alice-backup", "..", "alice", ".cursor"), true},
-		{"a sibling whose name starts with the same letters", sibling, false},
-		{"the parent of both", root, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := pathContains(stands, tc.child)
-			if err != nil {
-				t.Fatalf("pathContains(%q, %q): %v", stands, tc.child, err)
-			}
-			if got != tc.want {
-				t.Errorf("pathContains(%q, %q) = %v, want %v", stands, tc.child, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestRealHomeContains_KnowsTheRealHome joins the decision to the directory it
-// protects, and gives the reason that a refusal has to print.
-//
-// Only paths that already exist are asked about, and nothing is created: these
-// are the only assertions in the package that look at the real home, and they
-// look only.
-func TestRealHomeContains_KnowsTheRealHome(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("os.UserHomeDir: %v", err)
-	}
-
-	for _, tc := range []struct {
-		name string
-		dir  string
-		want bool
-	}{
-		{"the real home itself", home, true},
-		{"the Cursor config inside it", filepath.Join(home, ".cursor"), true},
-		{"the spool inside it", filepath.Join(home, ".skill-architect", "spool"), true},
-		{"a temp dir", t.TempDir(), false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, why, err := realHomeContains(tc.dir)
-			if err != nil {
-				t.Fatalf("realHomeContains(%q): %v", tc.dir, err)
-			}
-			if got != tc.want {
-				t.Errorf("realHomeContains(%q) = %v, want %v (reason %q)", tc.dir, got, tc.want, why)
-			}
-			if got && why == "" {
-				t.Error("a path was called contained with no reason given, so a failure would not say what it found")
-			}
-			if !got && why != "" {
-				t.Errorf("a path outside the home carries a reason %q, which reads as a refusal", why)
-			}
-		})
-	}
-}
-
-// TestRealHomeContains_RefusesRatherThanGuessesWhenItCannotResolve pins the
-// answer on the side of safety. A path the barrier cannot resolve is not a path
-// it has shown to be outside the home, and "I could not tell" must not read as
-// "go ahead".
-func TestRealHomeContains_RefusesRatherThanGuessesWhenItCannotResolve(t *testing.T) {
-	tmp := t.TempDir()
-
-	// A directory the process cannot traverse: resolution of anything beneath
-	// it fails with EACCES rather than ENOENT, which is the case that must not
-	// be read as "does not exist, therefore fine".
-	sealed := filepath.Join(tmp, "sealed")
-	if err := os.Mkdir(sealed, 0o000); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(sealed, 0o700) })
-
-	unresolvable := filepath.Join(sealed, "inner", ".cursor")
-
-	// Whether this case is reachable at all is asked of the filesystem, not of
-	// the function under test. Skipping on what realHomeContains returned would
-	// make the test pass by not running the moment the answer went wrong —
-	// which is what happened: a mutation that made an unresolvable path read as
-	// "outside the home" turned this test green by skipping it.
-	if _, err := filepath.EvalSymlinks(unresolvable); err == nil || os.IsNotExist(err) {
-		t.Skipf("this filesystem resolves %s without a permission error, so the case is not reachable here", unresolvable)
-	}
-
-	contained, why, err := realHomeContains(unresolvable)
-	if err == nil {
-		t.Error("realHomeContains reported no error for a path the filesystem refused to resolve")
-	}
-	if !contained {
-		t.Error("a path that could not be resolved was reported as outside the real home; \"I could not tell\" must not read as \"go ahead\"")
-	}
-	if why == "" {
-		t.Error("no reason was given for the refusal")
-	}
-}
-
-// TestHomeBarrier_StopsTheWriteThatWouldFollow is the reproduction of the
-// defect this barrier exists for: not "does the guard notice", but "does the
-// guard stop the next statement".
-//
-// It runs one test in a child `go test` whose HOME is a temp directory, so the
-// home the child refuses to touch is a fake one and the real home is never in
-// play. The child calls the barrier on a path inside that fake home and then
-// writes a marker file. The assertions are that the child failed, that it said
-// why, and that **the marker does not exist** — the last is the one that would
-// have caught the shipped bug, where the guard reported and returned.
-func TestHomeBarrier_StopsTheWriteThatWouldFollow(t *testing.T) {
-	if os.Getenv(barrierChildEnv) != "" {
-		t.Skip("running as the child of TestHomeBarrier_StopsTheWriteThatWouldFollow")
-	}
-
-	fakeHome := t.TempDir()
-	marker := filepath.Join(t.TempDir(), "the-install-ran")
-
-	cmd := exec.Command("go", "test", "-count=1", "-run", "^"+barrierChildTest+"$", "-v", ".")
-	cmd.Env = append(envWithout(os.Environ(), "HOME", barrierChildEnv),
-		"HOME="+fakeHome,
-		barrierChildEnv+"="+filepath.Join(fakeHome, ".cursor"),
-		barrierChildMarkerEnv+"="+marker,
-	)
-	out, err := cmd.CombinedOutput()
-
-	if err == nil {
-		t.Errorf("the child test passed; the barrier let a path inside its own home through\n%s", out)
-	}
-	if !strings.Contains(string(out), "refusing") {
-		t.Errorf("the child did not say it was refusing:\n%s", out)
-	}
-	if _, statErr := os.Stat(marker); statErr == nil {
-		t.Fatal("the statement after the barrier ran: the guard reported and returned instead of aborting, which is the defect this test exists for")
-	}
-}
-
-const (
-	barrierChildEnv       = "SKILL_ARCHITECT_HOME_BARRIER_DIR"
-	barrierChildMarkerEnv = "SKILL_ARCHITECT_HOME_BARRIER_MARKER"
-	barrierChildTest      = "TestHomeBarrierChild"
-)
-
-// TestHomeBarrierChild is the body the test above runs in a child process. It
-// is skipped in every ordinary run; only the parent sets the two variables, and
-// the home it is pointed at is the parent's temp directory.
-func TestHomeBarrierChild(t *testing.T) {
-	dir := os.Getenv(barrierChildEnv)
-	if dir == "" {
-		t.Skip("child of TestHomeBarrier_StopsTheWriteThatWouldFollow; not run on its own")
-	}
-
-	mustBeOutsideRealHome(t, dir)
-
-	// Unreachable when the barrier does its job. This stands for `InstallHooks`
-	// — the line that, in the bug this reproduces, ran after the guard had
-	// already reported the violation.
-	if err := os.WriteFile(os.Getenv(barrierChildMarkerEnv), []byte("ran"), 0o600); err != nil {
-		t.Fatalf("write marker: %v", err)
-	}
-}
-
-// envWithout returns env with the named variables removed, so the caller's
-// assignment of them is the only one the child sees.
-func envWithout(env []string, names ...string) []string {
-	var out []string
-	for _, kv := range env {
-		drop := false
-		for _, name := range names {
-			if strings.HasPrefix(kv, name+"=") {
-				drop = true
-			}
-		}
-		if !drop {
-			out = append(out, kv)
-		}
-	}
-	return out
-}
-
-// fatalTB is the part of *testing.T the barrier is allowed to use.
-//
-// It is this narrow on purpose. The bug this barrier replaces was a guard that
-// called Errorf, which marks the test failed and then *returns* — so the
-// install on the next line ran anyway. An interface carrying only Fatalf makes
-// writing that bug a compile error rather than something a reviewer has to
-// catch again.
-type fatalTB interface {
-	Helper()
-	Fatalf(format string, args ...any)
-}
-
-// mustBeOutsideRealHome aborts unless dir is somewhere other than the real
-// user's home directory. Every test that hands a home or a spool directory to
-// code that writes goes through it.
-//
-// The explicit return after Fatalf is not redundant. With a *testing.T, Fatalf
-// does not come back; the return says the barrier does not depend on that, so
-// the guarantee is the function's own rather than borrowed from testing.
-func mustBeOutsideRealHome(tb fatalTB, dir string) {
-	tb.Helper()
-	contained, why, err := realHomeContains(dir)
-	if err != nil {
-		tb.Fatalf("refusing to run: %s: %v", why, err)
-		return
-	}
-	if contained {
-		tb.Fatalf("refusing to run: %s", why)
-		return
-	}
-}
-
-// sandboxHome returns a directory that stands in for a home directory, proved
-// to be outside the real one before it is handed back.
-//
-// This is the only way a test in this package names a home. A test that built
-// one itself would be the test the barrier could not see.
-func sandboxHome(tb interface {
-	fatalTB
-	TempDir() string
-}) string {
-	tb.Helper()
-	dir := tb.TempDir()
-	mustBeOutsideRealHome(tb, dir)
-	return dir
-}
-
-// realHomeContains reports whether dir is the real user's home directory or
-// something inside it, and says why when it is.
-//
-// An error is reported with contained=true. A path that could not be resolved
-// is not a path shown to be outside the home, and "I could not tell" must not
-// read as "go ahead".
-func realHomeContains(dir string) (contained bool, why string, err error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return true, "the real home directory could not be named, so nothing can be shown to be outside it", err
-	}
-	contained, err = pathContains(home, dir)
-	if err != nil {
-		return true, dir + " could not be placed relative to the real home " + home + ", so where it would be written is unknown", err
-	}
-	if !contained {
-		return false, "", nil
-	}
-	return true, dir + " is inside the real home " + home, nil
-}
-
-// pathContains reports whether child is parent or something inside it, deciding
-// after both are resolved.
-//
-// Resolution is the point. The question is which directory will be written, not
-// how the path was spelled: on macOS t.TempDir() hands back /var/folders/…,
-// which is a symlink to /private/var/folders/…, $HOME can itself be a symlink,
-// and `..` inside a path says nothing about where it lands. A comparison of the
-// unresolved strings answers a different question from the one being asked.
-//
-// Containment is filepath.Rel rather than a prefix test, because a parent's
-// name is a prefix of every sibling that starts with the same letters —
-// strings.HasPrefix calls /Users/alice-backup a part of /Users/alice.
-func pathContains(parent, child string) (bool, error) {
-	resolvedParent, err := resolveForBarrier(parent)
-	if err != nil {
-		return false, err
-	}
-	resolvedChild, err := resolveForBarrier(child)
-	if err != nil {
-		return false, err
-	}
-	rel, err := filepath.Rel(resolvedParent, resolvedChild)
-	if err != nil {
-		return false, err
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
-}
-
-// resolveForBarrier makes a path absolute and follows every symlink in it,
-// including when the leaf does not exist yet.
-//
-// A directory a test is about to create does not exist at the moment the
-// barrier is asked about it, and refusing to answer for it would push every
-// caller into checking a path only after the thing that creates it has run —
-// which is after the write. So the deepest existing ancestor is resolved and
-// the remainder appended: the place the path *would* be created is what the
-// barrier is about.
-func resolveForBarrier(path string) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	current, rest := filepath.Clean(abs), ""
-	for {
-		resolved, err := filepath.EvalSymlinks(current)
-		if err == nil {
-			return filepath.Join(resolved, rest), nil
-		}
-		if !os.IsNotExist(err) {
-			return "", err
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", err
-		}
-		rest = filepath.Join(filepath.Base(current), rest)
-		current = parent
-	}
-}
+// The barrier itself now lives in internal/homesafe, with its own tests: it was
+// duplicated here and in package cmd, `doctor` made a third caller, and three
+// copies of a guard are three chances for one of them to be the copy that
+// degraded. Every test in this package names a home through
+// homesafe.SandboxHome and hands no other directory to code that writes.

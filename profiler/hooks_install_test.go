@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/Okja-Engineering/skill-architect/profiler/internal/homesafe"
 )
 
 // hooks.json is somebody else's file. Cursor owns its format, the user owns its
@@ -31,7 +33,7 @@ const testHookCommand = "/nonexistent/test/profiler ingest || true"
 func hooksJSONPath(home string) string { return filepath.Join(home, ".cursor", "hooks.json") }
 
 func TestInstall_RegistersEveryDocumentedEventOnce(t *testing.T) {
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 
 	res, err := InstallHooks(home, testHookCommand)
 	if err != nil {
@@ -79,7 +81,7 @@ func TestInstall_RegistersEveryDocumentedEventOnce(t *testing.T) {
 // because they are not sure it took — and the second run must be the same as
 // the first rather than a second copy of every entry.
 func TestInstall_IsIdempotent(t *testing.T) {
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 
 	first, err := InstallHooks(home, testHookCommand)
 	if err != nil {
@@ -139,7 +141,7 @@ func TestInstall_IsIdempotent(t *testing.T) {
 // rather than into a struct of the fields this build knows: a foreign hook, a
 // foreign event, and a top-level field nobody here has heard of all survive.
 func TestInstall_PreservesWhatIsAlreadyThere(t *testing.T) {
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 	existing := map[string]any{
 		"version":           2,
 		"someFutureSetting": map[string]any{"deep": []any{"a", "b"}},
@@ -200,7 +202,7 @@ func TestInstall_PreservesWhatIsAlreadyThere(t *testing.T) {
 // preserve, and overwriting it would throw away the user's configuration to
 // install ours.
 func TestInstall_RefusesAHooksFileItCannotParse(t *testing.T) {
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 	path := hooksJSONPath(home)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -237,7 +239,7 @@ func TestInstall_RefusesAHooksFileItCannotParse(t *testing.T) {
 }
 
 func TestUninstall_RemovesOnlyOurEntries(t *testing.T) {
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 	writeHooksFile(t, home, map[string]any{
 		"version": 2,
 		"hooks": map[string]any{
@@ -289,7 +291,7 @@ func TestUninstall_RemovesOnlyOurEntries(t *testing.T) {
 // registration that is not one; leaving it would make our uninstall visible in
 // a file we are supposed to have left as we found it.
 func TestUninstall_LeavesNoEmptyEventBehind(t *testing.T) {
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 	if _, err := InstallHooks(home, testHookCommand); err != nil {
 		t.Fatalf("InstallHooks: %v", err)
 	}
@@ -305,7 +307,7 @@ func TestUninstall_LeavesNoEmptyEventBehind(t *testing.T) {
 
 func TestUninstall_IsANoopWhenNothingIsRegistered(t *testing.T) {
 	t.Run("no file at all", func(t *testing.T) {
-		home := sandboxHome(t)
+		home := homesafe.SandboxHome(t)
 		res, err := UninstallHooks(home, testHookCommand)
 		if err != nil {
 			t.Fatalf("UninstallHooks: %v", err)
@@ -319,7 +321,7 @@ func TestUninstall_IsANoopWhenNothingIsRegistered(t *testing.T) {
 	})
 
 	t.Run("a file holding only somebody else's hooks", func(t *testing.T) {
-		home := sandboxHome(t)
+		home := homesafe.SandboxHome(t)
 		writeHooksFile(t, home, map[string]any{
 			"hooks": map[string]any{"sessionStart": []any{map[string]any{"command": "/opt/someone-else/hook"}}},
 		})
@@ -352,7 +354,7 @@ func TestUninstall_IsANoopWhenNothingIsRegistered(t *testing.T) {
 // stated end to end: after installing and uninstalling, what the user had is
 // what the user has.
 func TestInstallUninstall_RoundTripLeavesTheFileAsItWas(t *testing.T) {
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 	existing := map[string]any{
 		"version": 2,
 		"hooks": map[string]any{
@@ -380,7 +382,7 @@ func TestInstallUninstall_RoundTripLeavesTheFileAsItWas(t *testing.T) {
 // install must not treat it as already-installed and uninstall must not remove
 // it.
 func TestHooks_LeaveAloneAnEntryShapedUnlikeOurs(t *testing.T) {
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 	writeHooksFile(t, home, map[string]any{
 		"hooks": map[string]any{
 			"sessionStart": []any{"a bare string entry", map[string]any{"notCommand": 1}},
@@ -413,7 +415,7 @@ func TestHooks_LeaveAloneAnEntryShapedUnlikeOurs(t *testing.T) {
 // (M33 survived until this existed: the mutation replaced the type assertion
 // with fmt.Sprint and nothing noticed.)
 func TestHooks_MatchTheCommandByTypeAndNotByItsRendering(t *testing.T) {
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 	const numericLooking = "42"
 	writeHooksFile(t, home, map[string]any{
 		"hooks": map[string]any{
@@ -448,7 +450,7 @@ func TestHooks_MatchTheCommandByTypeAndNotByItsRendering(t *testing.T) {
 // thing standing between a merge and a user's configuration, so a backup that
 // could not be taken has to stop the write rather than be skipped.
 func TestInstall_SaysSoWhenItCannotBackUpAndWritesNothing(t *testing.T) {
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 	writeHooksFile(t, home, map[string]any{
 		"hooks": map[string]any{"sessionStart": []any{map[string]any{"command": "/opt/someone-else/hook"}}},
 	})
@@ -484,7 +486,7 @@ func TestInstall_SaysSoWhenItCannotBackUpAndWritesNothing(t *testing.T) {
 // "nothing is registered"; every other read failure means "this build does not
 // know what is in the file", and the two must not be answered the same way.
 func TestHooks_SurfaceAReadErrorThatIsNotAMissingFile(t *testing.T) {
-	home := sandboxHome(t)
+	home := homesafe.SandboxHome(t)
 	// A directory where the file belongs: readable as an entry, unreadable as
 	// a file, and not os.IsNotExist.
 	if err := os.MkdirAll(hooksJSONPath(home), 0o700); err != nil {
