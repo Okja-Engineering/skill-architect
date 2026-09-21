@@ -31,8 +31,8 @@ var fixedNow = time.Date(2026, 9, 20, 14, 30, 0, 0, time.UTC)
 // than for this product, and it is embedded in every line written. Renaming it
 // costs nothing until the first file is written with it and a migration after
 // that, so it is pinned here rather than left to a reviewer's eye. The old
-// spelling is deliberately not repeated anywhere in this package — the check
-// below searches these files for it.
+// spelling is deliberately not repeated anywhere this check reads — it searches
+// these files for it.
 func TestSpoolSchema_NamesThisProduct(t *testing.T) {
 	const want = "skill-architect/spool/v1"
 	if SpoolSchemaVersion != want {
@@ -41,7 +41,8 @@ func TestSpoolSchema_NamesThisProduct(t *testing.T) {
 
 	// The constant is not the only place a namespace can hide: the spool
 	// directory and the environment variable carried the same borrowed name.
-	// The whole package is asked, so a fourth one cannot arrive quietly.
+	// Every file that names the spool is asked, so a fourth one cannot arrive
+	// quietly.
 	//
 	// The needles are assembled rather than written out, because this file is
 	// one of the files searched — spelling them here would make the check fail
@@ -49,7 +50,7 @@ func TestSpoolSchema_NamesThisProduct(t *testing.T) {
 	const sibling = "cursor" // the borrowed half; the product half is appended below
 	needles := []string{sibling + "-profiler", sibling + "_profiler", strings.ToUpper(sibling + "_profiler")}
 
-	for _, name := range goFilesIn(t, ".") {
+	for _, name := range filesNamingTheSpool(t) {
 		body, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
@@ -62,7 +63,30 @@ func TestSpoolSchema_NamesThisProduct(t *testing.T) {
 	}
 }
 
-func goFilesIn(t *testing.T, dir string) []string {
+// filesNamingTheSpool is everything the check above reads: this package's Go
+// files and everything under queries/.
+//
+// The queries are the half that was missing, and they are the half that would
+// have slipped past. A check scoped to `*.go` reported clean over a `queries/`
+// directory whose every SQL file spelled the borrowed namespace into a default
+// path, and the DuckDB queries are the surface a user is most likely to copy a
+// path out of. Both groups are required to be non-empty: reading nothing is how
+// a search for an absent string passes without running.
+func filesNamingTheSpool(t *testing.T) []string {
+	t.Helper()
+	goFiles := filesUnder(t, ".", func(name string) bool { return strings.HasSuffix(name, ".go") })
+	if len(goFiles) == 0 {
+		t.Fatal("no Go file was found in this package, so this check reads nothing")
+	}
+	queries := filesUnder(t, "queries", func(string) bool { return true })
+	if len(queries) == 0 {
+		t.Fatal("no file was found under queries/, so the half of this check that covers the SQL reads nothing")
+	}
+	return append(goFiles, queries...)
+}
+
+// filesUnder is the files directly in dir whose names keep.
+func filesUnder(t *testing.T, dir string, keep func(name string) bool) []string {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -70,12 +94,9 @@ func goFilesIn(t *testing.T, dir string) []string {
 	}
 	var out []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") {
+		if !e.IsDir() && keep(e.Name()) {
 			out = append(out, filepath.Join(dir, e.Name()))
 		}
-	}
-	if len(out) == 0 {
-		t.Fatalf("no Go file was found under %s, so this check reads nothing", dir)
 	}
 	return out
 }
