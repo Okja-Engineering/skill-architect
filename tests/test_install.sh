@@ -336,62 +336,75 @@ the_blocks_path_words_are_accountable() {
 
 # --- The resolved verdict -----------------------------------------------------
 
-# <path> — fold `.` and `..` away without touching the filesystem, so that a
-# destination which does not exist yet still has an answer. `..` at the root
-# stops there, the way the kernel stops it, which is what makes a climb with an
-# absolute tail resolve to that tail.
-path_normalized() {
-  printf '%s\n' "$1" | awk '
-    {
-      n = split($0, part, "/")
-      out = ""
-      depth = 0
-      for (i = 1; i <= n; i++) {
-        p = part[i]
-        if (p == "" || p == ".") continue
-        if (p == "..") {
-          if (depth > 0) {
-            sub(/\/[^\/]*$/, "", out)
-            depth--
-          }
-          continue
-        }
-        out = out "/" p
-        depth++
-      }
-      if (out == "") out = "/"
-      print out
-    }
-  '
-}
-
-# <absolute path> — the same path with symlinks followed through the part of it
-# that exists. Two reasons it is not a plain `cd -P`: the destination is a place
-# the block is about to create and need not exist yet, and on this platform the
-# scratch root arrives through /var and lives at /private/var, so a compare
-# against an unresolved path says "outside" for a path that is in fact inside.
+# <path> — the place a write on this path would land: every directory component
+# resolved, in the order the kernel resolves it, with `..` folded only against
+# what has already been resolved.
+#
+# It used to be two steps, and the pair of them was an escape. First a
+# `path_normalized` folded `.` and `..` away with awk, on the stated reasoning
+# that following symlinks can only start from the longest prefix that exists, so
+# a `..` beyond that point would otherwise still be in the string when the two
+# paths are compared. That reasoning is sound about the *design it was defending*
+# and wrong about the invariant: folding `..` textually folds a `..` that follows
+# a symlink against the link's own name instead of against its target.
+# `~/checkout/../X`, with `checkout` a link to the repository, folded to `~/X`
+# and compared as **inside** the scratch root — while a write on it lands beside
+# the repository. Every character in that spelling is inert and no rule in this
+# file named it: reproduced, and the fence was got past by spelling alone.
+#
+# `..` and a symlink interleave, so there is no order of a whole-string fold and
+# a whole-string resolve that is right. The fold moves *into* the walk. One rule,
+# per component: a component that **is a directory** is entered with `cd -P`,
+# which follows a link, a chain of them, a relative target, and this platform's
+# own aliasing — the scratch root arrives through /var and lives at /private/var,
+# so a compare against an unresolved path says "outside" for a path that is in
+# fact inside. A component that **is not there** is appended as named, because
+# the destination is a place the block is about to create. A **leaf** that exists
+# and is not a directory is appended as named. Anything else — a non-directory
+# mid-path, a directory that cannot be entered, a cycle — has no answer, and no
+# answer is a refusal here as everywhere else. `..` pops the resolved prefix,
+# which is correct precisely because that prefix holds no link and no `..` any
+# more, and it stops at the root the way the kernel stops it.
+#
+# This is the third copy of this barrier in the repository and the third that had
+# the defect; the other two are skills/skill-rewrite/scripts/draft-rewrite.sh and
+# profiler/internal/homesafe. All three are now the same walk, and all three are
+# held to the same invariant by an oracle rather than by a table of spellings.
 path_resolved() {
-  local abs head tail
-  abs="$(path_normalized "$1")"
-  head="$abs"
-  tail=""
-  while [ "$head" != / ] && [ ! -d "$head" ]; do
-    if [ -n "$tail" ]; then
-      tail="${head##*/}/$tail"
+  local spelled remaining name candidate resolved
+  spelled="$1"
+  case "$spelled" in
+    /*) ;;
+    *) spelled="$PWD/$spelled" ;;
+  esac
+  resolved=/
+  remaining="${spelled#/}"
+  while [ -n "$remaining" ]; do
+    case "$remaining" in
+      */*) name="${remaining%%/*}"; remaining="${remaining#*/}" ;;
+      *)   name="$remaining"; remaining="" ;;
+    esac
+    case "$name" in
+      ''|.) continue ;;
+      ..)
+        resolved="${resolved%/*}"
+        [ -n "$resolved" ] || resolved=/
+        continue
+        ;;
+    esac
+    candidate="${resolved%/}/$name"
+    if [ -d "$candidate" ]; then
+      resolved="$(CDPATH= cd -P -- "$candidate" 2>/dev/null && pwd -P)" || return 1
+      [ -n "$resolved" ] || return 1
+    elif [ ! -e "$candidate" ] && [ ! -L "$candidate" ]; then
+      resolved="$candidate"
+    elif [ -z "$remaining" ]; then
+      resolved="$candidate"
     else
-      tail="${head##*/}"
-    fi
-    head="${head%/*}"
-    if [ -z "$head" ]; then
-      head=/
+      return 1
     fi
   done
-  head="$(CDPATH= cd -P -- "$head" 2>/dev/null && pwd -P)" || return 1
-  if [ -n "$tail" ]; then
-    printf '%s\n' "${head%/}/$tail"
-  else
-    printf '%s\n' "$head"
-  fi
+  printf '%s\n' "$resolved"
 }
 
 # <path> <root> — path *resolves* to somewhere strictly inside root, whether or
@@ -901,16 +914,126 @@ resolution_refuses_a_destination_that_resolves_through_a_symlink() {
   resolution_refuses '~/checkout/skills'
 }
 
-# The climb that leaves through a part of the path which does not exist yet, and
-# the reason `.` and `..` are folded away before the filesystem is consulted.
-# Following symlinks can only start from the longest prefix that exists, so a
-# `..` beyond that point is still in the string when the two paths are compared
-# — and a string beginning with the scratch root compares as inside it however
-# far out of it the path actually goes. Folding first is what makes the compare
-# mean what it says, and this is the only control that can tell.
+# The climb that leaves through a part of the path which does not exist yet. A
+# resolution that stopped at the longest existing prefix and appended the rest
+# would leave that `..` in the string when the two paths are compared — and a
+# string beginning with the scratch root compares as inside it however far out
+# of it the path actually goes. The walk folds each `..` as it reaches it, past
+# components that do not exist as readily as past ones that do, which is what
+# makes the compare mean what it says; this is the control that can tell.
 resolution_refuses_a_climb_through_a_path_that_does_not_exist_yet() {
   resolution_refuses \
     '~/not-created-yet/../../../../../../ESCAPED-THE-SCRATCH-ROOT/.claude/skills'
+}
+
+# And the climb that leaves through the symlink, which is the case the fold the
+# control above justifies could not see. `~/checkout` is a link to the
+# repository, which is not under the scratch root; a `..` after it belongs to
+# the repository's parent and not to the home. Folded textually first,
+# `~/checkout/..` becomes `~`, and the destination compares as inside the
+# scratch root while a write on it lands beside the repository. Every character
+# in it is inert and no rule above names it: the fence was got past by spelling.
+resolution_refuses_a_climb_out_through_a_symlink() {
+  resolution_refuses '~/checkout/../ESCAPED-THE-SCRATCH-ROOT/.claude/skills'
+}
+
+# --- The resolved verdict, against where a write on that spelling lands -------
+#
+# Every control above and below names a spelling somebody thought of, which is
+# what the file says twice over about denylists and then does here anyway: the
+# escapes it holds out are the escapes four rounds of review produced. The
+# invariant underneath them does not mention a spelling at all — *the verdict is
+# where the write lands* — and it can be asked directly, so it is.
+#
+# Each case is performed twice over two trees built by one function. In one the
+# destination is created for real, and the filesystem says whether the bytes
+# ended up under the root; in the other the same spelling is put to
+# path_resolves_inside. The two must agree. Nothing in the table is an expected
+# verdict, so a spelling nobody here thought of is judged too.
+#
+# The tree is entirely inside the harness scratch — the link that points "out"
+# of the root points at a sibling directory under it, not at anything of the
+# reader's — so the oracle can perform the escape rather than reason about it.
+# That is the only way to have an oracle at all: a case whose write must not be
+# allowed to happen cannot be measured.
+bound_tree() {
+  local b="$1"
+  rm -rf "$b"
+  mkdir -p "$b/root/home/inner" "$b/root/cwd" "$b/away"
+  # Inside the root, pointing out of it — absolute and relative targets, since a
+  # relative target resolves against the link's own directory and that is a
+  # second thing to get wrong.
+  ln -s "$b/away" "$b/root/home/aside"
+  ln -s "../../away" "$b/root/home/rel"
+  # Outside the root, pointing back into it. The other direction of the same
+  # defect, where the fold refuses a destination that is in fact contained.
+  ln -s "$b/root/home" "$b/away/back"
+}
+
+# <destination template> — path_resolves_inside's verdict for this spelling is
+# the answer the filesystem gives for it. `@B` stands for the tree's own root,
+# so one template can be instantiated in two trees.
+bound_agrees() {
+  local template="$1"
+  local oracle_base="$install_scratch/bound-oracle"
+  local verdict_base="$install_scratch/bound-verdict"
+  local oracle_dest verdict_dest marker landed verdict
+  bound_tree "$oracle_base"
+  bound_tree "$verdict_base"
+  oracle_dest="${template//@B/$oracle_base}"
+  verdict_dest="${template//@B/$verdict_base}"
+
+  if ! mkdir -p "$oracle_dest" 2>/dev/null; then
+    printf 'the oracle could not create %s, so this case has no verdict to compare against\n' \
+      "$oracle_dest" >&2
+    return 1
+  fi
+  marker="where-did-this-land-$$-${RANDOM}"
+  if ! printf '%s\n' "$marker" > "$oracle_dest/$marker" 2>/dev/null; then
+    printf 'the oracle could not write into %s\n' "$oracle_dest" >&2
+    return 1
+  fi
+  # `find` does not follow the links this tree hangs out of the root, so a file
+  # it reports under the root really is under it.
+  if [ -n "$(find "$oracle_base/root" -type f -exec grep -lF -- "$marker" {} + 2>/dev/null || true)" ]; then
+    landed=inside
+  else
+    landed=outside
+  fi
+
+  if path_resolves_inside "$verdict_dest" "$verdict_base/root"; then
+    verdict=inside
+  else
+    verdict=outside
+  fi
+
+  if [ "$landed" = "$verdict" ]; then
+    return 0
+  fi
+  printf 'the destination %s: a write on that spelling lands %s the root, and the resolved verdict says %s\n  it resolves to %s\n' \
+    "$template" "$landed" "$verdict" "$(path_resolved "$verdict_dest" 2>/dev/null || echo '<no answer>')" >&2
+  return 1
+}
+
+# Four of these nine are the defect, in both of its directions; five are the
+# controls that stop the repair from being "refuse everything". One list,
+# because the resolution cannot tell them apart either.
+the_resolved_verdict_is_where_the_write_lands() {
+  local case_template
+  for case_template in \
+    '@B/root/home/inner/d1' \
+    '@B/root/home/aside/d2' \
+    '@B/root/home/aside/../d3' \
+    '@B/root/home/rel/../d4' \
+    '@B/away/back/d5' \
+    '@B/away/back/../d6' \
+    '@B/root/home/../../away/d7' \
+    '@B/root/home/not-created-yet/../../d8' \
+    '@B/root/home/inner/../aside/../d9'
+  do
+    bound_agrees "$case_template" || return 1
+  done
+  return 0
 }
 
 # --- The destination is expanded, and evaluating it is not how ----------------
@@ -1940,6 +2063,10 @@ require "the resolved verdict alone refuses a destination that resolves through 
   resolution_refuses_a_destination_that_resolves_through_a_symlink
 require "the resolved verdict alone refuses a climb through a path that does not exist yet" \
   resolution_refuses_a_climb_through_a_path_that_does_not_exist_yet
+require "the resolved verdict alone refuses a climb out through a symlink" \
+  resolution_refuses_a_climb_out_through_a_symlink
+require "the resolved verdict is where a write on the destination lands, for every spelling" \
+  the_resolved_verdict_is_where_the_write_lands
 
 require "the destination expansion substitutes this run's home and nothing else" \
   quietly the_expansion_substitutes_home_and_nothing_else
