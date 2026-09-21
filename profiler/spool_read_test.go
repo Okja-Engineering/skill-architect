@@ -18,7 +18,7 @@ import (
 // attributing one to the other — is not in this slice: every one of those is a
 // claim about payloads nobody here has observed, and a Profile saying
 // `tool_calls: present, source: hooks` is that claim made in the data rather
-// than in the prose. See the note at the top of spool_profile.go.
+// than in the prose. See the note at the top of spool_read.go.
 
 func TestLoadSessionEvents_MatchesOnEveryIdentifierASessionIsNamedBy(t *testing.T) {
 	dir := sandboxSpoolDir(t)

@@ -1,6 +1,13 @@
 // Reading the spool back: the half that makes writing it worth doing.
 //
-// # Why there is no Profile in this file
+// Two readers of the written corpus live here — the read of one named session,
+// and the walk both it and AnalyzeSpool share — and that is the whole of what
+// this file is. It was called spool_profile.go for two slices and produced no
+// profile in either of them; the name is now what the file does, because a file
+// named for a type it does not build is the same defect as a profile claiming a
+// capability nobody captured, one layer down in the tooling.
+//
+// # Why there is no Profile here
 //
 // The draft this is ported from went further: it paired preToolUse with
 // postToolUse on tool_use_id, inferred a skill activation from a read of a
