@@ -1,10 +1,14 @@
 # Profiler adapter interface spec (F03)
 
-**Status:** spec · **Date:** 2026-09-13 · **Architecture:** Option C — adapter-per-harness with capability negotiation
+**Status:** reference for shipped behaviour · **Date:** 2026-09-21 · **Covers:** v0.5.0 · **Architecture:** Option C — adapter-per-harness with capability negotiation
+
+> This document began as a forward-looking spec and is now the reference for what
+> ships: every contract below is asserted by a test, and the sections that describe
+> something unbuilt say so in the sentence that describes it.
 
 ## Purpose
 
-A harness-agnostic profiler that captures runtime signals from any target harness (Cursor, Claude Code, Codex, Devin), degrades gracefully to `unknown` for unavailable metrics, and produces a serialized profile labelled with a caller-supplied snapshot id that F04 (paired comparisons) can read and group by.
+A harness-agnostic profiler, designed so that an adapter per harness can be added without changing the profile schema, which degrades gracefully to `unknown` for unavailable metrics and produces a serialized profile labelled with a caller-supplied snapshot id that `compare` can read and group by. **One adapter ships: Claude Code.** `capture --harness cursor|codex|devin` answers "unknown harness" and exits 1; the architecture is written for four and the registry holds one, which is the distinction this document keeps rather than collapsing.
 
 ## Core types
 
@@ -156,12 +160,20 @@ type ProbeDiagnoser interface {
 }
 
 type CaptureOpts struct {
-    ExportFile    string `json:"export_file,omitempty"`      // ATIF export or session transcript path
-    APIKey        string `json:"api_key,omitempty"`          // server API auth (Devin)
+    ExportFile    string `json:"export_file,omitempty"`      // ATIF export or session transcript path; reserved, read by nothing in this release
+    APIKey        string `json:"api_key,omitempty"`          // server API auth for a Devin or Cursor adapter; reserved, read by nothing in this release
     SnapshotHash  string `json:"snapshot_hash"`              // git SHA or content hash of the skill being profiled
     SkillDir      string `json:"skill_dir"`                 // path to the skill being profiled
 }
 ```
+
+`ExportFile` and `APIKey` are the input contract for adapters that do not exist, and **no
+shipped adapter reads either**: the Claude Code adapter refuses an `ExportFile` rather than
+ignoring it, and there is no CLI flag for an API key at all. They are kept because they are
+the shape a Devin or Cursor adapter would need and removing them would break this struct
+twice over. No release is named as the one that will read them, deliberately: naming the
+release being cut reads as a schedule and becomes a false claim the moment that release
+ships.
 
 ## Adapter contract
 
@@ -499,18 +511,41 @@ already exist instead of needing the sessions captured again.
 installed on the machine where it was written, no spool line in this repository
 was produced by Cursor, and no `hooks.json` this code wrote has been read by
 Cursor. Every statement below about *Cursor* is taken from Cursor's published
-hooks documentation. Specifically, these are unverified:
+hooks documentation, and that documentation has been re-read against this code
+field by field — which closes the docs-versus-code gap and not the
+docs-versus-running-Cursor one. Specifically, these remain unverified:
 
-- that Cursor reads `~/.cursor/hooks.json`, that its `hooks` member is keyed by
-  event name, and that an entry is an object with a `command` string;
-- that the 21 names in `CursorHookEvents` are the events Cursor invokes;
+- that its `hooks` member is keyed by event name, and that an entry is an object
+  with a `command` string;
 - that a hook is invoked with one JSON document on stdin;
-- that the document is an object carrying `hook_event_name`, `cursor_version`,
-  `cwd` and `conversation_id`.
+- that the document carries `hook_event_name`, `cursor_version` and
+  `conversation_id`;
+- every payload shape for the tool-call events (`preToolUse`, `postToolUse`),
+  which were registered on a live hook emitter here and never fired.
 
-If any of those is wrong, `hooks install` writes a file Cursor ignores and the
-spool stays empty, or lines arrive whose promoted envelope fields are blank.
-**Neither loses data**, which is the reason this ships ahead of an adapter: a
+Two assumptions this section used to list have since been settled against
+Cursor's published reference, and they went in opposite directions:
+
+- **Confirmed.** `~/.cursor/hooks.json` is the reference's User-scope location
+  (Enterprise, Team and Project scopes sit above it and this tool writes none of
+  them), and the 21 names in `CursorHookEvents` are exactly the documented event
+  set, with no twenty-second. The reference also marks a top-level `version`
+  **required** — *"Config schema version. Must be a positive integer (use 1)"* —
+  and `InstallHooks` now writes `1` when the key is absent, which is a stronger
+  statement than the old "unverified" note: without it the file most likely
+  fails Cursor's schema validation and is ignored whole, while `doctor` reads
+  the same file back and reports all 21 events registered.
+- **Contradicted.** `cwd` is **not** a field every payload carries. The
+  reference documents it on `preToolUse`, `postToolUse` and
+  `beforeShellExecution`, and the field carried on every payload for workspace
+  location is `workspace_roots`, which this build does not promote. So `cwd` is
+  promoted when present, and blank otherwise — which is the "treated as absent
+  rather than rendered" rule working, not a symptom of anything. Promoting
+  `workspace_roots` is a candidate for a later release; `raw` carries it today.
+
+If any of the remaining assumptions is wrong, `hooks install` writes a file
+Cursor ignores and the spool stays empty, or lines arrive whose promoted
+envelope fields are blank. **Neither loses data**, which is the reason this ships ahead of an adapter: a
 wrong guess about a field name costs a re-read of files that are still on disk,
 where a wrong capability claim in a stored profile is subtracted and reported by
 callers who never see this file. The three unlanded adapters are what that looks
@@ -625,11 +660,33 @@ so:
   is a number that reads the same is not the same entry.
 - An event left with no entries is removed with them: an empty registration is a
   trace of us in a file we are meant to have left as we found it.
+- **The schema version is supplied when absent and never overwritten.**
+  `ensureSchemaVersion` sets a top-level `"version": 1` if the key is missing,
+  because Cursor's reference marks it required; an existing value, including a
+  future `2`, is left alone. It is called from `InstallHooks` and deliberately
+  **not** from the save path `uninstall` shares: a required field added on the
+  way out would be something of ours left in a file we are meant to have
+  vacated. The result reports `schema_version_added` so a write that only
+  supplied the version does not report a backup and name nothing it did.
+- **Uninstall on a home that had no `.cursor` directory does not restore that
+  state.** It leaves the directory, a `hooks.json` holding `{"hooks": {},
+  "version": 1}`, and the timestamped backup. The residue is schema-valid, so it
+  does not break a hook config the user adds by hand later, but it is not
+  as-found and the bullet above's reasoning applies one level up.
+- **The backup suffix is second-resolution, so two writes in one second
+  collide.** Install then uninstall inside one second leaves one
+  `hooks.json.bak-<timestamp>` holding the post-install state, so the file the
+  user started with is not recoverable from it.
 
 The command registered by default is this binary's **absolute path** plus
-`ingest || true`. Absolute because `PATH` inside a hook's environment is not
-something this tool gets to assume; `|| true` so a failure of ours cannot take
-the user's session down.
+`ingest --spool-dir <home>/.skill-architect/spool || true`. Absolute because
+`PATH` inside a hook's environment is not something this tool gets to assume;
+`--spool-dir` for the same reason applied to `$HOME`, so that `--home` scopes
+the capture and not only the registration and `doctor --home X` describes the
+spool the registered hook actually writes to; `|| true` so a failure of ours
+cannot take the user's session down. `--command` still wins outright, and it is
+the only way to register `--strict`, which nothing else supplies and no
+environment variable reaches.
 
 ### The home directory
 
@@ -773,9 +830,9 @@ told to the user as a fact about their machine.
 
 `doctor` writes nothing, anywhere. It is a read of a home and a read of a file.
 
-## Adapter implementations (Slice 1 scope)
+## Adapter implementations
 
-### Claude Code adapter (Slice 1)
+### Claude Code adapter
 
 **Telemetry surface:** OTel export via `CLAUDE_CODE_ENABLE_TELEMETRY=1` + `OTEL_*` env vars.
 
@@ -815,7 +872,7 @@ Within that envelope:
    If the file is absent, unreadable, malformed, missing the signal, or carrying the signal with nothing readable inside it, that capability stays `none`. Availability is a fact about a value in hand, not about a name matched in a file — a probe that reports structure is how it comes to advertise data the capture cannot deliver.
 
    A capability's vocabulary is a source or `none`, so the report structurally cannot distinguish "no telemetry was configured" from "the export you named could not be read": both are `none`, while capture keeps them apart as `unknown` and as `error` with a reason. That distinction is information `resolve` already computed, so probe reports it — on **stderr**, through `ProbeDiagnoser`, one message per distinct reason, using capture's own wording. Adding it to `CapabilityReport` instead would change what every `Profile` that embeds the report contains for the same input, which is a schema and adapter-version question; a second channel changes nothing anyone parses. `Probe()` delegates to `ProbeWithDiagnostics()` so there is one read of one file and the report and its explanation cannot describe different files.
-2. Attribution is always `none` for Claude Code, because there is nothing to read: its telemetry carries no output-to-skill mapping at all. Skill activation was `none` for the same-shaped but different reason — the telemetry existed and this adapter did not read it — until 0.5.0, which reads it. **The source is the event, not the attribute.** `claude_code.skill_activated` is logged when a skill is invoked, through the Skill tool or a `/` command, and only then, so one record is one activation and the timestamp on it is the time the skill was invoked. `skill.name` also rides along on `token.usage`, `cost.usage`, `api_request`, `api_error` and `api_refusal`, where it marks the skill active *for that request* — a skill used across five requests carries it five times, and those records carry flush and request times rather than invocation times. Reading them as activations would report a count and a set of times the harness never recorded, so an export carrying the attribute and no event reports `skill_activation: none`, with a reason naming the event that was looked for. A reason may say what this adapter does not read; it may not say what the harness does not emit unless that is true.
+2. Attribution is always `none` for Claude Code, because there is nothing to read: its telemetry carries no output-to-skill mapping at all. Skill activation was `none` for the same-shaped but different reason — the telemetry existed and this adapter did not read it — until 0.5.0, which reads it. **The source is the event, not the attribute.** `claude_code.skill_activated` is logged when a skill is invoked, through the Skill tool or a `/` command, and only then, so one record is one activation and the timestamp on it is the time the skill was invoked. `skill.name` also rides along on `token.usage`, `cost.usage`, `api_request`, `api_error` and `api_refusal`, where it marks the skill active *for that request* — a skill used across five requests carries it five times, and those records carry flush and request times rather than invocation times. Reading them as activations would report a count and a set of times the harness never recorded, so an export carrying the attribute and no event gives `skill_activation: "none"` in the capability report and `{"state": "unknown", "reason": …}` in the profile, the reason naming the event that was looked for — a capability value carries no reason, and a signal state does, which is why both have to be said. A reason may say what this adapter does not read; it may not say what the harness does not emit unless that is true.
 
 **Provenance — which records a profile may be built from.** A capture file is not a session. Both documented capture routes append to one file by design, and route (a) is a receiver on the standard OTLP port that anything on the machine may post to, so one export legitimately carries several sessions and more than one product's telemetry. A profile names one session and is read as a measurement of it, so **a record contributes only when it carries the asserted `session.id` and was not recorded by another product's instrumentation scope.** Two independent tests, because either alone leaves a hole: Claude Code puts `session.id` on every metric data point and every log record, so a record either says which run it is from or cannot be attributed to one — carrying a different id and carrying none are the same answer; and a record naming another product's scope is that product's whatever identity it carries. The scope test is an **exclusion of a positively foreign scope, not an allowlist**: a scope that names no library is read, because the scope is optional in OTLP and a receiver or collector in the path may not carry one through, and refusing those would trade a wrong number for no number on every pipeline that drops it. The match is on the harness's own namespace component (`claude_code`), which is the same token its signal names are qualified with, so `com.anthropic.claude_code`, its `.events` and `.subagent` siblings and any later tail all read, while `some.other.product` does not. A log record's event identity is read the same way: the fully-qualified name in the body is taken as it stands rather than re-qualified, because adding the prefix to a body naming a bare `tool_result` manufactures an identity the record never had; only the `event.name` attribute is qualified, since the short form is the documented spelling of it. **A `present` signal is therefore always a measurement of the session the profile names.** When the projection removes records a signal reads from, that signal's `unknown` reason carries a clause naming how many and why, so a reason saying a signal was not found cannot be read as saying the export carries nothing of the kind; the clause is absent when nothing was removed, which is every capture of one session with nothing else on the port.
 
@@ -841,7 +898,12 @@ must branch on a bad export uses `capture`, which does have one.
 
 **Fallback:** With no export file configured, `tokens`, `tool_calls`, `skill_activation` and `timing` are `unknown` with reason "OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile." A file that is configured but cannot be read as an OTLP/JSON export must not borrow that reason: missing, unreadable, empty, non-object at the top level, malformed, or not fitting the OTLP schema are all `error`, naming the failure, because the caller did supply a file and "not configured" would send them to fix the one thing that is not wrong. A file that parses but carries nothing readable for a signal leaves that signal `unknown`, naming what was missing; a file carrying no OTLP envelope at all leaves all four `unknown`, naming the format expected. `attribution` is `unknown` with its own reason (step 7 above) in every one of these cases — it is a property of the harness and of this adapter, not of the export. The adapter reads only the file it is given: it does not inspect `CLAUDE_CODE_ENABLE_TELEMETRY` or the `OTEL_*` env vars itself.
 
-## Acceptance criteria (Slice 1)
+## Acceptance criteria
+
+These are the normative criteria for the Claude Code adapter as it ships, spanning
+every release that has touched it — AC2 and AC4's skill-activation clauses are
+0.5.0's, AC3's mixed-temporality clause is 0.4.3's — and not, as an earlier
+heading said, the scope of one slice.
 
 1. Metric result serialization: a `present` result includes value and source; an `unknown` result includes reason and no value key; an `error` result includes reason and no value key.
 2. `CapabilityReport` for Claude Code is per signal: `tokens`, `tool_calls`, `skill_activation` and `timing` are each `otel` only when the export file yields a readable value for that signal, and `none` otherwise; `attribution` is always `none`. An export yielding all four therefore reports `tokens: otel`, `tool_calls: otel`, `skill_activation: otel`, `timing: otel`. An export carrying `skill.name` on request-scoped signals and no `claude_code.skill_activated` event reports `skill_activation: none`: the attribute is not the source.
