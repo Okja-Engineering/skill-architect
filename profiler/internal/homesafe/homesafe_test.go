@@ -99,6 +99,149 @@ func TestPathContains_DecidesAfterResolution(t *testing.T) {
 	}
 }
 
+// TestPathContains_AgreesWithWhereTheWriteLands is the invariant the table
+// above cannot state, and the one the barrier was found failing.
+//
+// The table above is a list of spellings somebody thought of. That is what let
+// this class survive: `..` folded lexically *before* symlinks are resolved is
+// correct for every spelling in which no `..` crosses a link, so a table
+// assembled by hand agrees with a barrier that is wrong. This test does not
+// name an expectation at all. It performs the write on the *spelled* path,
+// finds out from the filesystem where the bytes actually landed, and requires
+// the barrier's verdict to be that answer.
+//
+// So the oracle is the kernel, and a spelling nobody thought of is still
+// judged. Every directory in each case already exists and only the leaf file
+// is new, which is the shape a real caller is in: the write goes through the
+// kernel's own resolution with nothing folded by anybody first.
+//
+// The two directions are both here and they fail differently. A path that
+// resolves *into* the protected directory while its fold says otherwise is the
+// hole — the barrier says "outside" and the write lands inside. A path that
+// resolves *out* of it while its fold says inside is the false refusal, which
+// costs a legitimate destination. A repair that only closed the first would
+// pass half of this.
+func TestPathContains_AgreesWithWhereTheWriteLands(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "r")
+	home := filepath.Join(root, "home") // stands for the protected directory
+	for _, d := range []string{
+		filepath.Join(home, ".cursor"),
+		filepath.Join(home, "sub"),
+		filepath.Join(root, "outside"),
+		filepath.Join(root, "home-backup"),
+	} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+	// aside and chain live beside the protected directory and point into it;
+	// out and rel live inside it and point away. Each is the parent of a `..`
+	// in the table, which is the component whose fold is the whole question.
+	for _, ln := range []struct{ target, name string }{
+		{filepath.Join(home, ".cursor"), filepath.Join(root, "aside")},
+		{filepath.Join(root, "aside"), filepath.Join(root, "chain")},
+		{filepath.Join(root, "outside"), filepath.Join(home, "out")},
+		{filepath.Join("..", "outside"), filepath.Join(home, "rel")},
+	} {
+		if err := os.Symlink(ln.target, ln.name); err != nil {
+			t.Fatalf("symlink %s: %v", ln.name, err)
+		}
+	}
+
+	// Spelled with string concatenation, never filepath.Join: Join calls Clean,
+	// which folds the `..` these cases are about before the test has even run.
+	// A case assembled with Join would be testing a different path from the one
+	// its name claims.
+	cases := []struct{ name, spelled string }{
+		{"named directly inside", home + "/.cursor/f1"},
+		{"through a symlink into it", root + "/aside/f2"},
+		{"through a chain of symlinks into it", root + "/chain/f3"},
+		{"a `..` crossing a symlink whose target's parent is inside", root + "/aside/../f4"},
+		{"a `..` crossing a chain of symlinks", root + "/chain/../f5"},
+		{"two `..` crossing a symlink, climbing back down", root + "/aside/../../home/.cursor/f6"},
+		{"a `..` crossing a symlink that points away", home + "/out/../f7"},
+		{"a `..` crossing a symlink whose own target is relative", home + "/rel/../f8"},
+		{"through a symlink that points away", home + "/out/f9"},
+		{"a sibling whose name starts with the same letters", root + "/home-backup/f10"},
+		{"a plain `..` inside it", home + "/sub/../f11"},
+		{"a plain `..` out of it", home + "/../f12"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(tc.spelled, []byte(tc.name), 0o600); err != nil {
+				t.Fatalf("the case could not be performed, so it proves nothing: "+
+					"writing %s: %v", tc.spelled, err)
+			}
+			landedInside, where := writeLandedUnder(t, home, tc.spelled)
+
+			got, err := PathContains(home, tc.spelled)
+			if err != nil {
+				t.Fatalf("PathContains(%q, %q): %v", home, tc.spelled, err)
+			}
+			if got != landedInside {
+				t.Errorf("PathContains(%q, %q) = %v, but a write on that spelling landed at %s, "+
+					"which is %s the protected directory",
+					home, tc.spelled, got, where, insideOrOutside(landedInside))
+			}
+		})
+	}
+}
+
+func insideOrOutside(inside bool) string {
+	if inside {
+		return "inside"
+	}
+	return "outside"
+}
+
+// writeLandedUnder answers the oracle's question: after a write on `spelled`,
+// is the file that now exists somewhere under `dir`?
+//
+// It asks the filesystem and not a path library. os.Stat on the spelled path is
+// the kernel's own resolution of it, and the walk compares device and inode, so
+// no part of this answer comes from the code under test. Symlinks are not
+// followed by the walk, which matters: the fixture deliberately hangs links out
+// of the protected directory, and a walk that chased them would call a file
+// outside the directory a file inside it.
+func writeLandedUnder(t *testing.T, dir, spelled string) (bool, string) {
+	t.Helper()
+	target, err := os.Stat(spelled)
+	if err != nil {
+		t.Fatalf("the write on %s cannot be located, so this case has no oracle: %v", spelled, err)
+	}
+	found := ""
+	err = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if os.SameFile(fi, target) {
+			found = path
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", dir, err)
+	}
+	if found != "" {
+		return true, found
+	}
+	// Not under dir. Name where it did land, so a failure reads as a fact
+	// rather than as "somewhere else".
+	if real, err := filepath.EvalSymlinks(spelled); err == nil {
+		return false, real
+	}
+	return false, spelled
+}
+
 // TestRealHomeContains_KnowsTheRealHome joins the decision to the directory it
 // protects, and gives the reason that a refusal has to print.
 //

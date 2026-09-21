@@ -23,9 +23,14 @@
 // # The three properties, each of which was proved by reverting it
 //
 //   - **Containment is decided after both paths are resolved**, never from the
-//     shape of the strings. A symlink pointing into the protected directory is
-//     outside by every string comparison and inside in fact; a sibling sharing
-//     the name as a prefix is the reverse.
+//     shape of the strings, and resolution comes **before any `..` is folded**.
+//     A symlink pointing into the protected directory is outside by every
+//     string comparison and inside in fact; a sibling sharing the name as a
+//     prefix is the reverse. The ordering half of that property is not a
+//     refinement of it: a barrier that resolved both paths and folded `..`
+//     first — which is what `filepath.Clean` does, and what this did — is
+//     wrong for every path whose `..` crosses a link, in both directions. See
+//     [resolve].
 //   - **A path that cannot be resolved counts as contained.** "I could not tell"
 //     must not read as "go ahead".
 //   - **The abort aborts.** [FatalTB] offers only `Fatalf`, so writing the
@@ -35,9 +40,11 @@
 package homesafe
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // FatalTB is the part of *testing.T the barrier is allowed to use.
@@ -129,7 +136,9 @@ func RealHomeContains(dir string) (contained bool, why string, err error) {
 //
 // Containment is filepath.Rel rather than a prefix test, because a parent's
 // name is a prefix of every sibling that starts with the same letters —
-// strings.HasPrefix calls /Users/alice-backup a part of /Users/alice.
+// strings.HasPrefix calls /Users/alice-backup a part of /Users/alice. Rel
+// cleans both of its arguments, which is safe here and only here: both have
+// been through resolve, so neither still carries a `..` for a clean to fold.
 func PathContains(parent, child string) (bool, error) {
 	resolvedParent, err := resolve(parent)
 	if err != nil {
@@ -146,38 +155,134 @@ func PathContains(parent, child string) (bool, error) {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
 }
 
+// maxSymlinkHops bounds the chain resolve will follow before calling a path
+// unresolvable, the way the kernel does. Without it a cycle is an infinite
+// loop, and an infinite loop inside a safety barrier is a barrier that never
+// answers rather than one that refuses.
+const maxSymlinkHops = 40
+
 // resolve makes a path absolute and follows every symlink in it, including when
 // the leaf does not exist yet.
+//
+// # Why this is a component walk and not filepath.Clean plus EvalSymlinks
+//
+// It used to be, and that was the defect. `filepath.Abs` cleans, and cleaning
+// folds `..` **against the text**: a `..` that follows a symlink is folded
+// against the *link's* name instead of against its target. So a path spelled
+// `<dir>/link/../x`, where `link` points at `<protected>/sub`, folds to
+// `<dir>/x` and is judged outside the protected directory — while a write on
+// that same spelling goes through the kernel, which resolves `link` first, and
+// lands at `<protected>/x`. The barrier said "outside" and the bytes went
+// inside. `filepath.Join` folds too, so appending an unresolved remainder to a
+// resolved head had the same hole one level down.
+//
+// The invariant, which the barrier's own header states and this is now the
+// implementation of: **containment is decided on a path whose symlinks are
+// resolved before any `..` is folded.** That cannot be got by reordering two
+// library calls, because `..` and a symlink interleave — each `..` must be
+// folded against however much of the path has been resolved *so far*. So the
+// path is walked one component at a time, in the order the kernel walks it:
+// a name is appended and followed if it is a link, and `..` pops the
+// already-resolved prefix, where popping is correct precisely because that
+// prefix holds no links and no `..` any more.
 //
 // A directory a test is about to create does not exist at the moment the
 // barrier is asked about it, and refusing to answer for it would push every
 // caller into checking a path only after the thing that creates it has run —
-// which is after the write. So the deepest existing ancestor is resolved and
-// the remainder appended: the place the path *would* be created is what the
-// barrier is about.
+// which is after the write. So a component that does not exist is appended and
+// the walk continues: the place the path *would* be created is what the barrier
+// is about, and a `..` after a component that does not exist still folds
+// against what is resolved, so a climb back into a symlinked region resolves
+// that region rather than folding past it.
 //
 // A path that cannot be resolved for any other reason — a directory the process
-// may not traverse, say — is an error, and every caller above turns that into a
-// refusal.
+// may not traverse, a cycle — is an error, and every caller above turns that
+// into a refusal.
 func resolve(path string) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
+	if path == "" {
+		return "", &os.PathError{Op: "resolve", Path: path, Err: os.ErrInvalid}
 	}
-	current, rest := filepath.Clean(abs), ""
-	for {
-		resolved, err := filepath.EvalSymlinks(current)
-		if err == nil {
-			return filepath.Join(resolved, rest), nil
-		}
-		if !os.IsNotExist(err) {
+	if !filepath.IsAbs(path) {
+		cwd, err := os.Getwd()
+		if err != nil {
 			return "", err
 		}
-		parent := filepath.Dir(current)
-		if parent == current {
+		// Concatenated rather than joined: filepath.Join cleans, which is the
+		// fold this function exists to not do. The working directory's own
+		// symlinks are resolved by the walk below like any other component.
+		path = cwd + string(filepath.Separator) + path
+	}
+
+	resolved := string(filepath.Separator)
+	remaining := splitPath(path)
+	hops := 0
+	for len(remaining) > 0 {
+		name := remaining[0]
+		remaining = remaining[1:]
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			resolved = filepath.Dir(resolved)
+			continue
+		}
+
+		next := childOf(resolved, name)
+		target, err := os.Readlink(next)
+		if err != nil {
+			// Not a symlink (EINVAL) and not there at all (ENOENT) are both
+			// "append it and carry on": the first is a real entry, the second
+			// is a place a write would create. Anything else — a parent this
+			// process may not traverse, a component that is not a directory —
+			// is a path whose landing place is unknown, and unknown is not a
+			// pass.
+			if isNotSymlink(err) || os.IsNotExist(err) {
+				resolved = next
+				continue
+			}
 			return "", err
 		}
-		rest = filepath.Join(filepath.Base(current), rest)
-		current = parent
+
+		hops++
+		if hops > maxSymlinkHops {
+			return "", &os.PathError{Op: "resolve", Path: path, Err: errTooManyLinks}
+		}
+		if filepath.IsAbs(target) {
+			resolved = string(filepath.Separator)
+		}
+		// The link's own target is walked before the rest of the path, exactly
+		// as the kernel splices it in, so a target that is itself a link or
+		// carries its own `..` resolves by the same rule.
+		remaining = append(splitPath(target), remaining...)
 	}
+	return resolved, nil
+}
+
+// errTooManyLinks is the refusal for a chain that does not end. It is this
+// package's own value rather than syscall.ELOOP so that the message reads as
+// what happened on any platform.
+var errTooManyLinks = errors.New("too many levels of symbolic links")
+
+// splitPath breaks a path into its components without folding anything. Empty
+// components and "." are left in for the walk to skip, because removing them
+// here would be the beginning of a clean.
+func splitPath(path string) []string {
+	return strings.Split(path, string(filepath.Separator))
+}
+
+// childOf appends one name to an already-resolved absolute path. Not
+// filepath.Join, which cleans; the prefix is resolved and the name is a single
+// component, so there is nothing to clean and nothing that may be folded.
+func childOf(dir, name string) string {
+	if strings.HasSuffix(dir, string(filepath.Separator)) {
+		return dir + name
+	}
+	return dir + string(filepath.Separator) + name
+}
+
+// isNotSymlink reports whether Readlink refused because the entry is a real
+// file or directory rather than a link. That is an answer, not a failure, and
+// it is the common case: every component of an ordinary path reaches it.
+func isNotSymlink(err error) bool {
+	return errors.Is(err, syscall.EINVAL)
 }
