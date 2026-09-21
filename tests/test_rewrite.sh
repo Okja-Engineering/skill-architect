@@ -223,12 +223,13 @@ fenced_block_under() {
 }
 
 doc_block() {
-  local file="$1" heading="$2" target="$3" report="${4:-}" block
+  local file="$1" heading="$2" target="$3" report="${4:-}" out="${5:-}" block
   block="$(fenced_block_under "$file" "$heading")" || return 1
   printf '%s\n' "$block" \
     | sed -e "s|<path-to-skill-architect>|$harness_repo_root|g" \
           -e "s|<target-skill-dir>|$target|g" \
-          -e "s|<audit-report-path>|$report|g"
+          -e "s|<audit-report-path>|$report|g" \
+          -e "s|<output-path>|$out|g"
 }
 
 run_doc_block() {
@@ -244,11 +245,18 @@ assert "the documented Stage 1 audit block runs as written, from the repository 
 
 stage2_target="$(target_from tests/fixtures/f01/valid-full stage2)"
 stage2_report="$work/stage2-audit.md"
+stage2_out="$work/stage2-elsewhere.md"
 printf 'frontmatter OK\n' > "$stage2_report"
 assert "the documented Stage 2 drafter block runs as written, from the repository root" \
-  run_doc_block "$SKILL" '^### Stage 2' "$stage2_target" "$stage2_report"
+  run_doc_block "$SKILL" '^### Stage 2' "$stage2_target" "$stage2_report" "$stage2_out"
 assert "the documented Stage 2 block wrote the draft it says it writes" \
   test -f "$stage2_target/REWRITE-DRAFT.md"
+# And the third invocation in that block, which is the one the flag exists for.
+# Asserted by its own artifact rather than by the block's exit status: all three
+# commands run under `set -eu`, so a `-o` line that silently wrote nowhere would
+# leave the block green.
+assert "the documented Stage 2 block's -o invocation wrote the draft where the document says" \
+  test -f "$stage2_out"
 
 example_target="$(target_from tests/fixtures/f01/valid-full example)"
 example_report="$work/example-audit.md"
@@ -440,7 +448,7 @@ assert "a target directory that is not there exits 1" test "$code" -eq 1
 # the one that reads stderr for the abort's own words. A label that named a
 # distinction its own command cannot make would be read in CI as a check that
 # had made it.
-for flag in -t --target -a --audit; do
+for flag in -t --target -a --audit -o --output; do
   draft_run "$flag"
   assert "$flag with no value exits 1, the status the drafter's header registers for a usage error" \
     test "$code" -eq 1
@@ -449,6 +457,328 @@ for flag in -t --target -a --audit; do
   assert "$flag with no value says which option is missing a value" \
     grep -qF -- "$flag" "$drafted/stderr"
 done
+
+# --- the options, against the usage line that names them ----------------------
+#
+# The usage line is the only description of this script a caller ever reads
+# without opening it, and it was a hand-kept list: `-o` could be parsed and go
+# unnamed, or named and not parsed, and nothing would notice either way. So the
+# two sides are compared rather than restated — the options the parser accepts,
+# read out of its own case arms, against the options `-h` prints.
+#
+# Read from the source for the parser's side, because the point is the whole
+# set: a behavioural sweep can only report the options the sweep happened to
+# try, which is exactly how an undocumented one survives.
+parsed_options() {
+  { grep -oE '^ *-[a-z]\|--[a-z]+\)' "$DRAFTER" || true; } \
+    | tr -d ' )' | tr '|' '\n' | sort -u
+}
+usage_options() {
+  "$DRAFTER" -h | { grep -oE '^  -[a-z], --[a-z]+' || true; } \
+    | tr -d ',' | tr ' ' '\n' | { grep '^-' || true; } | sort -u
+}
+
+assert "the drafter's parser accepts an option at all, so the comparison has two sides" \
+  test -n "$(parsed_options)"
+assert "the usage line names an option at all" test -n "$(usage_options)"
+assert "the usage line names every option the parser accepts, and none it does not" \
+  test "$(parsed_options)" = "$(usage_options)"
+if [ "$(parsed_options)" != "$(usage_options)" ]; then
+  echo "  parsed: $(parsed_options | tr '\n' ' ')"
+  echo "  usage : $(usage_options | tr '\n' ' ')"
+fi
+
+# --- where the draft is written -----------------------------------------------
+#
+# `-o` makes the destination the caller's to name, and that is the whole point
+# of it: a draft you can put beside your notes instead of inside the skill you
+# are auditing. It also removes the only bound the drafter had. Until now the
+# destination was `$target_skill/REWRITE-DRAFT.md`, and the `-t` checks were the
+# containment: the caller had named a directory that exists and holds a
+# `SKILL.md`, so the worst the drafter could overwrite was a previous draft of
+# its own.
+#
+# This repository has twice shipped the failure that follows from not restating
+# such a bound — a documented command that `rm -rf`'d a live skills directory,
+# and a suite whose containment guard printed FAIL and then ran the install
+# anyway. So the bound is restated, in the narrow form the drafter can justify:
+# `-o` may write anywhere the caller can write, **except** three destinations
+# where a Markdown draft is not a new file but a destruction or an
+# impersonation. Those three are asserted here, and so is the far larger set it
+# does not refuse — because a bound that refused the destinations the flag
+# exists for would be the flag not existing, and an assertion that something is
+# refused means nothing beside an assertion that something else is not.
+#
+# Every destination below is under a redirected `HOME` inside the harness's
+# scratch directory. Nothing here reads or writes a live configuration
+# directory, and nothing installs or reconfigures anything: the protected roots
+# the drafter computes are `$HOME`-relative, which is what makes the decision
+# askable at all without pointing a test at the developer's own `~/.claude`.
+out_home="$work/out-home"
+rm -rf "$out_home"
+mkdir -p "$out_home/.claude/skills" "$out_home/.claude-notes" "$out_home/plain"
+
+# The destination with nothing wrong in its spelling that lands inside a
+# protected directory anyway, because something on the way is a symlink. This is
+# the case a string test cannot reach and the reason the decision is taken after
+# resolution: `~/drafts/x.md` is a path whose shape says nothing and whose
+# resolution says everything.
+ln -s "$out_home/.claude/skills" "$out_home/drafts"
+
+draft_run_home() {
+  local home="$1"
+  shift
+  code=0
+  output="$(HOME="$home" "$DRAFTER" "$@" 2>"$drafted/stderr")" || code=$?
+  errout="$(cat "$drafted/stderr")"
+}
+
+# What the flag is for, asserted first: the draft goes where the caller said,
+# is named on stdout, and is *not* also left in the target directory. A flag
+# that wrote both places would satisfy every refusal below and still not be the
+# flag anybody asked for.
+named_out_target="$(target_from tests/fixtures/f01/valid-full named-out)"
+named_out="$out_home/plain/named.md"
+draft_run_home "$out_home" -t "$named_out_target" -o "$named_out"
+assert "a draft written with -o exits 0" test "$code" -eq 0
+assert "a draft written with -o is at the path the caller named" test -f "$named_out"
+assert "a draft written with -o carries the audit it was built from" \
+  grep -q 'frontmatter OK' "$named_out"
+assert "a draft written with -o names its own path on stdout" \
+  test -n "$(printf '%s\n' "$output" | grep -F "$named_out" || true)"
+assert "a draft written with -o is not also left in the target directory" \
+  test ! -f "$named_out_target/REWRITE-DRAFT.md"
+
+# And the long option, because the parser has two arms and only one of them was
+# just exercised.
+long_out_target="$(target_from tests/fixtures/f01/valid-full long-out)"
+long_out="$out_home/plain/long.md"
+draft_run_home "$out_home" -t "$long_out_target" --output "$long_out"
+assert "--output is the same flag as -o" test "$code" -eq 0
+assert "--output wrote the draft where it was told to" test -f "$long_out"
+
+# The sibling that shares a name prefix with a protected directory, and is not
+# inside it. `$HOME/.claude-notes` has `$HOME/.claude` as a string prefix, so a
+# `HasPrefix` containment test refuses this — a legitimate destination lost to a
+# decision taken on the shape of the string. Accepting it is half of what makes
+# the decision resolution-based rather than textual, and it is the half a
+# refusal-only suite would never notice was broken.
+prefix_target="$(target_from tests/fixtures/f01/valid-full prefix-sibling)"
+prefix_out="$out_home/.claude-notes/draft.md"
+draft_run_home "$out_home" -t "$prefix_target" -o "$prefix_out"
+assert "a destination that merely begins like a protected directory is accepted" \
+  test "$code" -eq 0
+assert "the prefix-sibling destination was written" test -f "$prefix_out"
+
+# refused_out <home> <target> <destination> — the drafter refuses this
+# destination, and refuses it rather than reporting it.
+#
+# Three questions, not one, and that is the lesson of the guard that printed
+# FAIL and installed anyway: the status is a refusal, nothing was written at the
+# destination, and nothing was left in the target directory either. A drafter
+# that said no and wrote anyway would pass the first.
+refused_out() {
+  local home="$1"
+  local target="$2"
+  local dest="$3"
+  draft_run_home "$home" -t "$target" -o "$dest"
+  if [ "$code" -eq 0 ]; then
+    printf 'the drafter accepted a destination it must refuse: %s\n' "$dest" >&2
+    return 1
+  fi
+  return 0
+}
+
+# (i) Inside a live agent configuration directory, reached through a symlink.
+# The destination's own spelling is `$HOME/drafts/draft.md`: outside by every
+# string test, and inside in fact.
+symlink_target="$(target_from tests/fixtures/f01/valid-full symlinked-out)"
+assert "the symlinked destination is outside the protected directory by its spelling" \
+  test -z "$(printf '%s\n' "$out_home/drafts/draft.md" | grep -F "$out_home/.claude" || true)"
+assert "a destination that resolves into a live config directory is refused" \
+  refused_out "$out_home" "$symlink_target" "$out_home/drafts/draft.md"
+assert "the destination that resolved into a live config directory was not written" \
+  test ! -f "$out_home/.claude/skills/draft.md"
+assert "a refused destination leaves no draft in the target directory either" \
+  test ! -f "$symlink_target/REWRITE-DRAFT.md"
+assert "the refusal names the destination the caller gave" \
+  test -n "$(printf '%s\n' "$errout" | grep -F "$out_home/drafts/draft.md" || true)"
+assert "the refusal names the protected directory it resolved into" \
+  test -n "$(printf '%s\n' "$errout" | grep -F '.claude' || true)"
+
+# (ii) The same directory named directly, which is the accident rather than the
+# aliased case: a `$HOME`-relative path assembled by a caller that meant
+# somewhere else.
+direct_target="$(target_from tests/fixtures/f01/valid-full direct-config-out)"
+assert "a destination named directly inside a live config directory is refused" \
+  refused_out "$out_home" "$direct_target" "$out_home/.claude/skills/direct.md"
+assert "the directly named config destination was not written" \
+  test ! -f "$out_home/.claude/skills/direct.md"
+
+# (iii) A `SKILL.md`. This is the one refusal that is not about the caller's
+# machine but about this skill's own stated constraint — "Do not overwrite the
+# original `SKILL.md` without explicit approval" — which had no mechanism for as
+# long as the destination was hardcoded. `-o` is what makes it reachable, so
+# `-o` is where it becomes enforceable. A rewrite draft is not a skill, and a
+# draft written over a `SKILL.md` destroys the document the draft was built by
+# reading.
+skillmd_target="$(target_from tests/fixtures/f01/valid-full skillmd-out)"
+skillmd_before="$work/skillmd-before"
+cp "$skillmd_target/SKILL.md" "$skillmd_before"
+assert "a destination that is the target's own SKILL.md is refused" \
+  refused_out "$out_home" "$skillmd_target" "$skillmd_target/SKILL.md"
+assert "the refused SKILL.md is byte-identical to what it was" \
+  quietly cmp -s "$skillmd_before" "$skillmd_target/SKILL.md"
+
+# And the alias, which is how a SKILL.md is reached without being named. A
+# destination whose own last component says nothing points at one, and `: >`
+# follows the link and truncates what is on the other end — so the SKILL.md rule
+# alone does not close this, and the rule that does is the refusal of a leaf
+# symlink. The assertion is written over the outcome rather than over which of
+# the two rules fired, because the outcome is what the skill's Constraints
+# promise: the SKILL.md is still there, byte for byte.
+alias_target="$(target_from tests/fixtures/f01/valid-full aliased-skillmd-out)"
+alias_before="$work/alias-before"
+cp "$alias_target/SKILL.md" "$alias_before"
+ln -s "$alias_target/SKILL.md" "$out_home/plain/notes.md"
+assert "the aliased destination's own name is not SKILL.md" \
+  test "$(basename "$out_home/plain/notes.md")" != SKILL.md
+assert "a destination that resolves onto a SKILL.md is refused" \
+  refused_out "$out_home" "$alias_target" "$out_home/plain/notes.md"
+assert "the aliased SKILL.md is byte-identical to what it was" \
+  quietly cmp -s "$alias_before" "$alias_target/SKILL.md"
+
+# (iv) A directory. The redirect would fail of its own accord, and the caller
+# would be told the draft could not be opened when the truth is that they named
+# a directory. A wrong diagnostic is a wrong answer.
+dir_target="$(target_from tests/fixtures/f01/valid-full dir-out)"
+assert "a destination that is an existing directory is refused" \
+  refused_out "$out_home" "$dir_target" "$out_home/plain"
+assert "the refusal of a directory says it is a directory" \
+  test -n "$(printf '%s\n' "$errout" | grep -Fi 'directory' || true)"
+
+# The list of protected directories, against the list the SKILL.md gives a
+# reader. Asserted as a comparison rather than as five literals, in the shape
+# this suite reads every other registry in: a reader deciding whether their
+# destination is refused reads the document, so the document has to be the
+# script's list and not a remembered copy of it. A root added to either side
+# leaves them unequal, whichever side is edited first.
+protected_roots_in_script() {
+  { grep -m1 -E '^protected_home_dirs=' "$DRAFTER" || true; } \
+    | sed -e 's/^[^=]*=//' -e 's/"//g' | tr ' ' '\n' \
+    | { grep '^\.' || true; } | sort -u
+}
+documented_protected_roots() {
+  { grep -m1 -E '^Protected destinations:' "$SKILL" || true; } \
+    | { grep -oE '`\$HOME/\.[a-z]+`' || true; } \
+    | sed -e 's|.*/||' -e 's|`$||' | sort -u
+}
+
+assert "the drafter protects a live configuration directory at all" \
+  test -n "$(protected_roots_in_script)"
+assert "the SKILL.md names a protected destination at all" \
+  test -n "$(documented_protected_roots)"
+assert "the SKILL.md names every live configuration directory the drafter protects, and none it does not" \
+  test "$(protected_roots_in_script)" = "$(documented_protected_roots)"
+if [ "$(protected_roots_in_script)" != "$(documented_protected_roots)" ]; then
+  echo "  in the script: $(protected_roots_in_script | tr '\n' ' ')"
+  echo "  documented   : $(documented_protected_roots | tr '\n' ' ')"
+fi
+
+# And the premise that comparison rests on: the roots are `$HOME`-relative, so
+# the refusals above were decided against the redirected home this suite made
+# and not against the developer's own. A drafter that had resolved them from a
+# literal `/Users/...` would pass every refusal assertion above on the machine
+# that wrote it and none on anybody else's — and would be reading a live
+# configuration directory to do it.
+assert "the protected directories are anchored on \$HOME, not on a literal home path" \
+  test -n "$(grep -F 'path_resolved "$HOME/$root"' "$DRAFTER" || true)"
+
+# Every refusal above is a usage error — the caller named a destination the
+# drafter will not write — so it takes the status this script's header registers
+# for one. Asserted as the status and not merely as nonzero, because the two
+# statuses mean different things to a caller and the registry assertion further
+# up would pass either way.
+assert "a refused destination exits 1, the status the header registers for a usage error" \
+  test "$code" -eq 1
+
+# And the other half of the resolution rule, which is the one that cannot be
+# got at by choosing a better destination: **a path that cannot be resolved
+# counts as protected.** "I could not tell where this would land" must not read
+# as "go ahead", so it is not a refusal of the caller's command line but a
+# statement that no verdict was reached — status 3, the one this header
+# registers for an execution error.
+# Two assertions here are about *which* refusal happened, and they are not
+# decoration. Removing the resolution refusal entirely still yields exit 3 for
+# this destination — the decision lets the path through, the audit runs, and
+# then `: >` fails to open it and the drafter reports an execution error from
+# there. The status alone therefore cannot tell "I could not tell where this
+# would land" from "I could not write there", and they are different answers:
+# the first is a destination the caller should respell, the second is a
+# permission to fix. Found by mutating the refusal away and watching the status
+# assertion pass on its own, which is what the rest of this suite calls a check
+# passing by not running.
+#
+# So the mechanism is pinned twice over, once on each channel available: the
+# diagnostic says the destination could not be *resolved*, and the audit has not
+# run — which it has, on the other path, because the write is the last thing
+# this script does and the decision is one of the first.
+unresolvable_target="$(target_from tests/fixtures/f01/valid-full unresolvable-out)"
+locked="$out_home/locked"
+mkdir -p "$locked/inner"
+chmod 000 "$locked"
+draft_run_home "$out_home" -t "$unresolvable_target" -o "$locked/inner/draft.md"
+unresolvable_code="$code"
+unresolvable_err="$errout"
+chmod 755 "$locked"
+assert "a destination whose path cannot be resolved is not accepted" \
+  test "$unresolvable_code" -ne 0
+assert "a destination that cannot be resolved exits 3, not 1: no verdict was reached" \
+  test "$unresolvable_code" -eq 3
+assert "the unresolvable destination is named in the diagnostic" \
+  test -n "$(printf '%s\n' "$unresolvable_err" | grep -F "$locked/inner/draft.md" || true)"
+assert "the diagnostic says the destination could not be resolved, not that it could not be written" \
+  test -n "$(printf '%s\n' "$unresolvable_err" | grep -F 'could not be resolved' || true)"
+assert "an unresolvable destination is refused before the audit runs" \
+  test -z "$(printf '%s\n' "$unresolvable_err" | grep -F 'running structural checks' || true)"
+assert "an unresolvable destination leaves no draft in the target directory" \
+  test ! -f "$unresolvable_target/REWRITE-DRAFT.md"
+# The premise that control rests on: the locked directory really was unreadable,
+# or the assertions above are about an ordinary path.
+assert "the locked directory was traversable again afterwards, so the control was about permissions" \
+  test -d "$locked/inner"
+
+# And the same rule reached by a different cause, so that it is the rule being
+# held and not one instance of it. A symlink cycle in a directory component is
+# ELOOP rather than EACCES: nothing about the path is forbidden, it simply has
+# no answer.
+cycle_target="$(target_from tests/fixtures/f01/valid-full cycle-out)"
+ln -s "$out_home/loop-b" "$out_home/loop-a"
+ln -s "$out_home/loop-a" "$out_home/loop-b"
+draft_run_home "$out_home" -t "$cycle_target" -o "$out_home/loop-a/draft.md"
+assert "a destination whose directory component is a symlink cycle exits 3" \
+  test "$code" -eq 3
+assert "the symlink cycle is reported as a destination that could not be resolved" \
+  test -n "$(printf '%s\n' "$errout" | grep -F 'could not be resolved' || true)"
+assert "a cyclic destination leaves no draft in the target directory" \
+  test ! -f "$cycle_target/REWRITE-DRAFT.md"
+
+# The scope of the decision, stated as an assertion because it is the part a
+# reader is most likely to get wrong. The three refusals are about the
+# destination `-o` names, not about every destination: with no `-o` the draft
+# still goes beside the target's `SKILL.md`, and a target that itself lives
+# inside a live config directory still drafts. The caller who named `-t` named a
+# directory the drafter then verified holds a `SKILL.md`; the caller who names
+# `-o` has asserted nothing the drafter can check. The asymmetry is in the
+# evidence, not in the spelling.
+in_config_target="$out_home/.claude/skills/valid-full"
+mkdir -p "$out_home/.claude/skills"
+cp -R tests/fixtures/f01/valid-full "$in_config_target"
+draft_run_home "$out_home" -t "$in_config_target"
+assert "a target inside a live config directory still drafts by default" \
+  test "$code" -eq 0
+assert "the default destination is still beside the target's SKILL.md" \
+  test -f "$in_config_target/REWRITE-DRAFT.md"
 
 # --- where the drafter finds skill-audit --------------------------------------
 #

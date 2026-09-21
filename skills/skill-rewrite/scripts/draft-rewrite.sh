@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Draft a rewrite of a skill: run the skill-audit checks over it, and compose
 # their output with the structural templates the audit says are missing.
-# Writes REWRITE-DRAFT.md into the target skill directory and names it on
-# stdout. The draft is a skeleton plus the audit output for a reader to work
-# from; it does not rewrite the skill and does not touch its SKILL.md.
+# Writes REWRITE-DRAFT.md into the target skill directory — or wherever -o names
+# — and names it on stdout. The draft is a skeleton plus the audit output for a
+# reader to work from; it does not rewrite the skill and does not touch its
+# SKILL.md.
 # Exit codes: 0=draft written, 1=usage or target error, 3=execution error.
 #
 # A usage or target error is a missing or unknown option, an option given
-# without its value, a target directory or SKILL.md that is not there, or a
-# report named with -a that is not there. Every one of them is reported on
-# stderr, naming the option or the path, and leaves no draft behind.
+# without its value, a target directory or SKILL.md that is not there, a
+# report named with -a that is not there, or a destination named with -o that
+# this script will not write to. Every one of them is reported on stderr,
+# naming the option or the path, and leaves no draft behind.
 #
 # An execution error is one of three: a required tool is absent, which the rule
 # registry calls DEP001; an audit source gave this script no answer it could use,
@@ -60,7 +62,9 @@ source "$verdict_guard"
 target_skill=""
 audit_report=""
 own_audit_report=""
+output_arg=""
 output=""
+output_refusal=""
 draft_incomplete=false
 
 # The temporary audit this script writes when it was not handed one. It is
@@ -101,11 +105,12 @@ trap cleanup EXIT
 # the work that genuinely needs it.
 usage() {
   printf '%s\n' \
-    'Usage: draft-rewrite.sh -t <target-skill-dir> [-a <audit-report-path>]' \
+    'Usage: draft-rewrite.sh -t <target-skill-dir> [-a <audit-report-path>] [-o <output-path>]' \
     '' \
     'Options:' \
     '  -t, --target    Target skill directory to rewrite (required)' \
     '  -a, --audit     Path to an existing skill-audit report (optional)' \
+    '  -o, --output    Where to write the draft (default: <target-skill-dir>/REWRITE-DRAFT.md)' \
     '  -h, --help      Show this help'
 }
 
@@ -132,6 +137,8 @@ while [[ $# -gt 0 ]]; do
       require_value "$1" "$#"; target_skill="$2"; shift 2 ;;
     -a|--audit)
       require_value "$1" "$#"; audit_report="$2"; shift 2 ;;
+    -o|--output)
+      require_value "$1" "$#"; output_arg="$2"; shift 2 ;;
     -h|--help)
       usage; exit 0 ;;
     *)
@@ -178,7 +185,258 @@ require_tool mktemp false
 
 skill_name="${target_skill%/}"
 skill_name="${skill_name##*/}"
-output="$target_skill/REWRITE-DRAFT.md"
+
+# --- where the draft is written -----------------------------------------------
+#
+# With no -o the destination is what it has always been: beside the target's own
+# SKILL.md. `-t` is the bound on that — the caller named a directory this script
+# has already checked exists and holds a SKILL.md — so the worst it can
+# overwrite is a previous draft of its own.
+#
+# `-o` removes that bound, which is the point of it, so the bound is restated
+# rather than dropped. **It is stated narrowly: -o may write anywhere the caller
+# can write, except three destinations where a Markdown draft is not a new file
+# but a destruction or an impersonation.** A rule that confined -o to the target
+# directory would be -o not existing; the answer to "the caller owns the
+# destination" is that they mostly do, and here is the short list of where they
+# do not.
+#
+#   1. A directory, or a symbolic link. The first would fail the redirect and
+#      report "could not open" for a caller whose actual mistake was naming a
+#      directory. The second is a destination whose name and whose landing place
+#      are two different things: `: >` follows the link and truncates whatever
+#      is on the other end, so a link is refused and the caller is told to name
+#      the file it points at.
+#   2. A SKILL.md. This skill's own Constraints say "do not overwrite the
+#      original SKILL.md without explicit approval", and that had no mechanism
+#      for as long as the destination was hardcoded — there was no way to reach
+#      it. -o is what makes it reachable, so -o is where it becomes enforceable.
+#      A rewrite draft is not a skill: written over a SKILL.md it destroys the
+#      document it was built by reading, and leaves a draft where an agent will
+#      next read a skill.
+#   3. Anywhere inside a live agent configuration directory. This is where this
+#      repository has already done damage — a documented install block that
+#      `rm -rf`'d a live skills directory — and the harm is worse than a lost
+#      file: an agent reads `~/.claude/skills/` as skills, so a draft dropped in
+#      it is a document that may be loaded as instructions.
+#
+# **Every one of those is decided after the path is resolved, never from the
+# shape of the string**, for the two reasons profiler/internal/homesafe sets out
+# for the same decision on the Go side:
+#
+#   - A symlink into a protected directory is outside by every string test and
+#     inside in fact. `$HOME/drafts/x.md` is a path whose spelling says nothing
+#     and whose resolution says everything.
+#   - A sibling sharing a name prefix is the reverse. `$HOME/.claude-notes` has
+#     `$HOME/.claude` as a string prefix and is not inside it, so a
+#     `HasPrefix`-style test refuses a destination that is perfectly fine.
+#
+# And the third property from the same place: **a path that cannot be resolved
+# counts as protected.** "I could not tell where this would land" must not read
+# as "go ahead", so it is not exit 1 — the caller's command line is not what was
+# wrong — but cannot_compute and exit 3.
+#
+# The decision lives here rather than in verdict-guard.sh because the guard's
+# primitives are about computing a verdict over a skill, and this is about where
+# this script writes. This is the only script in either skill with a destination
+# to decide: the sibling checks read a directory and print to stdout. If a
+# second one ever takes a destination, this moves to the guard rather than being
+# copied.
+
+# path_absolute <path> — absolute against the caller's working directory, with
+# `.` and `..` folded away textually.
+#
+# Textually, because the destination is a file this script is about to create and
+# need not exist yet, so there is nothing to ask the kernel about. `..` stops at
+# the root the way the kernel stops it, which is what makes a climb with an
+# absolute tail resolve to that tail rather than to nonsense. awk's status is
+# read here, where awk is called, and an empty answer is a failure: awk exiting 0
+# having printed nothing would leave every comparison below against the empty
+# string.
+path_absolute() {
+  local p
+  local folded
+  local status
+  p="$1"
+  case "$p" in
+    /*) ;;
+    *) p="$PWD/$p" ;;
+  esac
+  status=0
+  folded="$(printf '%s\n' "$p" | awk '
+    {
+      n = split($0, part, "/")
+      out = ""
+      depth = 0
+      for (i = 1; i <= n; i++) {
+        s = part[i]
+        if (s == "" || s == ".") continue
+        if (s == "..") {
+          if (depth > 0) { sub(/\/[^\/]*$/, "", out); depth-- }
+          continue
+        }
+        out = out "/" s
+        depth++
+      }
+      if (out == "") out = "/"
+      print out
+    }
+  ')" || status=$?
+  [[ $status -eq 0 && -n "$folded" ]] || return 1
+  printf '%s\n' "$folded"
+}
+
+# path_resolved <path> — the same path with every directory component's symlinks
+# followed, through the part of it that exists.
+#
+# Not a plain `cd -P` on the whole path, for two reasons: the leaf need not exist
+# yet, and on macOS a scratch directory arrives through /var and lives at
+# /private/var, so comparing unresolved strings answers "outside" for a path that
+# is in fact inside. The deepest existing ancestor is resolved and the remainder
+# appended — the place the path *would* be created, which is what the decision is
+# about.
+#
+# A symlink at the leaf is deliberately left unfollowed. It is not this
+# function's to chase: following it would need another tool and another bounded
+# loop for cycles, and the decision below refuses a leaf symlink outright, which
+# closes the same hole with less machinery. `CDPATH=` and `--` for the reason
+# verdict-guard.sh sets out at length.
+#
+# The loop climbs only while a component **does not exist at all**, which is not
+# the same as "is not a directory" and the difference is the whole of whether
+# this function can be relied on. Written as `! -d`, a component that exists and
+# cannot be entered — a directory with no execute bit, a symlink cycle — was
+# indistinguishable from one nobody has created yet, so it was climbed past and
+# the path came back "resolved" with the unresolvable part still in it. That is
+# the second of the two properties homesafe states — a path that cannot be
+# resolved must not read as resolved — and it was quietly missing here until a
+# mutation over the caller found it. `-e` is paired with `-L` for the reason
+# tests/lib/masked-path.sh pairs them: `-e` alone is false for a broken symlink
+# and for a cycle, which are exactly the entries this has to stop on rather than
+# step over.
+path_resolved() {
+  local abs
+  local head
+  local tail
+  abs="$(path_absolute "$1")" || return 1
+  head="$abs"
+  tail=""
+  while [[ "$head" != / ]] && [[ ! -e "$head" && ! -L "$head" ]]; do
+    if [[ -n "$tail" ]]; then
+      tail="${head##*/}/$tail"
+    else
+      tail="${head##*/}"
+    fi
+    head="${head%/*}"
+    [[ -n "$head" ]] || head=/
+  done
+  head="$(CDPATH= cd -P -- "$head" 2>/dev/null && pwd -P)" || return 1
+  if [[ -n "$tail" ]]; then
+    printf '%s\n' "${head%/}/$tail"
+  else
+    printf '%s\n' "$head"
+  fi
+}
+
+# path_inside <parent> <child> — child is parent, or something under it. Both
+# arguments are already resolved.
+#
+# The separator in the pattern is the whole of the difference between this and
+# the broken prefix test: without it, `$HOME/.claude` is a prefix of
+# `$HOME/.claude-notes` and the sibling is called part of the parent. With it,
+# the comparison is the same question `..`-relative arithmetic answers, and on
+# two resolved, normalised, absolute paths it is the same answer.
+path_inside() {
+  local parent
+  local child
+  parent="${1%/}"
+  child="$2"
+  [[ "$child" == "$1" || "$child" == "$parent" ]] && return 0
+  case "$child" in
+    "$parent"/*) return 0 ;;
+  esac
+  return 1
+}
+
+# The live agent configuration directories, relative to the caller's own home.
+#
+# `$HOME`-relative is what makes this decision askable by a test without
+# pointing one at the developer's own `~/.claude` — tests/test_rewrite.sh
+# redirects HOME into the harness scratch directory — and it is also the only
+# correct anchor: these are per-user directories.
+#
+# An unset or empty HOME means there is no home and therefore no live
+# configuration directory for a destination to be inside. That is a different
+# statement from "a path that could not be resolved", which is why it accepts
+# rather than refusing: there is nothing here that could not be determined.
+#
+# One physical line per root, and the list is compared against the one
+# skills/skill-rewrite/SKILL.md gives a reader, so neither side can grow without
+# the other.
+protected_home_dirs=".claude .cursor .codex .devin .config"
+
+# output_is_permitted <spelled> — decide the destination named with -o.
+#
+# Sets output_refusal to the reason when it is refused, and returns 1. It hands
+# the reason back in a variable rather than on stdout because a destination it
+# *cannot decide* is cannot_compute's to report, and an `exit 3` inside a command
+# substitution exits the subshell: the script would carry on and write the
+# draft. The same reason skill_body answers in `$section`.
+output_is_permitted() {
+  local spelled
+  local resolved
+  local root
+  local resolved_root
+  spelled="$1"
+  output_refusal=""
+
+  if [[ -z "$spelled" ]]; then
+    output_refusal="the destination given with -o is empty"
+    return 1
+  fi
+
+  resolved="$(path_resolved "$spelled")" \
+    || cannot_compute DEP002 "the destination $spelled could not be resolved, so where the draft would be written is unknown; no draft was written" false
+
+  if [[ -L "$resolved" ]]; then
+    output_refusal="$spelled is a symbolic link, so where the draft would be written is not where it is named; give the path it points at"
+    return 1
+  fi
+  if [[ -d "$resolved" ]]; then
+    output_refusal="$spelled is a directory, and the draft is a file; name the file to write"
+    return 1
+  fi
+  if [[ "${resolved##*/}" == SKILL.md ]]; then
+    output_refusal="$spelled resolves to $resolved, which is a SKILL.md: a rewrite draft is not a skill, and this script does not overwrite one"
+    return 1
+  fi
+
+  if [[ -n "${HOME:-}" ]]; then
+    for root in $protected_home_dirs; do
+      resolved_root="$(path_resolved "$HOME/$root")" \
+        || cannot_compute DEP002 "the live configuration directory $HOME/$root could not be resolved, so $spelled cannot be shown to be outside it; no draft was written" false
+      if path_inside "$resolved_root" "$resolved"; then
+        output_refusal="$spelled resolves to $resolved, which is inside the live configuration directory $HOME/$root; the draft would be read as configuration"
+        return 1
+      fi
+    done
+  fi
+
+  return 0
+}
+
+if [[ -n "$output_arg" ]]; then
+  # The refusal refuses. It is decided here, with the other inputs and before
+  # the audit runs, so there is nothing to undo — and it is `exit 1` rather than
+  # a diagnostic followed by the write, which is the defect tests/test_install.sh
+  # carried: a containment check that computed "no", printed FAIL, and ran the
+  # install on the next line. A reported failure is not a refusal.
+  output_is_permitted "$output_arg" \
+    || { echo "Refusing to write the draft: $output_refusal" >&2; exit 1; }
+  output="$output_arg"
+else
+  output="$target_skill/REWRITE-DRAFT.md"
+fi
 
 # skill-audit is skill-rewrite's sibling, so it is resolved by going up from
 # this script to the skill directory that holds it and then across. That

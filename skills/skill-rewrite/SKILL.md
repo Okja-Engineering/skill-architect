@@ -32,6 +32,7 @@ Inputs:
 - `audit_root`: the sibling `skill-audit` skill directory, `"$skill_root/../skill-audit"`. `skill-rewrite` runs `skill-audit`'s check scripts and reads its evaluation matrix; it bundles neither.
 - `target_skill`: the skill directory to rewrite.
 - `audit_report`: optional path to an existing audit report. If omitted, run `skill-audit` first.
+- `output`: optional path to write the draft to. If omitted, the draft goes beside the target's `SKILL.md`. See "Where the draft is written" under Stage 2 for the four destinations it will not write to.
 
 Prerequisites:
 
@@ -63,16 +64,34 @@ Capture the output and score the 10 dimensions against `"$audit_root/references/
 
 ### Stage 2: Generate rewrite draft
 
-Run the rewrite drafter. Without `-a` it runs the Stage 1 checks itself; with `-a` it reads the report you already have:
+Run the rewrite drafter. Without `-a` it runs the Stage 1 checks itself; with `-a` it reads the report you already have; with `-o` it writes the draft where you say instead of into the target skill's directory:
 
 ```bash
 skill_root="<path-to-skill-architect>/skills/skill-rewrite"
 target_skill="<target-skill-dir>"
 "$skill_root/scripts/draft-rewrite.sh" -t "$target_skill"
 "$skill_root/scripts/draft-rewrite.sh" -t "$target_skill" -a "<audit-report-path>"
+"$skill_root/scripts/draft-rewrite.sh" -t "$target_skill" -o "<output-path>"
 ```
 
-This writes a `REWRITE-DRAFT.md` next to the target skill's `SKILL.md`, and names it on stdout. The draft is a skeleton to work from, not a rewritten skill: the drafter reads the target's `SKILL.md` only to run three heading probes over it, and never writes to it.
+By default this writes a `REWRITE-DRAFT.md` next to the target skill's `SKILL.md`, and names it on stdout. The draft is a skeleton to work from, not a rewritten skill: the drafter reads the target's `SKILL.md` only to run three heading probes over it, and never writes to it.
+
+#### Where the draft is written
+
+`-o` makes the destination yours to name — a scratch directory, your notes, a review branch — and it writes there instead of into the skill you are auditing, not as well as.
+
+Four destinations it refuses, and it refuses them before it runs the audit, so a refusal leaves nothing behind anywhere:
+
+- **A directory.** Name the file to write, not the folder to write it in.
+- **A symbolic link.** A redirect follows the link and truncates what is on the other end, so where the draft would go is not where you named it. Give the path the link points at.
+- **A `SKILL.md`.** A rewrite draft is not a skill. This is the mechanism behind the Constraints section's "do not overwrite the original `SKILL.md`": until `-o` existed there was no way to reach that mistake, and now that there is, the drafter refuses it rather than trusting you not to make it.
+- **Anywhere inside a live agent configuration directory.** An agent reads its skills directory as skills, so a draft left in one is not a stray file but a document that may be loaded as instructions.
+
+Protected destinations: `$HOME/.claude`, `$HOME/.cursor`, `$HOME/.codex`, `$HOME/.devin`, `$HOME/.config`.
+
+Each of those is decided **after the path is resolved**, which is the part worth knowing if you are writing the destination in a script. `$HOME/drafts/x.md` where `drafts` is a symlink into `~/.claude/skills` is refused, though nothing in its spelling looks wrong; `$HOME/.claude-notes/x.md` is accepted, though `$HOME/.claude` is a prefix of it. And a destination whose path the drafter cannot resolve at all — a directory it may not traverse — is refused as an execution error, exit 3, rather than being let through: "I could not tell where this would land" is not "go ahead".
+
+Anywhere else you can write, it will write. The refusals are a short list, not a sandbox.
 
 #### The sections the drafter writes
 
