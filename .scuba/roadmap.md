@@ -1,5 +1,5 @@
 # skill-architect — roadmap
-**Updated** 2026-09-21 09:51 CDT · `scribe` · mirror `scuba-state/imagineux-gmail-com@be3690b` (previous pass, SHA-verified; this pass's push follows and the SHA is restated when it lands)
+**Updated** 2026-09-21 09:52 CDT · `scribe` · mirror `scuba-state/imagineux-gmail-com@114d0de` (pushed & SHA-verified: local == remote)
 
 ## Now active
 _One or two lines per currently-moving thread — what's happening right now._
