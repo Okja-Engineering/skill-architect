@@ -585,4 +585,232 @@ control_claim_is_refused() {
 assert "a document claiming verdict-guard.sh is named nowhere else is refused" \
   control_claim_is_refused
 
+# --- The release documents are a version surface too -------------------------
+#
+# CHANGELOG.md and RELEASE_NOTES.md carry the version in the only form a reader
+# ever sees it, and nothing held them. Measured at the release gate: deleting
+# the **entire** 0.5.0 section from both documents left every assertion in every
+# suite green and byte-identical, and `grep -rn 'CHANGELOG\|RELEASE_NOTES'
+# tests/*.sh tests/lib/*.sh` returned nothing at all. This file learned that
+# lesson for `marketplace.json` — the fifth version surface, which carries its
+# own copy of the version and would otherwise advertise the previous release —
+# and did not apply it to the two documents that *are* the release.
+#
+# The version is read out of a manifest rather than written here, so there is no
+# number in this block for the next release to make wrong. The manifests' own
+# value is asserted against the literal above, which is where a release bump is
+# supposed to be a deliberate edit; everything below is derived from it.
+release_version() {
+  python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['version'])"
+}
+
+# <file> — the release versions that file has a section for, `v` prefix or not.
+documented_release_versions() {
+  { grep -oE '^## v?[0-9]+\.[0-9]+\.[0-9]+' "$1" || true; } \
+    | sed -e 's/^## v\{0,1\}//' | sort -u
+}
+
+# <file> <version> — the body under that version's heading, down to the next
+# `## `. Asked for separately from the heading because a heading with nothing
+# under it is the same defect as no heading: the section was deleted, one line
+# later.
+release_section_body() {
+  awk -v want="$2" '
+    /^## / {
+      inside = 0
+      probe = $0
+      sub(/^## v?/, "", probe)
+      sub(/ .*$/, "", probe)
+      if (probe == want) inside = 1
+      next
+    }
+    inside && NF { print }
+  ' "$1"
+}
+
+skill_release_version="$(release_version)"
+echo "  the release the manifests declare: $skill_release_version"
+assert "the release version was read out of a manifest, not written down here" \
+  test -n "$skill_release_version"
+
+for release_doc in CHANGELOG.md RELEASE_NOTES.md; do
+  assert "$release_doc has a section for the release the manifests declare" \
+    quietly grep -qE "^## v?$(printf '%s' "$skill_release_version" | sed 's/\./\\./g')( |\$)" "$release_doc"
+  assert "$release_doc's section for that release says something" \
+    test -n "$(release_section_body "$release_doc" "$skill_release_version")"
+done
+
+# And the two documents against each other, which is the half with no number in
+# it and the half that holds every release rather than this one. A section
+# deleted from either file — this release's or any earlier one's — leaves the
+# lists unequal, whichever file it was deleted from.
+assert "the release documents name a version at all, so the comparison has two sides" \
+  test -n "$(documented_release_versions CHANGELOG.md)"
+assert "the changelog and the release notes carry a section for the same set of releases" \
+  test "$(documented_release_versions CHANGELOG.md)" = "$(documented_release_versions RELEASE_NOTES.md)"
+if [ "$(documented_release_versions CHANGELOG.md)" != "$(documented_release_versions RELEASE_NOTES.md)" ]; then
+  echo "  in the changelog    : $(documented_release_versions CHANGELOG.md | tr '\n' ' ')"
+  echo "  in the release notes: $(documented_release_versions RELEASE_NOTES.md | tr '\n' ' ')"
+fi
+
+# The control. Both assertions above can only say "the section is there", and a
+# reader that stopped reading would say exactly that — so it is driven over
+# copies with the section taken out, which is the deletion that was measured.
+release_doc_scratch="$harness_scratch/release-docs"
+mkdir -p "$release_doc_scratch"
+without_release_section() {
+  awk -v want="$2" '
+    /^## / {
+      probe = $0
+      sub(/^## v?/, "", probe)
+      sub(/ .*$/, "", probe)
+      dropping = (probe == want)
+    }
+    !dropping { print }
+  ' "$1"
+}
+for release_doc in CHANGELOG.md RELEASE_NOTES.md; do
+  without_release_section "$release_doc" "$skill_release_version" \
+    > "$release_doc_scratch/$release_doc"
+  assert "the section reader finds nothing in a $release_doc with that release cut out" \
+    test -z "$(release_section_body "$release_doc_scratch/$release_doc" "$skill_release_version")"
+  assert "a $release_doc with that release cut out no longer names it, so the check above can fail" \
+    test -z "$(documented_release_versions "$release_doc_scratch/$release_doc" | grep -Fx "$skill_release_version" || true)"
+done
+
+# --- No file in the tree assigns work to the release being cut ----------------
+#
+# The fifth recurrence of one class. A comment or a sentence that says a gap is
+# "tracked for", "deferred to" or "reserved for" the release now being shipped
+# was true when it was written and is false the moment that release is this one.
+# It has been found and repaired in four rounds now — in README, in the spec, in
+# eight Go comments and in a test's own comment — and each round found it in a
+# place the previous round's check did not look.
+#
+# So the denominator is `git ls-files`: every tracked file, not a list of roots.
+# The rounds before this one were checked by readers rooted at `.`, `../docs`
+# and `../README.md` from inside `profiler/`, which is why the instances in
+# `tests/` and `skills/` survived — two of the eight lived there.
+#
+# What it looks for is a **deferral vocabulary**, not the version string. The
+# version appears 69 times in this tree and about sixty of those are correct:
+# `0.5.0 did not add one`, `Until 0.5.0`, `every key 0.5.0 adds`, `this release
+# is 0.5.0`, `AdapterVersion is 0.5.0`, a heading, a manifest value. A check on
+# the string alone fires on all of them and gets turned off. The words that make
+# a line an *assignment* are few and this repository has used the same ones
+# every time: tracked, deferred, carried, reserved, scheduled, planned,
+# postponed, "is <version> work", "will … in <version>", "needs … in
+# <version>", "new surface for <version>".
+#
+# Two scopes, because the two release documents are the one place where a
+# forward promise is legitimately *history*. `CHANGELOG.md` and
+# `RELEASE_NOTES.md` say what was true at each release, and 0.4.3's own section
+# carries a deferral phrase naming its successor because that is what 0.4.3
+# meant; those sections are byte-identical to the tag and must stay so. So in
+# those two files only the section for the release being cut is in scope.
+# Everywhere else — code, tests, skills, README, the spec — there is no section
+# structure and no reader who knows which release a sentence was written for, so
+# every line is in scope.
+#
+# The boundary, stated rather than implied: a line that names a version surface
+# is exempt from the bare "is <version>" shape, because "AdapterVersion is
+# 0.5.0" and "this release is 0.5.0" are the same words doing the opposite job.
+# A forward promise written into a line that also mentions a version would get
+# past this. Closing that needs the sentence parsed, which is not what a grep
+# does; what it does close is the vocabulary that was live five times.
+FORWARD_PROMISE_SCAN=tests/lib/forward-promise-check.sh
+
+forward_promises_in_tree() {
+  "$FORWARD_PROMISE_SCAN" "$1"
+}
+
+assert "the forward-promise reader is on the tree" test -x "$FORWARD_PROMISE_SCAN"
+assert "no tracked file assigns work to the release being cut" \
+  quietly "$FORWARD_PROMISE_SCAN" "$skill_release_version"
+if ! "$FORWARD_PROMISE_SCAN" "$skill_release_version" >/dev/null 2>&1; then
+  # `|| true` before the pipe, and it is not decoration: the reader exits 1 when
+  # it finds something, `pipefail` passes that out of the pipeline, and `set -e`
+  # then killed the suite here — one line after the assertion written to report
+  # exactly this, so the invariant failed closed through the abort guard and the
+  # diagnostic naming the cause was lost. tests/test_harness.sh has the same
+  # note against `workflow_suites` for the same reason.
+  { "$FORWARD_PROMISE_SCAN" "$skill_release_version" 2>&1 || true; } | sed 's/^/  /'
+fi
+
+# The controls. The check can only ever say "none found", which is what it says
+# over a tree it never read — the failure this repository has now found six ways
+# — so it is shown finding each shape and shown not firing on the correct ones.
+promise_scan_rejects() {
+  local fixture="$1"
+  if "$FORWARD_PROMISE_SCAN" --over "$fixture" "$skill_release_version" >/dev/null 2>&1; then
+    printf 'the forward-promise reader accepted a line it must refuse:\n  %s\n' "$(cat "$fixture")" >&2
+    return 1
+  fi
+  return 0
+}
+promise_scan_accepts() {
+  "$FORWARD_PROMISE_SCAN" --over "$1" "$skill_release_version" >/dev/null 2>&1
+}
+
+promise_fixtures="$harness_scratch/forward-promise"
+mkdir -p "$promise_fixtures"
+promise_n=0
+while IFS='|' read -r verdict line; do
+  [ -n "$verdict" ] || continue
+  promise_n=$((promise_n + 1))
+  printf '%s\n' "$(printf '%s' "$line" | sed "s/@V/$skill_release_version/g")" \
+    > "$promise_fixtures/case-$promise_n"
+  case "$verdict" in
+    refuse)
+      assert "the forward-promise reader refuses: $line" \
+        promise_scan_rejects "$promise_fixtures/case-$promise_n" ;;
+    accept)
+      assert "the forward-promise reader accepts: $line" \
+        promise_scan_accepts "$promise_fixtures/case-$promise_n" ;;
+  esac
+done <<'PROMISE_CASES'
+refuse|// that gap is tracked for @V with the skipped data points
+refuse|// surfacing a count of skipped records is deferred to @V
+refuse|**Known limits, carried to @V**
+refuse|	APIKey string // server API auth; reserved for @V
+refuse|# building the capability is @V
+refuse|// making it branchable is @V work
+refuse|and names it as the source it will read in @V
+refuse|// the shape the Devin and Cursor adapters need in @V
+refuse|// giving probe an exit contract is new surface for @V
+accept|// making it branchable is new surface, which @V did not add
+accept|// Until @V the only list of them was a switch in the CLI
+accept|- Every key @V adds is optional, so a round trip is not vacuous
+accept|because this release *is* @V and closes none of them
+accept|- **`AdapterVersion` is `@V`, and it is deliberately not held equal
+accept|## @V — 2026-09-21
+accept|  grep -q 'AdapterVersion = "@V"' profiler/types.go
+accept|// @V ships none of those adapters, so these fields are reserved
+accept|a stored 0.4.x profile against a fresh @V one differs by four keys
+PROMISE_CASES
+
+echo "  forward-promise cases driven: $promise_n"
+PROMISE_CASES_EXPECTED=18
+assert "every one of the $PROMISE_CASES_EXPECTED forward-promise cases was driven, not a prefix of them" \
+  test "$promise_n" -eq "$PROMISE_CASES_EXPECTED"
+
+# And the denominator: the reader walked the tracked tree rather than reporting
+# "none found" over nothing. The other side is `git ls-files` itself, compared
+# for equality, which is the same arrangement tests/test_harness.sh holds the
+# assertion audit to — and it is why this reader prints what it read.
+#
+# Non-empty, because awk's per-file counter cannot fire for a file with no
+# records and `profiler/testdata/otlp/empty.json` is deliberately one. The side
+# that matters is still git's: a file that stops being tracked leaves both
+# counts lower together, and a reader that stops opening files leaves only its
+# own lower.
+promise_scan_report() {
+  { "$FORWARD_PROMISE_SCAN" "$skill_release_version" || true; } | sed -n 's/^files=\([0-9]*\).*/\1/p'
+}
+promise_files_read="$(promise_scan_report)"
+promise_files_tracked="$(git ls-files -z | xargs -0 -I{} sh -c '[ -s "{}" ] && echo x' 2>/dev/null | grep -c . || true)"
+echo "  files the forward-promise reader read: $promise_files_read of $promise_files_tracked non-empty tracked files"
+assert "the forward-promise reader read every non-empty tracked file, not a prefix of the tree" \
+  test "${promise_files_read:-0}" -eq "${promise_files_tracked:-0}"
+
 harness_summary
