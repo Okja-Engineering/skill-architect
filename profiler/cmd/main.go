@@ -60,16 +60,31 @@ func parseFlags(fs *flag.FlagSet, args []string) {
 	}
 }
 
+// harnessFlag registers --harness, whose description offers the set of
+// harnesses the profiler ships. Both subcommands take the flag and it is
+// defined once: a description naming a different set from the one
+// profiler.NewAdapter accepts would advertise a harness the CLI cannot build.
+func harnessFlag(fs *flag.FlagSet) *string {
+	return fs.String("harness", "", "harness name ("+profiler.SupportedHarnesses()+")")
+}
+
+// unknownHarness reports a name no adapter answers to. It names the set from
+// the registry rather than restating it, so the refusal and the help text
+// cannot come to disagree about what is supported.
+func unknownHarness(harness string) {
+	fmt.Fprintf(os.Stderr, "unknown harness: %s (supported: %s)\n", harness, profiler.SupportedHarnesses())
+	os.Exit(1)
+}
+
 func cmdProbe(args []string) {
 	fs := flag.NewFlagSet("probe", flag.ContinueOnError)
-	harness := fs.String("harness", "", "harness name (claude_code)")
+	harness := harnessFlag(fs)
 	otelFile := fs.String("otel-file", "", "path to OTel export file")
 	parseFlags(fs, args)
 
-	adapter := getAdapter(*harness, *otelFile)
-	if adapter == nil {
-		fmt.Fprintf(os.Stderr, "unknown harness: %s (supported: claude_code)\n", *harness)
-		os.Exit(1)
+	adapter, ok := profiler.NewAdapter(*harness, *otelFile)
+	if !ok {
+		unknownHarness(*harness)
 	}
 
 	cap, diags := probeWithDiagnostics(adapter)
@@ -108,7 +123,7 @@ func probeWithDiagnostics(a profiler.ProfilerAdapter) (profiler.CapabilityReport
 
 func cmdCapture(args []string) {
 	fs := flag.NewFlagSet("capture", flag.ContinueOnError)
-	harness := fs.String("harness", "", "harness name (claude_code)")
+	harness := harnessFlag(fs)
 	sessionID := fs.String("session", "", "session ID")
 	snapshotHash := fs.String("snapshot", "", "snapshot hash (git SHA or content hash)")
 	skillDir := fs.String("skill-dir", "", "path to the skill being profiled")
@@ -133,10 +148,9 @@ func cmdCapture(args []string) {
 		os.Exit(1)
 	}
 
-	adapter := getAdapter(*harness, *otelFile)
-	if adapter == nil {
-		fmt.Fprintf(os.Stderr, "unknown harness: %s (supported: claude_code)\n", *harness)
-		os.Exit(1)
+	adapter, ok := profiler.NewAdapter(*harness, *otelFile)
+	if !ok {
+		unknownHarness(*harness)
 	}
 
 	if err := captureFlagError(*harness, *exportFile); err != nil {
@@ -209,14 +223,6 @@ func captureExitCode(p profiler.Profile) int {
 func captureFlagError(harness, exportFile string) error {
 	if exportFile != "" {
 		return profiler.ExportFileUnsupportedError(harness)
-	}
-	return nil
-}
-
-func getAdapter(harness, otelFile string) profiler.ProfilerAdapter {
-	switch harness {
-	case "claude_code":
-		return profiler.ClaudeCodeAdapter{OtelExportFile: otelFile}
 	}
 	return nil
 }

@@ -614,4 +614,117 @@ assert "the boundary check reports a pattern that hides a path a slice needs" \
 assert "the over-broad control leaves the paths it did not widen alone" \
   stageable_in "$too_wide" README.md
 
+# --- The index barrier, and both directions of it -----------------------------
+#
+# `.gitignore` decides what `git add` will pick up; the index is where the
+# question is finally settled, because `git add -f` and a narrowed entry both
+# get past the first check. tests/lib/out-of-scope-check.sh is that last look,
+# and it is asserted here for the same reason the boundary above is: it was a
+# sentence in a ruling that each slice retyped, and a check nobody can see run
+# is a check nobody notices the loss of.
+#
+# Both directions, over real repositories, because the thing under test is what
+# the script concludes from an index. The clean direction matters more than it
+# looks: the form this replaces exited 1 on a clean index — `grep` reports 1
+# when it finds nothing — so it announced a block precisely when there was
+# nothing to block, and a green run of it proved nothing at all.
+
+out_of_scope_check="$harness_repo_root/tests/lib/out-of-scope-check.sh"
+
+require "the out-of-scope check is an executable script" \
+  test -x "$out_of_scope_check"
+
+# staged_tree <dir> <path>... — a repository with exactly these paths staged.
+#
+# `git add -f`, deliberately: what this check is for is the path that got past
+# `.gitignore`, and a fixture that could not stage one would assert nothing.
+staged_tree() {
+  local dir
+  local path
+  dir="$1"
+  shift
+  mkdir -p "$dir"
+  quietly git -C "$dir" init || return 1
+  for path in "$@"; do
+    mkdir -p "$dir/$(dirname "$path")"
+    echo x > "$dir/$path"
+    quietly git -C "$dir" add -f -- "$path" || return 1
+  done
+}
+
+# check_passes <dir> <outfile> — the barrier lets this index through, and its
+# words are kept for the assertion that reads them.
+check_passes() {
+  "$out_of_scope_check" "$1" > "$2" 2>&1
+}
+
+# check_refuses <dir> <outfile> — the barrier blocks this index.
+#
+# Exactly 1, not merely nonzero. The script exits 2 when it cannot run at all,
+# and a control that accepted any failure would go on passing against a check
+# that had stopped working — which is the shape this whole file refuses.
+check_refuses() {
+  local status
+  status=0
+  "$out_of_scope_check" "$1" > "$2" 2>&1 || status=$?
+  [ "$status" -eq 1 ]
+}
+
+# An index carrying only paths this release owns. This is the direction the
+# inverted form got wrong, so it is asserted first.
+in_scope="$fixtures/index-in-scope"
+in_scope_out="$harness_scratch/in-scope.out"
+require "the tree for the in-scope control is a repository with a staged index" \
+  staged_tree "$in_scope" profiler/types.go docs/profiler-spec.md README.md
+
+assert "the barrier passes an index carrying only in-scope paths" \
+  check_passes "$in_scope" "$in_scope_out"
+assert "the barrier says it is clean, rather than leaving a bare grep status as the verdict" \
+  grep -q '^out-of-scope check: clean$' "$in_scope_out"
+
+# An empty index is the same answer and is asked separately: it is the state a
+# `grep` that matched nothing reports as a failure, and the first one a
+# pre-commit hook written from this ever meets.
+empty_index="$fixtures/index-empty"
+empty_index_out="$harness_scratch/empty-index.out"
+require "the tree for the empty-index control is a repository" \
+  staged_tree "$empty_index"
+
+assert "the barrier passes an index with nothing staged at all" \
+  check_passes "$empty_index" "$empty_index_out"
+
+# The other direction, one repository per pattern: a single fixture staging all
+# of them would still pass with only one alternative left working.
+for out_of_scope_path in \
+  skillgate/main.go \
+  skills/skill-gate/SKILL.md \
+  docs/skillgate-spec.md \
+  go.work \
+  NOTICE \
+  docs/research/notes.md \
+  .venv/pyvenv.cfg
+do
+  blocked_tree="$fixtures/index-blocked-$(printf '%s' "$out_of_scope_path" | tr '/.' '--')"
+  blocked_out="$harness_scratch/blocked-$(printf '%s' "$out_of_scope_path" | tr '/.' '--').out"
+  require "the tree for the $out_of_scope_path control is a repository with it staged" \
+    staged_tree "$blocked_tree" "$out_of_scope_path"
+
+  assert "the barrier refuses an index staging $out_of_scope_path" \
+    check_refuses "$blocked_tree" "$blocked_out"
+  assert "the refusal of $out_of_scope_path names the path it found" \
+    grep -qF -- "$out_of_scope_path" "$blocked_out"
+done
+
+# An in-scope path that begins like a refused one. Without this the pattern
+# could be widened to bare substrings — dropping the anchor, or matching
+# `docs/skillgate` anywhere in a name — and every assertion above would still
+# pass while a later slice found its own files refused.
+near_miss="$fixtures/index-near-miss"
+near_miss_out="$harness_scratch/near-miss.out"
+require "the tree for the near-miss control is a repository with its paths staged" \
+  staged_tree "$near_miss" skills/skill-audit/SKILL.md docs/profiler-spec.md vendor/NOTICE
+
+assert "the barrier passes an index staging paths that merely read like the refused ones" \
+  check_passes "$near_miss" "$near_miss_out"
+
 harness_summary

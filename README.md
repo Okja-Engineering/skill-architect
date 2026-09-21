@@ -52,9 +52,11 @@ cd profiler && go build -o profiler ./cmd/
 ```
 
 `version` prints the adapter version that every profile records in
-`capability.adapter_version` — `profiler 0.4.3` at this release. It tracks what
+`capability.adapter_version` — `profiler 0.5.0` at this release. It tracks what
 the adapter captures, so profiles produced by different adapter versions stay
-distinguishable. It is not the plugin version, though the two match here.
+distinguishable. It is not the plugin version: it moves as soon as the adapter
+changes what a profile contains for the same input, which is usually before the
+release that carries it is tagged, so the two numbers can differ.
 
 Probe detection is per signal, not all-or-nothing, and a signal is reported available
 only when the export yields a value the adapter can actually read:

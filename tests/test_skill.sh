@@ -96,11 +96,17 @@ assert ".claude-plugin/marketplace.json exists" test -f .claude-plugin/marketpla
 assert ".claude-plugin/marketplace.json is valid and at 0.4.3" quietly marketplace_is_valid
 
 # The profiler records its own version in every profile it writes, and it is the
-# sixth surface carrying this release's number. It is asserted here beside the
-# manifests so one place shows all of them, and in Go by
-# TestAdapterVersionIsThisRelease.
-assert "profiler AdapterVersion is 0.4.3" \
-  grep -q 'AdapterVersion = "0.4.3"' profiler/types.go
+# sixth version surface. It is asserted here beside the manifests so one place
+# shows all of them, and in Go by TestAdapterVersionIsThisRelease.
+#
+# It is deliberately not required to equal the five above. The manifests version
+# the plugin and move when the release is cut; this one tracks what a profile
+# contains and moves as soon as that changes, which is inside the release rather
+# than at the end of it. Holding them equal would mean either labelling every
+# profile built during a release as the previous release, or bumping the plugin
+# five times on the way there.
+assert "profiler AdapterVersion is 0.5.0" \
+  grep -q 'AdapterVersion = "0.5.0"' profiler/types.go
 
 # The denominator itself, asserted before anything is walked over it. A glob
 # that matched nothing would make every per-skill check below vacuously true,
