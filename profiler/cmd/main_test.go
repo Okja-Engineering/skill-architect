@@ -366,8 +366,8 @@ func TestUsageErrorsExitOneSoThatTwoMeansOneThing(t *testing.T) {
 //
 // The exit status is deliberately not part of the pairing: `probe` has no
 // documented exit contract, so it stays 0 and is asserted to stay 0. Changing it
-// is new surface for 0.5.0, and a test that demanded a nonzero status here would
-// be pinning the fix to a decision nobody has taken.
+// is new surface, which 0.5.0 did not add, and a test that demanded a nonzero
+// status here would be pinning the fix to a decision nobody has taken.
 func TestProbe_SaysOnStderrWhyACapabilityIsNone(t *testing.T) {
 	bin := buildProfiler(t)
 	missing := filepath.Join(t.TempDir(), "otel-export.json")

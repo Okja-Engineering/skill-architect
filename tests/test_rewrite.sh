@@ -1366,10 +1366,22 @@ fi
 
 # The three claims the document made that the script does not keep, each asked
 # of the artifact rather than of the prose. They are asserted as absences on
-# purpose: 0.4.3 corrects the description, and building the capability is
-# 0.5.0. When it is built these three go red, which is the point — they are
-# what will stop the document being left describing the old draft a second
-# time.
+# purpose: 0.4.3 corrected the description, and if the capability is ever built
+# these three go red, which is the point — they are what stops the document
+# being left describing the old draft a second time.
+#
+# This comment used to schedule the capability into the release now being cut,
+# which became a false statement about a shipped release: 0.5.0 did not build
+# it. It also contradicted the document it is written to hold.
+# `skills/skill-rewrite/SKILL.md`
+# states the same gap as a boundary rather than a schedule — "**What the drafter
+# does not do**, and what Stage 3 is therefore for … Scoring the dimensions and
+# turning them into fixes is Stage 1 and Stage 3 work, done by the reader" — and
+# the shipped document is the one that defines what this skill promises. Nothing
+# in the repository commits to moving that boundary: there is no open ledger row
+# for it, and the two places that scheduled it are 0.4.3's own text, which is
+# history. So this comment names no release. It says what is true of the
+# artifact and cites the sentence it is holding, which is what neither side did.
 assert "the draft does not carry the target's frontmatter, so the document must not promise it" \
   test -z "$(grep -m1 -F 'name: all-sections' "$no_templates_target/REWRITE-DRAFT.md" || true)"
 

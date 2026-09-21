@@ -77,12 +77,19 @@ type CapabilityReport struct {
 // ExportFile and APIKey are the input contract for adapters that do not exist
 // yet, and no shipped adapter reads either: the Claude Code adapter refuses an
 // ExportFile rather than ignoring it, and there is no CLI flag for an API key
-// at all. They are kept because they are the shape the Devin and Cursor
-// adapters need in 0.5.0, and removing them now would be a breaking change to
-// this struct twice over.
+// at all. They are kept because they are the shape a Devin or Cursor adapter
+// would need, and removing them now would be a breaking change to this struct
+// twice over.
+//
+// **0.5.0 ships none of those adapters** — it removed three drafts of them
+// rather than shipping them broken — so these two fields are reserved and
+// nothing in this release reads either one. No release is named as the one that
+// will read them, on purpose: this comment used to name the release being cut,
+// which read as a schedule and became a false claim the moment that release was
+// the one shipping.
 type CaptureOpts struct {
-	ExportFile   string `json:"export_file,omitempty"` // ATIF export or session transcript path; reserved for 0.5.0
-	APIKey       string `json:"api_key,omitempty"`     // server API auth; reserved for the Devin and Cursor adapters in 0.5.0
+	ExportFile   string `json:"export_file,omitempty"` // ATIF export or session transcript path; reserved, read by nothing in this release
+	APIKey       string `json:"api_key,omitempty"`     // server API auth for a Devin or Cursor adapter; reserved, read by nothing in this release
 	SnapshotHash string `json:"snapshot_hash"`         // git SHA or content hash of the skill being profiled
 	SkillDir     string `json:"skill_dir"`             // path to the skill being profiled
 }

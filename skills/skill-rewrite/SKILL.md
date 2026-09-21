@@ -116,7 +116,7 @@ Above them, a `# Rewrite draft: <target>` title. What each holds:
 
 **What the drafter does not do**, and what Stage 3 is therefore for. It does not copy or correct the target's frontmatter. It writes no template for `Deterministic actions`, `Orchestration`, `AI judgment` or `Constraints`. That is four of the six sections its own `Proposed structure` requires. `Action items` is a five-item review checklist, not a mapping of the audit's findings: it is the same text for a skill that audits clean and one that fails, and the drafter never reads the evaluation matrix. Scoring the dimensions and turning them into fixes is Stage 1 and Stage 3 work, done by the reader.
 
-`tests/test_rewrite.sh` compares the list above against the headings a run actually writes, so neither side can change without the other.
+`tests/test_rewrite.sh` compares the list above against the headings a run actually writes, so neither side can change without the other, and it pins each of the four gaps above as an absence — so if the drafter ever learns to close one, the suite goes red rather than leaving this section describing a draft that no longer exists.
 
 ### Stage 3: Produce rewrite plan
 

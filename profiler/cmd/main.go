@@ -115,7 +115,10 @@ func cmdProbe(args []string) {
 	// The exit status stays 0. README documents no exit codes for `probe` at
 	// all, so a script wrapping it today can only be relying on 0, and giving
 	// `probe` an exit contract is new surface rather than a repair. Making the
-	// failure audible is the repair; making it branchable is 0.5.0.
+	// failure audible is the repair; making it branchable is new surface, and
+	// 0.5.0 did not add it. docs/profiler-spec.md says the same, in the same
+	// words: a caller that must branch on a bad export uses `capture`, which
+	// does have an exit contract.
 	for _, d := range diags {
 		fmt.Fprintf(os.Stderr, "probe: %s\n", d)
 	}

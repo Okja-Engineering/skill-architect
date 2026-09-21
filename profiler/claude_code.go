@@ -472,7 +472,8 @@ func extractTokenCounts(export scopedExport) TokenResult {
 	// below is built only on that path. A profile/v1 present result carries no
 	// reason at all, so a series refused beside a healthy one is a total
 	// reduced by a defect the profile has no field to name — the same gap as a
-	// skipped data point, tracked with it for 0.5.0. Inventing a channel for it
+	// skipped data point, and it needs a caveat channel schema v1 has not got,
+	// which 0.5.0 did not add. Inventing a channel for it
 	// inside v1 would mean a reason on a present result, which is a schema
 	// change wearing a bug fix's clothes.
 	totals := acc.reduce()
@@ -608,9 +609,10 @@ func isTokenType(s string) bool {
 // the only path it is built on: a profile/v1 present result carries no reason,
 // so an export mixing completed results with pending accepts lists the results
 // and has no field in which to say how many accepts it passed over. That is the
-// same schema v1 gap as a skipped data point, tracked with it for 0.5.0, and
-// docs/profiler-spec.md states it. A comment claiming the reason always says so
-// would describe a channel the schema does not have.
+// same schema v1 gap as a skipped data point: it needs a caveat channel schema
+// v1 has not got, which 0.5.0 did not add, and docs/profiler-spec.md states it
+// in those words. A comment claiming the reason always says so would describe a
+// channel the schema does not have.
 func extractToolCalls(export scopedExport) ToolCallResult {
 	var calls []timedEntry[ToolCallEntry]
 	var c toolCallCounters

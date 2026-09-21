@@ -1126,8 +1126,9 @@ func (acc counterAccumulator) reduce() map[string]int64 {
 // caller can only say what was counted here, and it can only say it when no
 // series survived: a profile/v1 present result carries no reason, so a series
 // refused beside a healthy one reduces a total the profile has no field to
-// qualify. That gap is the profile schema's, not this counter's, and it is
-// tracked for 0.5.0 with the skipped data points it belongs beside.
+// qualify. That gap is the profile schema's, not this counter's: it needs a
+// caveat channel schema v1 has not got, which 0.5.0 did not add, and it belongs
+// beside the skipped data points.
 func (acc counterAccumulator) refused() int {
 	var n int
 	for _, s := range acc {
