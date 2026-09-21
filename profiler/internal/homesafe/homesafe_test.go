@@ -20,6 +20,7 @@ package homesafe
 //     the real home makes the call observable, so the mutation now dies.
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -110,9 +111,24 @@ func TestPathContains_DecidesAfterResolution(t *testing.T) {
 // anyway. Where the root does not exist there is no identity on either side,
 // which is the one place a name comparison is the right answer, so it is
 // generated over too rather than assumed.
+// mayRefuse is whether this arrangement is one the barrier is permitted to have
+// no answer for, and it is exactly the arrangements in which the root does not
+// exist yet. Such a root has no identity, so its name is the whole comparison,
+// and this package compares a not-yet-existing name byte for byte or not at all
+// — see [tailContains]. No caller ever passes such a root: the homes and scratch
+// directories the barrier is asked about are all real directories. The axis is
+// generated anyway, because a generator narrowed to what the callers do today is
+// how the next gap gets in.
+//
+// Every arrangement in which the root *exists* must produce an answer, with no
+// tolerance at all, and that is where every escape this repairs lived. A
+// refusal is still only tolerated and never required: a wrong definite answer
+// fails on these axes too, so a barrier that said "outside" for a write that
+// landed inside is caught here as everywhere.
 type boundAxis struct {
 	component string
 	exists    bool
+	mayRefuse bool
 	spelling  string
 }
 
@@ -126,16 +142,16 @@ const (
 
 func boundAxes() []boundAxis {
 	return []boundAxis{
-		{"root", true, "root"},
-		{"root", true, "ROOT"},
-		{"root", true, "Root"},
-		{nfcName, true, nfcName},
-		{nfcName, true, nfdName},
-		{nfcName, true, "CAF" + nfcName[3:]},
-		{"notyet", false, "notyet"},
-		{"notyet", false, "NOTYET"},
-		{nfcName, false, nfcName},
-		{nfcName, false, nfdName},
+		{"root", true, false, "root"},
+		{"root", true, false, "ROOT"},
+		{"root", true, false, "Root"},
+		{nfcName, true, false, nfcName},
+		{nfcName, true, false, nfdName},
+		{nfcName, true, false, "CAF" + nfcName[3:]},
+		{"notyet", false, true, "notyet"},
+		{"notyet", false, true, "NOTYET"},
+		{nfcName, false, true, nfcName},
+		{nfcName, false, true, nfdName},
 	}
 }
 
@@ -183,6 +199,13 @@ var boundOperators = []string{
 	"@R/nl-out\n",
 	"away/nl-in\n",
 	"@R/inner/d-trailing-tab\t",
+	// A non-directory mid-path. The kernel answers ENOTDIR, so no write
+	// happens and the barrier has no verdict to give — which it reports rather
+	// than guessing, and which the oracle records as a write it could not
+	// perform.
+	"@R/inner/leaf-target/d-through-a-file",
+	"away/out-target/d-through-a-file",
+	"away/via-nl-target",
 }
 
 // buildBoundTree lays out one instance of the tree the operators are spelled
@@ -193,6 +216,9 @@ var boundOperators = []string{
 // measured.
 func buildBoundTree(t *testing.T, base string, axis boundAxis) {
 	t.Helper()
+	if err := os.RemoveAll(base); err != nil {
+		t.Fatalf("clearing %q: %v", base, err)
+	}
 	root := base + "/" + axis.component
 	mk := func(dir string) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -246,6 +272,13 @@ func buildBoundTree(t *testing.T, base string, axis boundAxis) {
 	// than to one language's accidents.
 	ln(base+"/away", root+"/nl-out\n")
 	ln(root+"/inner", base+"/away/nl-in\n")
+	// And a link whose *target* ends with a newline, which is a different
+	// defect from a link whose name does. Go keeps the bytes and the shells
+	// have to work for it, but the case is on the shared list so that the three
+	// walks are held to one invariant rather than to one language's accidents.
+	file(base + "/twin")
+	ln(root+"/inner/leaf-target", base+"/twin\n")
+	ln(base+"/twin\n", base+"/away/via-nl-target")
 }
 
 // boundLanded performs the write the way a caller would and reports where its
@@ -329,7 +362,8 @@ func boundLanded(root, spelled string) (landed string, where string) {
 // The count is asserted, because a generated set that had quietly become
 // unperformable would otherwise look exactly like one that passed.
 func TestPathContains_AgreesWithWhereTheWriteLands(t *testing.T) {
-	cases, unperformable := 0, 0
+	cases, unperformable, noAnswer := 0, 0, 0
+	agreedInside, agreedOutside := 0, 0
 	for _, axis := range boundAxes() {
 		for _, op := range boundOperators {
 			axis, op := axis, op
@@ -338,18 +372,47 @@ func TestPathContains_AgreesWithWhereTheWriteLands(t *testing.T) {
 				axis.component, axis.exists, axis.spelling, spelling)
 			cases++
 			t.Run(name, func(t *testing.T) {
-				base := t.TempDir()
-				buildBoundTree(t, base, axis)
-				root := base + "/" + axis.component
-				spelled := base + "/" + spelling
+				// Two trees, built by one function. The oracle's write is
+				// performed in one and the barrier is asked about the other,
+				// because the write *changes the world the barrier is being
+				// asked about*: for a root that does not exist yet, measuring
+				// first would create it and the barrier would then be asked an
+				// easier question than the one a caller asks.
+				scratch := t.TempDir()
+				oracleBase := scratch + "/oracle"
+				verdictBase := scratch + "/verdict"
+				buildBoundTree(t, oracleBase, axis)
+				buildBoundTree(t, verdictBase, axis)
 
-				landed, where := boundLanded(root, spelled)
-				if landed == "nowrite" {
-					unperformable++
-					t.Skipf("the kernel performed no write on %q, so there is no object for a verdict to be about", spelled)
-				}
+				landed, where := boundLanded(oracleBase+"/"+axis.component, oracleBase+"/"+spelling)
 
+				root := verdictBase + "/" + axis.component
+				spelled := verdictBase + "/" + spelling
 				got, err := PathContains(root, spelled)
+
+				if landed == "nowrite" {
+					// No object was created or truncated, so there is no
+					// landing place for a verdict to agree with. The barrier is
+					// still *asked*, because a path the kernel refuses to write
+					// on is a path a caller can still name: it has to come back
+					// with an answer or with a refusal, and the answer it comes
+					// back with is on the record.
+					unperformable++
+					t.Logf("the kernel performed no write on %q; the barrier answered %v, %v",
+						spelled, got, err)
+					return
+				}
+				if errors.Is(err, errUncomparableName) {
+					// No answer is a refusal in every caller, so it is never
+					// unsafe — but it costs a legitimate destination, so where
+					// it is allowed is asserted rather than tolerated.
+					noAnswer++
+					if !axis.mayRefuse {
+						t.Errorf("PathContains(%q, %q) reached no answer, and this arrangement is one it is meant to be able to answer: %v",
+							root, spelled, err)
+					}
+					return
+				}
 				if err != nil {
 					t.Fatalf("PathContains(%q, %q): %v", root, spelled, err)
 				}
@@ -357,6 +420,12 @@ func TestPathContains_AgreesWithWhereTheWriteLands(t *testing.T) {
 					t.Errorf("PathContains(%q, %q) = %v, but a write on that spelling landed at %q, "+
 						"which is %s the protected directory",
 						root, spelled, got, where, landed)
+					return
+				}
+				if landed == "inside" {
+					agreedInside++
+				} else {
+					agreedOutside++
 				}
 			})
 		}
@@ -364,9 +433,37 @@ func TestPathContains_AgreesWithWhereTheWriteLands(t *testing.T) {
 	if cases < 100 {
 		t.Errorf("the generated bound produced only %d cases, so it is not the case set this claims to be", cases)
 	}
-	if unperformable*3 >= cases {
-		t.Errorf("the generated bound could perform a write for only %d of %d cases, so most of it asserted nothing",
-			cases-unperformable, cases)
+	// Both directions have to have actually happened. This is the bound on the
+	// generator rather than a proportion of unperformable cases, because a
+	// proportion is a different number on a case-sensitive filesystem — where a
+	// folded spelling names a directory that is not there — and a bound that has
+	// to be retuned per platform is a bound nobody trusts. What matters is that
+	// the sweep really saw a write land inside and agree, and really saw one
+	// land outside and agree.
+	if agreedInside == 0 || agreedOutside == 0 {
+		t.Errorf("the generated bound agreed on %d cases that landed inside and %d that landed outside; it has to be both",
+			agreedInside, agreedOutside)
+	}
+	t.Logf("the generated bound drove %d spellings: %d unperformable, %d with no answer, %d agreeing inside, %d agreeing outside",
+		cases, unperformable, noAnswer, agreedInside, agreedOutside)
+}
+
+// TestPathContains_AChildShorterThanAParentThatDoesNotExist is the one arm of
+// the name comparison the generated set above cannot reach, because every
+// operator it builds names something at or below the root rather than above it.
+//
+// A parent that does not exist has its components compared as names. A child
+// with fewer of them than the parent cannot be inside it, whatever those names
+// are, and saying so before comparing anything is what keeps the comparison
+// from reading off the end of the shorter list.
+func TestPathContains_AChildShorterThanAParentThatDoesNotExist(t *testing.T) {
+	base := t.TempDir()
+	contained, err := PathContains(base+"/notyet/deeper/deepest", base+"/notyet/deeper")
+	if err != nil {
+		t.Fatalf("PathContains: %v", err)
+	}
+	if contained {
+		t.Error("a path above a parent that does not exist was called inside it")
 	}
 }
 

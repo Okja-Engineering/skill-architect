@@ -336,86 +336,390 @@ the_blocks_path_words_are_accountable() {
 
 # --- The resolved verdict -----------------------------------------------------
 
-# <path> — the place a write on this path would land: every directory component
-# resolved, in the order the kernel resolves it, with `..` folded only against
-# what has already been resolved.
+# --- BEGIN THE PATH CONTAINMENT BARRIER --------------------------------------
 #
-# It used to be two steps, and the pair of them was an escape. First a
-# `path_normalized` folded `.` and `..` away with awk, on the stated reasoning
-# that following symlinks can only start from the longest prefix that exists, so
-# a `..` beyond that point would otherwise still be in the string when the two
-# paths are compared. That reasoning is sound about the *design it was defending*
-# and wrong about the invariant: folding `..` textually folds a `..` that follows
-# a symlink against the link's own name instead of against its target.
-# `~/checkout/../X`, with `checkout` a link to the repository, folded to `~/X`
-# and compared as **inside** the scratch root — while a write on it lands beside
-# the repository. Every character in that spelling is inert and no rule in this
-# file named it: reproduced, and the fence was got past by spelling alone.
+# Byte-identical in skills/skill-rewrite/scripts/draft-rewrite.sh and in
+# tests/test_install.sh, between these two markers, and tests/test_install.sh
+# asserts that it is byte-identical rather than trusting that it stayed so. The
+# previous round's claim that "all three are now the same walk" was false in
+# three places — the leaf symlink, the empty path, and a root that resolves to
+# `/` — and every one of them was a divergence between two copies nobody could
+# diff. Prose cannot hold two copies together; a diff can.
+
+# __path_link_target <path> — the bytes a symlink holds, exactly, in
+# __path_target.
 #
-# `..` and a symlink interleave, so there is no order of a whole-string fold and
-# a whole-string resolve that is right. The fold moves *into* the walk. One rule,
-# per component: a component that **is a directory** is entered with `cd -P`,
-# which follows a link, a chain of them, a relative target, and this platform's
-# own aliasing — the scratch root arrives through /var and lives at /private/var,
-# so a compare against an unresolved path says "outside" for a path that is in
-# fact inside. A component that **is not there** is appended as named, because
-# the destination is a place the block is about to create. A **leaf** that exists
-# and is not a directory is appended as named. Anything else — a non-directory
-# mid-path, a directory that cannot be entered, a cycle — has no answer, and no
-# answer is a refusal here as everywhere else. `..` pops the resolved prefix,
-# which is correct precisely because that prefix holds no link and no `..` any
-# more, and it stops at the root the way the kernel stops it.
+# Two separate things would lose those bytes, and both are the defect this whole
+# block replaces, one level down: a target decided on one spelling while the
+# kernel follows another.
 #
-# This is the third copy of this barrier in the repository and the third that had
-# the defect; the other two are skills/skill-rewrite/scripts/draft-rewrite.sh and
-# profiler/internal/homesafe. All three are now the same walk, and all three are
-# held to the same invariant by an oracle rather than by a table of spellings.
-path_resolved() {
-  local spelled remaining name candidate resolved
+# Command substitution strips every trailing newline, so `$(readlink …)` on a
+# target ending in one hands back a name that is a different entry. The
+# `printf X` carries them through: the last character of the captured output is
+# an X, so there is nothing trailing for the substitution to remove, and `%X`
+# takes the guard off again.
+#
+# And `readlink`'s own terminator is not portable. GNU readlink writes the
+# target followed by a newline; the BSD readlink on macOS writes the target and
+# nothing else — measured, not assumed. So stripping "one trailing character"
+# is right on one platform and eats a byte of the target on the other, which is
+# how this function was first written and what the generated bound caught. `-n`
+# is the flag both of them have for "no terminator", so with it there is nothing
+# to strip and no platform to be right about.
+__path_link_target() {
+  local raw
+  raw="$(readlink -n -- "$1"; printf X)" || return 1
+  __path_target="${raw%X}"
+  return 0
+}
+
+# __path_max_links bounds a symlink chain so that a cycle terminates. It is not
+# the kernel's limit and does not claim to be — macOS refuses a chain at 32 and
+# Linux at 40 — and it does not need to be: a chain the kernel refuses produces
+# no write at all, so such a path has no object for a verdict to be about, and
+# refusing is the safe answer for it. What the counter is actually for is a
+# cycle, where `readlink` succeeds for ever.
+__path_max_links=32
+
+# __path_max_climb bounds the climb from a directory to the filesystem root.
+# The climb already stops by identity, because `..` at the root is the root;
+# this is the second stop, for a filesystem on which it is not.
+__path_max_climb=1024
+
+# __path_walk <spelled> — chdir to the deepest directory the kernel would reach
+# while resolving <spelled>, and set __path_tail to the components after it,
+# each preceded by `/`, or to the empty string.
+#
+# # Why it moves instead of building a string
+#
+# Each of the three copies of this barrier used to build a *name* for the
+# destination and compare it against a name built for the root. A name is not an
+# identity, and on this platform three separate mechanisms make it not one. The
+# volume is case-insensitive, so `.CLAUDE` and `.claude` are one directory with
+# two names. APFS is normalisation-insensitive, so an NFC and an NFD spelling
+# are one directory with two names. And bash's *builtin* `pwd -P` hands back the
+# caller's own spelling rather than the kernel's stored name, so even a fully
+# resolved path is only as canonical as the way it was asked for. All three were
+# live escapes: every one of the six protected roots could be written into by
+# spelling its name in capitals, and the exact spelling was refused while the
+# capitalised one was not.
+#
+# So nothing here is decided by comparing paths. The walk performs the kernel's
+# own resolution as a sequence of chdirs, which cannot be spelled around because
+# it is not reading a spelling — it is moving. What comes out is the process's
+# working directory, and the comparison in path_target_is_inside is `-ef`:
+# device and inode, the one handle no spelling can change.
+#
+# # The rule, once, for every component
+#
+# A component that **is a directory** is entered, which follows a link, a chain
+# of links, a relative target and the platform's own aliasing in a single step —
+# on macOS a scratch directory arrives through /var and lives at /private/var,
+# so a comparison of unresolved names answers "outside" for a path that is in
+# fact inside.
+#
+# A component that **is a symlink** and is not a directory has its target walked
+# in its place, exactly as the kernel splices it in, **including at the leaf**.
+# `: > "$dest"` follows a leaf symlink, so a leaf link into a protected
+# directory is a write into that directory; appending the leaf as named is how
+# both shell copies of this came to disagree with the Go one, and it was a hole
+# standing behind two accidents rather than behind a rule.
+#
+# A component that **does not exist** begins the tail. From there on there is
+# nothing with an identity, which is why the tail is the only thing this barrier
+# ever compares as text — and it compares it byte for byte or not at all, for
+# the reason path_target_is_inside sets out.
+#
+# A component that exists, is not a directory and is not the last has **no
+# answer**: the kernel answers ENOTDIR, so no write happens, and no answer is a
+# refusal rather than a guess. So is a directory that cannot be entered, and so
+# is a chain that does not end.
+#
+# A `..` inside the tail folds against the tail and, past its start, climbs the
+# resolved prefix — which is correct precisely because that prefix holds no link
+# and no `..` any more. The kernel answers ENOENT for a `..` that follows a
+# component which does not exist, so no write happens on such a path either way;
+# folding is the conservative reading of it, and it keeps `a/b/../c` meaning
+# `a/c` when `a` exists and `b` does not.
+#
+# An empty path is not a path and has no answer. It used to return the working
+# directory at status 0 in both shell copies while the Go one refused, which is
+# the sort of divergence two copies held together by prose produce.
+__path_walk() {
+  local spelled remaining name links
   spelled="$1"
+  __path_tail=""
+  links=0
+  [ -n "$spelled" ] || return 1
   case "$spelled" in
-    /*) ;;
-    *) spelled="$PWD/$spelled" ;;
+    /*) cd -P -- / 2>/dev/null || return 1 ;;
   esac
-  resolved=/
-  remaining="${spelled#/}"
+  remaining="$spelled"
   while [ -n "$remaining" ]; do
     case "$remaining" in
       */*) name="${remaining%%/*}"; remaining="${remaining#*/}" ;;
       *)   name="$remaining"; remaining="" ;;
     esac
-    case "$name" in
-      ''|.) continue ;;
-      ..)
-        resolved="${resolved%/*}"
-        [ -n "$resolved" ] || resolved=/
-        continue
-        ;;
-    esac
-    candidate="${resolved%/}/$name"
-    if [ -d "$candidate" ]; then
-      resolved="$(CDPATH= cd -P -- "$candidate" 2>/dev/null && pwd -P)" || return 1
-      [ -n "$resolved" ] || return 1
-    elif [ ! -e "$candidate" ] && [ ! -L "$candidate" ]; then
-      resolved="$candidate"
-    elif [ -z "$remaining" ]; then
-      resolved="$candidate"
-    else
+    if [ -z "$name" ] || [ "$name" = "." ]; then
+      continue
+    fi
+    if [ -n "$__path_tail" ]; then
+      if [ "$name" = ".." ]; then
+        __path_tail="${__path_tail%/*}"
+      else
+        __path_tail="$__path_tail/$name"
+      fi
+      continue
+    fi
+    if [ "$name" = ".." ]; then
+      cd -P -- .. 2>/dev/null || return 1
+      continue
+    fi
+    if [ -d "$name" ]; then
+      cd -P -- "$name" 2>/dev/null || return 1
+      continue
+    fi
+    if [ -L "$name" ]; then
+      links=$((links + 1))
+      [ "$links" -le "$__path_max_links" ] || return 1
+      __path_link_target "$name" || return 1
+      [ -n "$__path_target" ] || return 1
+      case "$__path_target" in
+        /*) cd -P -- / 2>/dev/null || return 1 ;;
+      esac
+      if [ -n "$remaining" ]; then
+        remaining="$__path_target/$remaining"
+      else
+        remaining="$__path_target"
+      fi
+      continue
+    fi
+    if [ -e "$name" ] && [ -n "${remaining//\//}" ]; then
       return 1
     fi
+    __path_tail="/$name"
   done
-  printf '%s\n' "$resolved"
+  return 0
 }
 
-# <path> <root> — path *resolves* to somewhere strictly inside root, whether or
-# not it exists yet. Equal to the root is not inside it.
+# path_target_is_resolvable <spelled> — there is an answer to where a write on
+# <spelled> would land. 0 there is, 1 there is not.
+path_target_is_resolvable() {
+  ( CDPATH= ; __path_walk "$1" ) >/dev/null 2>&1
+}
+
+# path_target_is_inside <spelled> <root> <mode> — does a write on <spelled>
+# create-or-truncate an object that is <root>, or one reachable from <root>
+# without leaving it?
+#
+# `or-equal` counts <root> itself as inside; `strictly` does not.
+#
+# 0 inside, 1 outside, 3 there is no answer — which every caller turns into a
+# refusal and never into a pass.
+#
+# The third status is 3 and not 2 because 3 is the status the drafter's own
+# header registers for "no verdict was reached", and this is the same statement
+# one layer down: the two numbers would have meant one thing, and a second
+# number for it is a second thing to keep in agreement. It also keeps the static
+# check in tests/test_rewrite.sh honest — it reads this file for `exit N` and
+# cannot see that these are a subshell's exits, so every number spelled here has
+# to be a number the script is allowed to exit with, which is a good discipline
+# for the block rather than a concession to the checker.
+#
+# The verdict is decided by identity for every component that exists, and by
+# name only for components that do not exist yet. That is the whole invariant,
+# and it reduces to a single question: the object a write creates or truncates
+# lives in the deepest directory the kernel reaches while resolving the
+# spelling, so the verdict is whether *that directory* is the root or is under
+# it — asked with `-ef`, which compares device and inode and therefore gives
+# the same answer however either side is spelled, and asked by climbing with
+# `cd -P -- ..`, which is the kernel answering "reachable without leaving it"
+# rather than this file computing it. The tail is compared as text only when the
+# root itself does not exist yet, where there is no identity on either side and
+# the answer may be that there is no answer.
+#
+# The whole of it happens in a subshell, so the chdirs are the subshell's and
+# the caller's working directory is untouched; and no path is ever carried back
+# out through a command substitution, which is the mechanism that made the
+# previous round's barrier decide on one path and write on another.
+path_target_is_inside() {
+  (
+    CDPATH=
+    local spelled root mode here root_dir root_tail dest_tail climb dest_head dest_rest root_rest
+    spelled="$1"
+    root="$2"
+    mode="$3"
+    here="$PWD"
+    __path_walk "$root" 2>/dev/null || exit 3
+    root_dir="$PWD"
+    root_tail="$__path_tail"
+    cd -P -- "$here" 2>/dev/null || exit 3
+    __path_walk "$spelled" 2>/dev/null || exit 3
+    dest_tail="$__path_tail"
+
+    if [ -n "$root_tail" ]; then
+      # The root does not exist yet. Nothing can exist below a directory that
+      # does not exist, so the destination's own deepest directory has to be
+      # the same object as the root's, and what is left over is the name
+      # comparison the invariant allows for names that are not yet anything.
+      [ . -ef "$root_dir" ] || exit 1
+      # Three answers and not two, which is the whole of what makes this branch
+      # honest.
+      #
+      # **The same bytes** are the same name on every filesystem, so a byte
+      # match is an answer anywhere: inside.
+      #
+      # **Names that could not be one name however the volume compares them**
+      # are an answer too: outside. This is the common case by far and it has to
+      # stay cheap and definite — on a machine where `~/.devin` does not exist,
+      # every `-o` the drafter is ever given reaches this line against it, and
+      # answering "I cannot tell" there would turn the whole flag into exit 3.
+      # Two names are definitely different when both are ASCII and they differ
+      # by more than case, because ASCII case is the only folding a filesystem
+      # applies to an ASCII name.
+      #
+      # **Anything left is undecidable, and it says so.** Two ASCII names that
+      # differ only in case are one directory on this volume and two on a
+      # case-sensitive one; two names either of which carries a byte at or above
+      # 0x80 may be an NFC and an NFD spelling of one name, and normalising
+      # Unicode needs tables this file has no business carrying. The temptation
+      # is to guess, and the guess was written twice before this comment was. It
+      # cannot be right: "this name may be the root's name" is a *refusal* for a
+      # fence that protects the root and a *pass* for a fence that keeps writes
+      # inside it, and this one walk serves one of each — the drafter refuses a
+      # destination inside a protected directory, while tests/test_install.sh
+      # runs a documented block only if it stays inside a scratch root. No guess
+      # is fail-closed for both. `exit 3` is, because no answer is a refusal in
+      # both.
+      #
+      # `LC_ALL=C` is what makes the byte range below a range of bytes, and it
+      # is also what keeps `nocasematch` to ASCII case, which is the only case
+      # this comparison claims to know about.
+      if [ "$dest_tail" = "$root_tail" ]; then
+        [ "$mode" = or-equal ] || exit 1
+        exit 0
+      fi
+      # The destination's tail down to the root's own depth, taken a component
+      # at a time so that the comparison below is the same comparison the
+      # kernel would make component by component.
+      dest_head=""
+      dest_rest="$dest_tail"
+      root_rest="$root_tail"
+      while [ -n "$root_rest" ]; do
+        [ -n "$dest_rest" ] || exit 1
+        root_rest="${root_rest#/}"
+        case "$root_rest" in
+          */*) root_rest="/${root_rest#*/}" ;;
+          *)   root_rest="" ;;
+        esac
+        dest_rest="${dest_rest#/}"
+        case "$dest_rest" in
+          */*) dest_head="$dest_head/${dest_rest%%/*}"; dest_rest="/${dest_rest#*/}" ;;
+          *)   dest_head="$dest_head/$dest_rest"; dest_rest="" ;;
+        esac
+      done
+      if [ "$dest_head" = "$root_tail" ]; then
+        exit 0
+      fi
+      (
+        LC_ALL=C
+        case "$dest_head$root_tail" in
+          *[$'\200'-$'\377']*) exit 3 ;;
+        esac
+        shopt -s nocasematch
+        if [[ "$dest_head" == "$root_tail" ]]; then
+          exit 3
+        fi
+        exit 1
+      )
+      exit $?
+    fi
+
+    # The root exists, so the question is pure identity: climb from the
+    # destination's own directory towards the filesystem root, and the
+    # destination is inside iff the root is one of the directories passed on
+    # the way. A root that resolves to `/` therefore contains everything, which
+    # is the true answer for it and not the fail-open half of the two opposite
+    # answers the two copies of this used to give.
+    climb=0
+    while :; do
+      if [ . -ef "$root_dir" ]; then
+        if [ "$climb" -eq 0 ] && [ -z "$dest_tail" ] && [ "$mode" != or-equal ]; then
+          exit 1
+        fi
+        exit 0
+      fi
+      [ . -ef / ] && exit 1
+      cd -P -- .. 2>/dev/null || exit 1
+      climb=$((climb + 1))
+      [ "$climb" -le "$__path_max_climb" ] || exit 3
+    done
+  )
+}
+# --- END THE PATH CONTAINMENT BARRIER ----------------------------------------
+
+# The block above exists twice, and this is the assertion that it is the same
+# text in both places.
+#
+# It is here rather than in prose because prose is what failed. The previous
+# round wrote "all three are now the same walk" in three files, and three of the
+# findings this round repairs are places where two of them had already diverged:
+# one appended an existing leaf as named while the other followed it, one
+# returned the working directory for an empty path while the other refused, and
+# for a root that resolved to `/` one accepted everything and the other refused
+# everything. Every one of those is invisible in a healthy tree, because a fence
+# that never fires changes nothing observable when it stops working.
+#
+# Unifying the two into one file is a real refactor and it crosses a boundary:
+# the drafter can only source skills/skill-audit/scripts/verdict-guard.sh, which
+# is a shipped skill surface, and this suite can only source tests/lib/, which
+# the shipped drafter cannot reach. That decision is recorded for 0.6.0 rather
+# than taken here. What is taken here is the cheap half of its benefit: the two
+# copies are one text, and a diff says so on every run, so a copy that degrades
+# is a failure instead of a discovery.
+#
+# The Go copy is held to the same invariant by the same generated case set
+# rather than by this diff, because it is not the same language.
+barrier_block() {
+  awk '
+    /^# --- BEGIN THE PATH CONTAINMENT BARRIER/ { inside = 1 }
+    inside                                     { print }
+    /^# --- END THE PATH CONTAINMENT BARRIER/   { if (inside) exit }
+  ' "$1"
+}
+
+the_two_shell_copies_of_the_barrier_are_one_text() {
+  local mine="$install_scratch/barrier-suite"
+  local theirs="$install_scratch/barrier-drafter"
+  mkdir -p "$install_scratch"
+  barrier_block "$suite_source" > "$mine"
+  barrier_block "$harness_repo_root/skills/skill-rewrite/scripts/draft-rewrite.sh" > "$theirs"
+  # A failed extraction would make two empty files compare equal, which is the
+  # shape of an assertion that passes by not running.
+  if [ ! -s "$mine" ] || [ ! -s "$theirs" ]; then
+    printf 'the barrier block could not be extracted from one of the two copies, so nothing was compared\n' >&2
+    return 1
+  fi
+  if [ "$(wc -l < "$mine" | tr -d ' ')" -lt 100 ]; then
+    printf 'the barrier block extracted from this suite is only %s lines, so the markers are not where they are thought to be\n' \
+      "$(wc -l < "$mine" | tr -d ' ')" >&2
+    return 1
+  fi
+  diff -u "$theirs" "$mine" >&2 || return 1
+  return 0
+}
+
+# <path> <root> — a write on <path> creates-or-truncates something strictly
+# inside <root>. Equal to the root is not inside it, which is what `strictly`
+# asks for.
+#
+# A status other than 0 or 1 is "no answer", and no answer is not a pass: every
+# caller of this reads it as "not shown to be inside", which for a fence is the
+# refusing direction.
 path_resolves_inside() {
-  local resolved root
-  resolved="$(path_resolved "$1")" || return 1
-  root="$(path_resolved "$2")" || return 1
-  case "$resolved" in
-    "$root"/?*) return 0 ;;
-  esac
+  if path_target_is_inside "$1" "$2" strictly; then
+    return 0
+  fi
   return 1
 }
 
@@ -495,9 +799,18 @@ expanded_destination() {
   ' </dev/null
 }
 
-# <run dir> <destination text> — the absolute, resolved path the block would
-# write to, or nothing if it cannot be established, which is itself a refusal.
-resolved_destination() {
+# <run dir> <destination text> — the absolute path the block would write to, as
+# the block itself would spell it, or nothing if it cannot be established, which
+# is itself a refusal.
+#
+# It does not resolve. It used to, and handing a *resolved name* on to the
+# verdict was half of the escape this file now generates cases for: a name is
+# not an identity, and a resolved name carried out of a function through `$( )`
+# has lost its trailing newlines on the way. What the verdict needs is the
+# spelling the block will actually run, so that is what this returns and
+# path_target_is_inside does the resolving itself, by moving rather than by
+# naming.
+expanded_destination_path() {
   local dir text expanded nl
   dir="$1"
   text="$2"
@@ -514,16 +827,16 @@ resolved_destination() {
     /*) ;;
     *) expanded="$dir/cwd/$expanded" ;;
   esac
-  path_resolved "$expanded"
+  printf '%s\n' "$expanded"
 }
 
 # <run dir> <destination text> — the verdict that matters.
 destination_resolves_inside_the_scratch_root() {
-  local resolved
-  resolved="$(resolved_destination "$1" "$2")" || return 1
-  if ! path_resolves_inside "$resolved" "$harness_scratch"; then
-    printf 'the destination resolves outside the harness scratch root:\n  %s\n  resolves to %s\n  which is not inside %s\n' \
-      "$2" "$resolved" "$harness_scratch" >&2
+  local spelling
+  spelling="$(expanded_destination_path "$1" "$2")" || return 1
+  if ! path_resolves_inside "$spelling" "$harness_scratch"; then
+    printf 'a write on the destination lands outside the harness scratch root:\n  %s\n  expands to %s\n  which is not inside %s\n' \
+      "$2" "$spelling" "$harness_scratch" >&2
     return 1
   fi
   return 0
@@ -1014,6 +1327,33 @@ bound_tree() {
   # else.
   ln -s "$b/away" "$b/$r/nl-out"$'\n'
   ln -s "$b/$r/inner" "$b/away/nl-in"$'\n'
+  # Leaf links to *files*, in both directions and in both states such a link
+  # can be in. `mkdir -p` fails on one of these, which is precisely why the
+  # previous round's oracle could not express the case and recorded it as "no
+  # verdict to compare against" rather than measuring it; the redirect sweep
+  # below can, because a redirect is what it performs.
+  : > "$b/$r/inner/leaf-target"
+  ln -s "$b/$r/inner/leaf-target" "$b/away/leaffile"
+  ln -s "$b/$r/inner/never-created" "$b/away/dangling"
+  : > "$b/away/out-target"
+  ln -s "$b/away/out-target" "$b/$r/outfile"
+  # A link whose *target* ends with a newline, which is a different defect from
+  # a link whose *name* does and the one `$(readlink …)` causes.
+  #
+  # `twin-file` is an ordinary file outside the root; `twin-file` followed by a
+  # newline is a link to a file *inside* it. A link whose target is the second
+  # of those, read back through a plain command substitution, comes back naming
+  # the first — so the walk would decide about a file outside the root while the
+  # kernel writes to one inside it. Nothing but a byte-exact read of the target
+  # tells them apart, and the leaf has to be a non-directory for the read to
+  # happen at all: a chain that ends at a directory is resolved by `cd -P` in one
+  # step and never read. The `-dir` twin below is that control.
+  : > "$b/twin-file"
+  ln -s "$b/$r/inner/leaf-target" "$b/twin-file"$'\n'
+  ln -s "$b/twin-file"$'\n' "$b/away/via-nl-target"
+  mkdir -p "$b/twin"
+  ln -s "$b/$r/inner" "$b/twin"$'\n'
+  ln -s "$b/twin"$'\n' "$b/away/via-nl-target-dir"
 }
 
 # <root> <destination> — inside, outside or nowrite: where the two commands the
@@ -1052,10 +1392,11 @@ bound_landed() {
 bound_agrees() {
   local root_component="$1"
   local exists="$2"
-  local template="$3"
+  local may_refuse="$3"
+  local template="$4"
   local oracle_base="$install_scratch/bound-oracle"
   local verdict_base="$install_scratch/bound-verdict"
-  local oracle_dest verdict_dest landed verdict
+  local oracle_dest verdict_dest landed verdict status
   bound_tree "$oracle_base" "$root_component" "$exists"
   bound_tree "$verdict_base" "$root_component" "$exists"
   oracle_dest="${template//@B/$oracle_base}"
@@ -1063,18 +1404,52 @@ bound_agrees() {
 
   bound_cases=$((bound_cases + 1))
   landed="$(bound_landed "$oracle_base/$root_component" "$oracle_dest")"
+
+  # Three verdicts, not two, because the barrier has three answers and
+  # collapsing "no answer" into "outside" here is exactly the collapse that
+  # would hide a barrier answering "I cannot tell" to everything.
+  status=0
+  path_target_is_inside "$verdict_dest" "$verdict_base/$root_component" strictly \
+    || status=$?
+  case "$status" in
+    0) verdict=inside ;;
+    1) verdict=outside ;;
+    *) verdict=noanswer ;;
+  esac
+
   if [ "$landed" = nowrite ]; then
+    # No object was created or truncated, so there is no landing place for a
+    # verdict to agree with. The barrier is still asked, because a path the
+    # kernel refuses to write on is a path a caller can still name and it has
+    # to come back with one of its three answers rather than hanging or
+    # crashing. Which one it gives is on the record and not asserted.
     bound_unperformable=$((bound_unperformable + 1))
     return 0
   fi
 
-  if path_resolves_inside "$verdict_dest" "$verdict_base/$root_component"; then
-    verdict=inside
-  else
-    verdict=outside
+  if [ "$verdict" = noanswer ]; then
+    bound_noanswer=$((bound_noanswer + 1))
+    # No answer is a refusal in both consumers of this walk, so it is never
+    # unsafe — but it costs a legitimate destination, so *where* it is allowed
+    # is asserted and not tolerated. There is exactly one place: a root that
+    # does not exist yet has no identity, so its name is all there is to compare,
+    # and this barrier folds ASCII the way the volume does but will not carry
+    # Unicode normalisation tables to fold the rest. It says so instead of
+    # guessing.
+    if [ "$may_refuse" = yes ]; then
+      return 0
+    fi
+    printf 'the destination %q under the root %q (exists=%s): the barrier reached no answer, and this arrangement is one it is meant to be able to answer\n' \
+      "$template" "$root_component" "$exists" >&2
+    return 1
   fi
 
   if [ "$landed" = "$verdict" ]; then
+    if [ "$landed" = inside ]; then
+      bound_agreed_inside=$((bound_agreed_inside + 1))
+    else
+      bound_agreed_outside=$((bound_agreed_outside + 1))
+    fi
     return 0
   fi
   # %q, because two of the axes differ from each other only in bytes a terminal
@@ -1122,7 +1497,160 @@ bound_operators=(
   '@B/away/nl-in'$'\n'
   '@B/@R/nl-out'$'\n''/d-under-nl-out'
   '@B/away/nl-in'$'\n''/d-under-nl-in'
+  '@B/@R/inner/leaf-target/d-through-a-file'
+  '@B/away/out-target/d-through-a-file'
+  '@B/away/via-nl-target-dir'
+  '@B/away/via-nl-target-dir/d-under-nl-target'
 )
+
+# --- The same walk, asked the other way a caller writes ----------------------
+#
+# Everything above performs `mkdir -p` and then writes inside the directory it
+# made, because that is what the documented block does. The *other* consumer of
+# this walk — skills/skill-rewrite/scripts/draft-rewrite.sh, whose copy of it
+# this suite asserts is the same text — performs a plain redirect onto a file,
+# and a redirect follows a symbolic link at the leaf.
+#
+# That difference is not cosmetic. It is why the leaf-link case went unmeasured
+# for a release: `mkdir -p` fails on a link to a file and on a dangling link, so
+# the previous round's oracle discarded exactly those cases with "the oracle
+# could not create … so this case has no verdict to compare against" rather than
+# measuring them. A redirect performs them. So the same generated operators are
+# driven a second time with a redirect as the oracle and `or-equal` as the mode
+# — which is also the only place `or-equal` is exercised at all, the fence above
+# asking only for strict containment.
+#
+# The drafter cannot be the surface for this either, because it refuses every
+# leaf symlink outright, by a rule of its own, before containment is ever asked.
+# The place where the walk's leaf rule is observable is here, over the copy of
+# the walk that is asserted byte for byte identical to the drafter's.
+bound_file_landed() {
+  local root="$1" dest="$2" marker
+  marker="where-did-this-land-$$-${RANDOM}"
+  if ! printf '%s\n' "$marker" > "$dest" 2>/dev/null; then
+    printf 'nowrite\n'
+    return 0
+  fi
+  if [ -e "$root" ] && [ "$dest" -ef "$root" ]; then
+    printf 'inside\n'
+    return 0
+  fi
+  if [ -d "$root" ] &&
+    [ -n "$(find "$root" -type f -exec grep -lF -- "$marker" {} + 2>/dev/null || true)" ]; then
+    printf 'inside\n'
+  else
+    printf 'outside\n'
+  fi
+}
+
+bound_file_agrees() {
+  local root_component="$1"
+  local exists="$2"
+  local may_refuse="$3"
+  local template="$4"
+  local oracle_base="$install_scratch/bound-file-oracle"
+  local verdict_base="$install_scratch/bound-file-verdict"
+  local oracle_dest verdict_dest landed verdict status
+  bound_tree "$oracle_base" "$root_component" "$exists"
+  bound_tree "$verdict_base" "$root_component" "$exists"
+  oracle_dest="${template//@B/$oracle_base}"
+  verdict_dest="${template//@B/$verdict_base}"
+
+  bound_file_cases=$((bound_file_cases + 1))
+  landed="$(bound_file_landed "$oracle_base/$root_component" "$oracle_dest")"
+
+  status=0
+  path_target_is_inside "$verdict_dest" "$verdict_base/$root_component" or-equal \
+    || status=$?
+  case "$status" in
+    0) verdict=inside ;;
+    1) verdict=outside ;;
+    *) verdict=noanswer ;;
+  esac
+
+  if [ "$landed" = nowrite ]; then
+    # As above: asked, recorded, not asserted.
+    bound_file_unperformable=$((bound_file_unperformable + 1))
+    return 0
+  fi
+
+  if [ "$verdict" = noanswer ]; then
+    bound_file_noanswer=$((bound_file_noanswer + 1))
+    if [ "$may_refuse" = yes ]; then
+      return 0
+    fi
+    printf 'the redirect destination %q under the root %q (exists=%s): the barrier reached no answer, and this arrangement is one it is meant to be able to answer\n' \
+      "$template" "$root_component" "$exists" >&2
+    return 1
+  fi
+
+  if [ "$landed" = "$verdict" ]; then
+    if [ "$landed" = inside ]; then
+      bound_file_agreed_inside=$((bound_file_agreed_inside + 1))
+    else
+      bound_file_agreed_outside=$((bound_file_agreed_outside + 1))
+    fi
+    return 0
+  fi
+  printf 'the redirect destination %q under the root %q (exists=%s): a redirect on that spelling lands %s the root, and the verdict says %s\n' \
+    "$template" "$root_component" "$exists" "$landed" "$verdict" >&2
+  return 1
+}
+
+# The operators a redirect adds to the shared list: a leaf that is a link to a
+# file inside the root, a leaf that is a dangling link into the root, the mirror
+# of the first pointing out, and the two plain files at either end as controls.
+# None of the three links can be expressed by a `mkdir -p` oracle, and all three
+# are writes the kernel performs.
+bound_file_operators=(
+  '@B/away/via-nl-target'
+  '@B/away/leaffile'
+  '@B/away/dangling'
+  '@B/@R/outfile'
+  '@B/@R/inner/leaf-target'
+  '@B/away/out-target'
+)
+
+bound_file_cases=0
+bound_file_unperformable=0
+bound_file_noanswer=0
+bound_file_agreed_inside=0
+bound_file_agreed_outside=0
+
+the_verdict_is_where_a_redirect_on_the_destination_lands() {
+  local axis rest root_component exists may_refuse spelling case_template failed=0
+  for axis in "${bound_roots[@]}"; do
+    root_component="${axis%%|*}"
+    rest="${axis#*|}"
+    exists="${rest%%|*}"
+    rest="${rest#*|}"
+    may_refuse="${rest%%|*}"
+    spelling="${rest#*|}"
+    for case_template in "${bound_operators[@]}" "${bound_file_operators[@]}"; do
+      bound_file_agrees "$root_component" "$exists" "$may_refuse" "${case_template//@R/$spelling}" \
+        || failed=$((failed + 1))
+    done
+  done
+  printf 'the redirect bound drove %s spellings, %s of which the kernel would not perform a redirect on at all, %s the barrier reached no answer for, %s agreeing inside, %s agreeing outside, %s disagreeing\n' \
+    "$bound_file_cases" "$bound_file_unperformable" "$bound_file_noanswer" \
+    "$bound_file_agreed_inside" "$bound_file_agreed_outside" "$failed" >&2
+  if [ "$bound_file_cases" -lt 100 ]; then
+    printf 'the redirect bound produced only %s cases, so it is not the case set this claims to be\n' \
+      "$bound_file_cases" >&2
+    return 1
+  fi
+  # Both directions, for the reason the sweep above gives. A redirect cannot
+  # make its own parent directories, so many of these cases are unperformable
+  # and that count is platform-dependent; what is not platform-dependent is
+  # that a leaf link into the root has to have been followed and agreed with,
+  # and a leaf link out of it has to have been followed and agreed with too.
+  if [ "$bound_file_agreed_inside" -eq 0 ] || [ "$bound_file_agreed_outside" -eq 0 ]; then
+    printf 'the redirect bound agreed on %s cases that landed inside and %s that landed outside; it has to be both\n' \
+      "$bound_file_agreed_inside" "$bound_file_agreed_outside" >&2
+    return 1
+  fi
+  [ "$failed" -eq 0 ]
+}
 
 # The root axis. Each entry is the component the root really is, whether it
 # exists, and the way the destination spells that same component.
@@ -1136,36 +1664,58 @@ bound_operators=(
 # The non-ASCII rows are the ones that need the root itself to carry the
 # component: an NFD spelling *below* an ASCII root still shares a prefix with
 # it, so the escape only shows when the differing component is the root's own.
+# The third field is whether this arrangement is one the barrier is permitted to
+# have no answer for, and it is exactly the arrangements in which the root does
+# not exist yet. Such a root has no identity, so its name is the whole
+# comparison, and the barrier compares a not-yet-existing name byte for byte or
+# not at all — see the block above for why guessing at the volume's own folding
+# is not available to a walk that serves two fences of opposite polarity. Neither
+# consumer ever passes such a root: `$harness_scratch` is a `mktemp -d` and the
+# drafter's six roots are `$HOME`-relative directories. The axis is generated
+# anyway, because a generator narrowed to what the callers do today is how the
+# next gap gets in.
+#
+# Every arrangement in which the root *exists* must produce an answer, with no
+# tolerance at all, and that is where every escape this round repairs lived. A
+# refusal is only ever tolerated and never required, so a wrong definite answer
+# still fails on these axes: a barrier that called a write landing inside the
+# root "outside" is caught here as everywhere.
 bound_roots=(
-  "root|yes|root"
-  "root|yes|ROOT"
-  "root|yes|Root"
-  "$bound_nfc|yes|$bound_nfc"
-  "$bound_nfc|yes|$bound_nfd"
-  "$bound_nfc|yes|CAF${bound_nfc#caf}"
-  "notyet|no|notyet"
-  "notyet|no|NOTYET"
-  "$bound_nfc|no|$bound_nfc"
-  "$bound_nfc|no|$bound_nfd"
+  "root|yes|no|root"
+  "root|yes|no|ROOT"
+  "root|yes|no|Root"
+  "$bound_nfc|yes|no|$bound_nfc"
+  "$bound_nfc|yes|no|$bound_nfd"
+  "$bound_nfc|yes|no|CAF${bound_nfc#caf}"
+  "notyet|no|yes|notyet"
+  "notyet|no|yes|NOTYET"
+  "$bound_nfc|no|yes|$bound_nfc"
+  "$bound_nfc|no|yes|$bound_nfd"
 )
 
 bound_cases=0
 bound_unperformable=0
+bound_noanswer=0
+bound_agreed_inside=0
+bound_agreed_outside=0
 
 the_resolved_verdict_is_where_the_write_lands() {
-  local axis root_component exists spelling case_template failed=0
+  local axis rest root_component exists may_refuse spelling case_template failed=0
   for axis in "${bound_roots[@]}"; do
     root_component="${axis%%|*}"
-    exists="${axis#*|}"
-    exists="${exists%%|*}"
-    spelling="${axis##*|}"
+    rest="${axis#*|}"
+    exists="${rest%%|*}"
+    rest="${rest#*|}"
+    may_refuse="${rest%%|*}"
+    spelling="${rest#*|}"
     for case_template in "${bound_operators[@]}"; do
-      bound_agrees "$root_component" "$exists" "${case_template//@R/$spelling}" \
+      bound_agrees "$root_component" "$exists" "$may_refuse" "${case_template//@R/$spelling}" \
         || failed=$((failed + 1))
     done
   done
-  printf 'the generated bound drove %s spellings, %s of which the kernel would not perform a write on at all, %s disagreeing\n' \
-    "$bound_cases" "$bound_unperformable" "$failed" >&2
+  printf 'the generated bound drove %s spellings, %s of which the kernel would not perform a write on at all, %s the barrier reached no answer for, %s agreeing inside, %s agreeing outside, %s disagreeing\n' \
+    "$bound_cases" "$bound_unperformable" "$bound_noanswer" \
+    "$bound_agreed_inside" "$bound_agreed_outside" "$failed" >&2
   # A generated set that had quietly become unperformable would look exactly
   # like one that passed — every case returning 0 having asserted nothing — so
   # the proportion is part of the verdict. A proportion and not an exact count,
@@ -1176,9 +1726,17 @@ the_resolved_verdict_is_where_the_write_lands() {
       "$bound_cases" >&2
     return 1
   fi
-  if [ "$((bound_unperformable * 3))" -ge "$bound_cases" ]; then
-    printf 'the generated bound could perform a write for only %s of %s cases, so most of it asserted nothing\n' \
-      "$((bound_cases - bound_unperformable))" "$bound_cases" >&2
+  # Both directions have to have actually happened. This is the bound on the
+  # generator rather than a proportion of unperformable cases, because a
+  # proportion is a number that is different on a case-sensitive filesystem —
+  # where a folded spelling names a directory that is not there — and a bound
+  # that has to be retuned per platform is a bound nobody trusts. What matters
+  # is that the sweep really did see a write land inside and agree, and really
+  # did see one land outside and agree; a generator that had stopped performing
+  # writes, or that had collapsed to one direction, has one of these at zero.
+  if [ "$bound_agreed_inside" -eq 0 ] || [ "$bound_agreed_outside" -eq 0 ]; then
+    printf 'the generated bound agreed on %s cases that landed inside and %s that landed outside; it has to be both\n' \
+      "$bound_agreed_inside" "$bound_agreed_outside" >&2
     return 1
   fi
   [ "$failed" -eq 0 ]
@@ -2215,6 +2773,10 @@ require "the resolved verdict alone refuses a climb out through a symlink" \
   resolution_refuses_a_climb_out_through_a_symlink
 require "the resolved verdict is where a write on the destination lands, for every spelling" \
   the_resolved_verdict_is_where_the_write_lands
+require "the verdict is where a redirect on the destination lands, for every spelling" \
+  the_verdict_is_where_a_redirect_on_the_destination_lands
+require "the two shell copies of the containment barrier are one text" \
+  the_two_shell_copies_of_the_barrier_are_one_text
 
 require "the destination expansion substitutes this run's home and nothing else" \
   quietly the_expansion_substitutes_home_and_nothing_else

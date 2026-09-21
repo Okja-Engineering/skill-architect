@@ -583,7 +583,7 @@ assert "the prefix-sibling destination was written" test -f "$prefix_out"
 # by exit 3 — *"the destination could not be resolved, so where the draft would
 # be written is unknown"* — which is a different answer from the one being
 # asserted: it says no verdict was reached, not that the caller named a
-# destination the drafter will not write. `path_resolved` was emitting it for
+# destination the drafter will not write. The resolution step was emitting it for
 # any destination that merely already existed as a regular file, and two of the
 # refusals here were passing on it while the rules they name never ran. The
 # status registry the header publishes makes 1 a usage error, so a refusal of
@@ -753,7 +753,7 @@ fi
 # that wrote it and none on anybody else's — and would be reading a live
 # configuration directory to do it.
 assert "the protected directories are anchored on \$HOME, not on a literal home path" \
-  test -n "$(grep -F 'path_resolved "$HOME/$root"' "$DRAFTER" || true)"
+  test -n "$(grep -F 'path_target_is_inside "$spelled" "$HOME/$root" or-equal' "$DRAFTER" || true)"
 
 # Every refusal above is a usage error — the caller named a destination the
 # drafter will not write — so it takes the status this script's header registers
@@ -851,6 +851,15 @@ containment_tree() {
   # A directory link in front of the leaf links, to reach the same two through
   # one more hop.
   ln -s "$h/plain" "$h/plainlink"
+  # A link whose *target* ends with a newline, which is a different defect from
+  # a link whose *name* does. `twin` is a plain file outside the protected
+  # directory; `twin` followed by a newline is a link to a file inside it. A
+  # link whose target is the second of those, read back through a command
+  # substitution, comes back naming the first — so the decision would be taken
+  # about a file outside while the redirect truncates one inside.
+  : > "$h/plain/twin"
+  ln -s "$h/$r/skills/leaf.md" "$h/plain/twin"$'\n'
+  ln -s "$h/plain/twin"$'\n' "$h/plain/via-nl-target"
 }
 
 # <home> <root> <destination> — inside, outside, or nowrite: where a plain
@@ -906,14 +915,21 @@ containment_agrees() {
   if [ "$code" -eq 0 ]; then verdict=accepted; else verdict=refused; fi
 
   if [ "$landed" = inside ]; then
-    [ "$verdict" = refused ] && return 0
+    if [ "$verdict" = refused ]; then
+      bound_refused_inside=$((bound_refused_inside + 1))
+      return 0
+    fi
     printf 'the destination %s: a write on that spelling lands inside the protected directory, and the drafter accepted it (exit %s)\n%s\n' \
       "$template" "$code" "$errout" >&2
     return 1
   fi
-  [ "$verdict" = accepted ] && return 0
+  if [ "$verdict" = accepted ]; then
+    bound_accepted_outside=$((bound_accepted_outside + 1))
+    return 0
+  fi
   case "$errout" in
     *'is a symbolic link'* | *'is a directory, and the draft is a file'* | *'which is a SKILL.md'*)
+      bound_refused_by_rule=$((bound_refused_by_rule + 1))
       return 0
       ;;
   esac
@@ -959,6 +975,9 @@ bound_operators=(
   '@N/@R/skills/nfd-home.md'
   '@N/plain/nfd-home-outside.md'
   '@N/aside/nfd-home-mid-link.md'
+  '@H/@R/skills/leaf.md/through-a-file.md'
+  '@H/elsewhere/leaf.md/through-a-file.md'
+  '@H/plain/via-nl-target'
 )
 
 # The mutations that are about the *bytes* of the spelling rather than its
@@ -982,6 +1001,9 @@ bound_byte_operators=(
 
 bound_cases=0
 bound_unperformable=0
+bound_refused_inside=0
+bound_accepted_outside=0
+bound_refused_by_rule=0
 bound_home_nfc=$'caf\xc3\xa9/h'
 bound_home_nfd=$'cafe\xcc\x81/h'
 bound_target="$(target_from tests/fixtures/f01/valid-full bound-target)"
@@ -1003,25 +1025,29 @@ done
 
 # A generated case set that had quietly become unperformable would look exactly
 # like one that passed — every case would return 0 having asserted nothing — so
-# the proportion the kernel refused to write on at all is itself asserted. It is
-# a proportion and not an exact count on purpose: an exact count is a number a
-# new operator invalidates, which is the same brittleness as the table this
-# generator replaces.
+# the sweep reports what it actually did and both directions are asserted to
+# have happened.
 #
-# Three shapes per root are expected to be among them. `@H/@R` itself is EISDIR.
-# The two `@H/@R/nope/../…` spellings are ENOENT, because this script never
-# creates a parent directory — which makes those two cases vacuous *at this
-# surface* and is why the same two operators are also driven through
-# tests/test_install.sh, whose consumer's first command is `mkdir -p`.
-assert "the generated bound performed a real write for the large majority of its cases" \
-  test "$((bound_unperformable * 5))" -lt "$bound_cases"
+# Both directions and not a proportion of unperformable cases, deliberately: the
+# proportion is different on a case-sensitive filesystem, where a folded
+# spelling of a protected root names a directory that is not there and this
+# script, which never creates a parent, cannot write to it. A bound that has to
+# be retuned per platform is a bound nobody trusts. What has to be true
+# everywhere is that the sweep really saw a write land inside a protected
+# directory and really saw the drafter refuse it, and really saw one land outside
+# and really saw the drafter accept it.
+echo "  the generated bound drove $bound_cases spellings: $bound_unperformable unwritable, $bound_refused_inside refused for landing inside, $bound_accepted_outside accepted for landing outside, $bound_refused_by_rule refused by a published destination rule"
 assert "the generated bound generated a case set at all" \
   test "$bound_cases" -gt 100
+assert "the generated bound saw a write land inside a protected directory and the drafter refuse it" \
+  test "$bound_refused_inside" -gt 0
+assert "the generated bound saw a write land outside every protected directory and the drafter accept it" \
+  test "$bound_accepted_outside" -gt 0
 
 # `-o` re-run over its own output. The flag exists so a draft can be kept
 # somewhere of the caller's choosing, and a caller who audits the same skill
 # twice writes to the same file twice — which the default destination does
-# happily, overwriting the previous `REWRITE-DRAFT.md`. While `path_resolved`
+# happily, overwriting the previous `REWRITE-DRAFT.md`. While resolution
 # ended in `cd -P`, every destination that already existed as a regular file
 # came back unresolvable, so the second run exited 3 saying it could not tell
 # where the draft would go: an undocumented fifth refusal, and the one
