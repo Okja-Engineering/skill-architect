@@ -25,13 +25,13 @@ Skill Architect catches these problems with deterministic checks first, then rep
 
 ## The profiler (preview)
 
-v0.4.0 adds a harness-agnostic profiler that captures runtime signals (tokens, tool calls, timing) from agent sessions and writes them to a profile JSON labelled with the snapshot id you pass in. It degrades gracefully — unavailable metrics are `unknown` with a reason, never invented.
+v0.4.0 adds a harness-agnostic profiler that captures runtime signals from agent sessions and writes them to a profile JSON labelled with the snapshot id you pass in. The Claude Code adapter reads four of them — tokens, tool calls, timing, and, since v0.5.0, skill activation. It degrades gracefully — unavailable metrics are `unknown` with a reason, never invented.
 
 The profiler uses an adapter-per-harness architecture:
 
 | Adapter | Status | Telemetry surface |
 |---|---|---|
-| Claude Code | ✅ Slice 1 | OTel export (tokens, tool calls, timing) |
+| Claude Code | ✅ Slice 1 | OTel export (tokens, tool calls, timing, skill activation) |
 | Cursor | Planned | Lifecycle hooks. The [spool that captures them](#capturing-cursor-hooks-to-a-spool) ships now and [`analyze`](#reading-a-spool-back) summarises it; the adapter that turns one into a profile does not |
 | Codex | Planned | OTel logs + hooks |
 | Devin | Planned | ATIF export + server API |
@@ -95,8 +95,9 @@ probe: failed to read OTel export file: open ./typo.json: no such file or direct
 
 stdout is unchanged — the report is the same JSON a caller already parses — and the exit
 status is still 0. `probe` has no documented exit contract to extend, so giving it one is
-new surface rather than a repair and is **deferred to 0.5.0**; until then a script that has
-to branch on a bad export should use `capture`, which does have one. A `probe` that read a
+new surface rather than a repair; **v0.5.0 did not add one**, and no release has committed
+to adding one. Until one does, a script that has to branch on a bad export should use
+`capture`, which does have an exit contract. A `probe` that read a
 file and found nothing in it stays silent, because that is an answer about the session
 rather than a fault of the run. A partial export carrying tool calls and
 timing but no token metric yields those two `present` and `tokens` `unknown` with a
@@ -181,8 +182,9 @@ refused rather than resolved one way — the other series in the file still coun
 series survives, `tokens` is `unknown` and the reason names the refusal; when a healthy
 series survives beside it, `tokens` is `present` with a total the refused series is missing
 from, and **schema v1 has no field that can say so** — a `present` result carries no
-reason. Surfacing that, with the count of skipped data points it belongs beside, is
-tracked for 0.5.0. Delta temporality — Claude Code's default — is unaffected throughout:
+reason. Surfacing that, with the count of skipped data points it belongs beside, needs a
+caveat channel schema v1 has not got; **v0.5.0 did not add one** and the schema is still
+v1. Delta temporality — Claude Code's default — is unaffected throughout:
 increments add up whatever series they are on.
 
 `capture` exits **2** when nothing was read and at least one signal came back `error` — a
@@ -318,7 +320,8 @@ user-authored workflow names, plus the custom, plugin and MCP command names on
 purposes; for capturing a profile it only puts more of your session in a file you may
 end up pasting somewhere.
 
-A bundled receiver subcommand is 0.5.0; `--otel-file` is the only input today.
+There is no bundled receiver subcommand — **v0.5.0 did not add one** — so `--otel-file` is
+still the only input.
 
 `capture` also declares `--export-file`, for adapters that read a non-OTel session export
 such as Devin's ATIF. No shipped adapter reads it, so passing it fails rather than
@@ -471,10 +474,13 @@ echo "$CURSOR_HOOK_PAYLOAD" | ./profiler ingest --strict
 ./profiler hooks uninstall
 ```
 
-**This is capture only, and this release reads nothing back out of it.** There
-is no Cursor adapter: `profiler capture --harness cursor` does not exist, and no
-profile is produced from a spool. What the spool does is put on disk what it was
-handed, so a reader written later works from files that already exist.
+**This is capture only, and no profile is produced from a spool.** There is no
+Cursor adapter: `profiler capture --harness cursor` does not exist. What can be
+read back out is what the files contain, not a measurement of the session —
+[`analyze`](#reading-a-spool-back) counts the lines, the envelope fields and the
+payload keys, and says in its own output that it yields no measurement. What the
+spool does is put on disk what it was handed, so a reader written later works
+from files that already exist.
 
 **None of it has been checked against a running Cursor.** No Cursor install was
 reachable here, so that `~/.cursor/hooks.json` is the file Cursor reads, that
@@ -704,11 +710,12 @@ claude plugin marketplace add Okja-Engineering/skill-architect
 claude plugin install skill-architect@skill-architect
 ```
 
-`claude plugin list` then shows `skill-architect@skill-architect` at version 0.4.3.
+`claude plugin list` then shows `skill-architect@skill-architect` at version 0.5.0.
 
-Every row below carries the status of the route as **executed in this release**, not as
-described by a vendor's documentation. Routes marked verified were run against a clean
-install on this release's tree. Where a route says "not verified" the row says why — nobody
+Every row below carries the status of the route as **executed in 0.4.3**, the release that
+ran them, not as described by a vendor's documentation. 0.5.0 did not re-run them; it changed
+no install or update route. Routes marked verified were run against a clean install on that
+release's tree. Where a route says "not verified" the row says why — nobody
 here could run it, or running it would have changed something that is not ours to change —
 and it is a pointer to the vendor's own docs rather than a claim of ours; if it turns out
 wrong, the manual copy under "Manual standalone copy" works everywhere.
@@ -829,8 +836,8 @@ claim:
   root, from `~/.agents/skills/`, and from `/etc/codex/skills/`, per its
   [skills docs](https://learn.chatgpt.com/docs/build-skills). Both are real; they are
   different locations, not competing accounts of one. Read off those two vendor artifacts,
-  not from a placement run here: for Codex the route this release actually executed is the
-  plugin one above.
+  not from a placement run here: for Codex the route that was actually executed, in 0.4.3,
+  is the plugin one above.
 - **Cursor** — `.cursor/skills/` or `.agents/skills/` in a repository, `~/.cursor/skills/`
   or `~/.agents/skills/` globally, per Cursor's [skills docs](https://cursor.com/docs/skills)
   — which is a different page from the plugins docs cited above. **Not verified here**: no
