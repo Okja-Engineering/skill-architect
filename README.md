@@ -32,7 +32,7 @@ The profiler uses an adapter-per-harness architecture:
 | Adapter | Status | Telemetry surface |
 |---|---|---|
 | Claude Code | ✅ Slice 1 | OTel export (tokens, tool calls, timing) |
-| Cursor | Planned | Lifecycle hooks. The [spool that captures them](#capturing-cursor-hooks-to-a-spool) ships now; the adapter that reads it does not |
+| Cursor | Planned | Lifecycle hooks. The [spool that captures them](#capturing-cursor-hooks-to-a-spool) ships now and [`analyze`](#reading-a-spool-back) summarises it; the adapter that turns one into a profile does not |
 | Codex | Planned | OTel logs + hooks |
 | Devin | Planned | ATIF export + server API |
 
@@ -52,6 +52,12 @@ cd profiler && go build -o profiler ./cmd/
 
 # Compare two captured profiles
 ./profiler compare --baseline ./before.json --candidate ./after.json
+
+# Ask what this machine can and cannot measure
+./profiler doctor
+
+# Summarise what a captured hook spool contains
+./profiler analyze
 ```
 
 `version` prints the adapter version that every profile records in
@@ -505,9 +511,79 @@ The registered command is this binary's absolute path plus `ingest || true`:
 absolute because `PATH` inside a hook's environment is not ours to assume, and
 `|| true` so a failure of ours cannot take your Cursor session down.
 
+### Reading a spool back
+
+```bash
+# What is in the spool? Counts, envelope fields, and a census of payload keys
+./profiler analyze
+
+# …or somewhere else
+./profiler analyze --spool-dir /tmp/try-it/.skill-architect/spool
+```
+
+**It tells you what is in the files. It does not tell you what Cursor did.**
+Nothing here has seen a payload from a running Cursor, so a summary that turned
+`tool_name` into a tool call would be asserting Cursor's documentation is right
+— and if the field is called something else, you would be told a session made no
+tool calls rather than that we could not find the field. So you get: how many
+files and lines, how many lines we could not read, the envelope's own fields by
+day and by event, payload bytes, and **a census of the top-level keys the
+payloads actually carry**, with the values of the keys we are allowed to quote.
+
+That census is the useful part. It is what an adapter should be written against
+once somebody has run Cursor, and it is right whatever the field names turn out
+to be.
+
+Two things it will not quote. **Content fields** — prompts, tool I/O, the set
+`--strict` replaces with sizes — are counted and never printed, because a
+summary is something you paste into an issue. **Numbers** are counted and never
+tallied, because a histogram of every number in a spool is a table of
+measurements nobody made. `payload_bytes` is bytes; it is not tokens.
+
+A spool directory that is not there exits **1** and says so, rather than
+printing an empty summary: "nothing was captured" and "there is nothing to read"
+are different answers.
+
+For bigger questions there is [`profiler/queries/`](profiler/queries/) — DuckDB
+SQL over the same files, no ETL. Start with `payload_keys.sql`.
+
+### What can this machine measure?
+
+```bash
+# What is set up here, and what it yields
+./profiler doctor
+
+# …and whether an export we can read produces anything
+./profiler doctor --harness claude_code --otel-file ./otel-export.json
+```
+
+`doctor` is the place this tool is most likely to overstate, because making
+claims about capability is its whole job. So its report has two halves that
+cannot be confused for each other:
+
+- **`measurement`** — what a harness *read*. The tier is `none` unless you give
+  `doctor` an export and a harness to read it with, and it reports the probe's
+  own signals so you can see what the tier was derived from. A file existing, a
+  hook being registered or an environment variable being set never raises it,
+  because none of those is a measurement.
+- **`observed`** — what is on the machine: your `hooks.json` and which events
+  carry our entry, and the spool with its file, line and byte counts.
+
+**And the thing it will not tell you: that this machine can capture anything
+from Cursor.** No adapter in this release reads a spool, so there is no hook
+tier — and every spool count ships with the sentence saying so, in the document
+rather than in this README, because a report gets pasted somewhere else and a
+caveat does not travel with it. A spool that exists and is filling up is worth
+knowing about, and it is a capture waiting for a reader, not a measurement.
+
+`doctor` exits **0** whatever it finds: "nothing here measures anything" is the
+answer for most machines today, and a status that called that a failure would
+make the command useless in the one situation it exists for. It writes nothing,
+anywhere.
+
 See [`docs/profiler-spec.md`](docs/profiler-spec.md) for the adapter interface
-contract, the comparison contract, the experiment contract and the spool
-contract.
+contract, the comparison contract, the experiment contract, the spool contract
+and the tier rules.
 
 ## Install
 

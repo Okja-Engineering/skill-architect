@@ -42,6 +42,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -832,4 +833,296 @@ func containsSubstring(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// --- Rule 4: a tier doctor reports is a tier a capture delivers ---------------
+//
+// `doctor`'s EnvironmentTier is a capability claim by another name: it says
+// which telemetry surface is reachable, and a reader who believes it expects a
+// profile out of it. That is the same claim the three rules above hold an
+// adapter to, made by a function that is not an adapter — so it would have been
+// the fourth place in this codebase that advertises what it cannot deliver, and
+// the only one with nothing mechanical in its way.
+//
+// So the tiers are a table, on the same terms as the adapters: being in the
+// enumeration means naming an input from which DetectEnvironment reports that
+// tier, and for every tier above none, an input from which a capture of the
+// same export produces a `present` signal. The enumeration is read out of
+// doctor.go rather than listed here, so a tier added later cannot be
+// dispatchable and unasserted at the same time — which is exactly the gap that
+// let the draft ship four tiers over surfaces nothing in this repository reads.
+
+// tierFixture is the input one tier is claimed over.
+type tierFixture struct {
+	// query is the detection that must report this tier.
+	query EnvironmentQuery
+
+	// session is the identity the export carries, used for the capture half. It
+	// is required for a tier above none and unused for none: a capture of a
+	// session the export does not contain reads nothing, which would make the
+	// "delivers a present signal" half vacuously false rather than proved.
+	session string
+}
+
+// tierFixtures is an input per declared EnvironmentTier.
+//
+// Keyed by tier rather than listed as cases, so declaredTiers can require one
+// for every constant and reject one for a constant that no longer exists.
+func tierFixtures(t *testing.T) map[EnvironmentTier]tierFixture {
+	t.Helper()
+	return map[EnvironmentTier]tierFixture{
+		TierNone: {
+			// A home with nothing in it and no export: nothing was read, so
+			// nothing is claimed.
+			query: EnvironmentQuery{Home: t.TempDir()},
+		},
+		TierExport: {
+			query: EnvironmentQuery{
+				Home:       t.TempDir(),
+				Harness:    "claude_code",
+				ExportFile: fixture("full_export.ndjson"),
+			},
+			session: fixtureSession,
+		},
+	}
+}
+
+// tierClaimViolations returns one message per way a tier claim is not backed by
+// what a capture delivers, and nothing when it is.
+//
+// It takes the detector as a parameter for the same reason the adapter rules
+// return violations rather than calling t.Errorf: a check that can only be
+// shown to work by breaking the repository is a check nobody has watched work.
+// Handed a detector that names a tier it cannot justify, this has to come back
+// with findings — TestTheTierTableCanFail does exactly that.
+func tierClaimViolations(tier EnvironmentTier, fx tierFixture, detect func(EnvironmentQuery) EnvironmentReport) []string {
+	var v []string
+	report := func(format string, args ...any) { v = append(v, fmt.Sprintf(format, args...)) }
+
+	got := detect(fx.query)
+	if got.Measurement.Tier != tier {
+		report("the registered input produces tier %q, not %q: a tier nothing reproduces is a claim this table cannot check",
+			got.Measurement.Tier, tier)
+		return v
+	}
+
+	readable := readableSignals(got.Measurement.Signals)
+
+	if tier == TierNone {
+		// The direction that catches a "none" carrying a signal it says it can
+		// read, which would mean the tier and the report disagree.
+		if len(readable) > 0 {
+			report("tier %q carries %v from a real source: nothing was claimed and something was read", tier, readable)
+		}
+		return v
+	}
+
+	// A tier above none asserts that something was read.
+	if len(readable) == 0 {
+		report("tier %q reports no signal from a real source, so the tier is not a claim about anything", tier)
+		return v
+	}
+
+	// And the assertion this rule exists for: what the tier advertises, a
+	// capture of the same export delivers.
+	adapter, ok := NewAdapter(fx.query.Harness, fx.query.ExportFile)
+	if !ok {
+		report("tier %q names harness %q, which is not in the registry", tier, fx.query.Harness)
+		return v
+	}
+	profile, err := adapter.Capture(fx.session, contractOpts)
+	if err != nil {
+		report("tier %q: a capture of the same export failed: %v", tier, err)
+		return v
+	}
+
+	signals := capturedSignals(profile)
+	present := 0
+	for _, metric := range readable {
+		captured, ok := signals[metric]
+		if !ok {
+			report("tier %q advertises %s, and a capture of the same export carries no such signal", tier, metric)
+			continue
+		}
+		if captured.raw.State != MetricPresent {
+			report("tier %q advertises %s from %q and the capture state is %q (reason %q) — a tier is a claim about what was read",
+				tier, metric, got.Measurement.Signals[metric], captured.raw.State, captured.raw.Reason)
+			continue
+		}
+		present++
+	}
+	if present == 0 {
+		report("tier %q is reported for an export whose capture produces no present signal at all", tier)
+	}
+	return v
+}
+
+// TestEveryEnvironmentTierIsOneACaptureDelivers is the table.
+func TestEveryEnvironmentTierIsOneACaptureDelivers(t *testing.T) {
+	declared := declaredTiers(t)
+	if len(declared) == 0 {
+		t.Fatal("no EnvironmentTier constant was read out of doctor.go, so every rule below holds over nothing")
+	}
+
+	fixtures := tierFixtures(t)
+	for _, tier := range declared {
+		fx, ok := fixtures[tier]
+		if !ok {
+			t.Errorf("doctor can report tier %q and this table has no input for it: the tier is asserted over "+
+				"nothing, which is how a surface nobody reads comes to be advertised", tier)
+			continue
+		}
+		t.Run(string(tier), func(t *testing.T) {
+			for _, violation := range tierClaimViolations(tier, fx, DetectEnvironment) {
+				t.Error(violation)
+			}
+		})
+	}
+
+	// And no entry for a tier that no longer exists: a stale fixture is a case
+	// this table runs and nothing dispatches.
+	declaredSet := map[EnvironmentTier]bool{}
+	for _, tier := range declared {
+		declaredSet[tier] = true
+	}
+	for tier := range fixtures {
+		if !declaredSet[tier] {
+			t.Errorf("this table registers an input for tier %q, which doctor.go no longer declares", tier)
+		}
+	}
+}
+
+// TestTheTierTableCanFail runs the rule over detectors built to break it, so
+// that the table's ability to fail is under test on every run rather than
+// asserted once by whoever wrote it.
+func TestTheTierTableCanFail(t *testing.T) {
+	fixtures := tierFixtures(t)
+
+	for _, tc := range []struct {
+		name   string
+		tier   EnvironmentTier
+		detect func(EnvironmentQuery) EnvironmentReport
+		want   string
+	}{
+		{
+			name: "a tier named for a machine where nothing was read",
+			tier: TierNone,
+			detect: func(q EnvironmentQuery) EnvironmentReport {
+				rep := DetectEnvironment(q)
+				rep.Measurement.Tier = TierExport
+				return rep
+			},
+			want: "not \"none\"",
+		},
+		{
+			name: "a tier above none whose probe read nothing",
+			tier: TierExport,
+			detect: func(q EnvironmentQuery) EnvironmentReport {
+				rep := DetectEnvironment(q)
+				rep.Measurement.Signals = map[MetricName]MetricSource{MetricTokens: SourceNone}
+				return rep
+			},
+			want: "no signal from a real source",
+		},
+		{
+			name: "a tier advertising a signal the capture does not deliver",
+			tier: TierExport,
+			detect: func(q EnvironmentQuery) EnvironmentReport {
+				rep := DetectEnvironment(q)
+				// Attribution is the signal this adapter reports "unknown" for
+				// on every export: the telemetry carries no output-to-skill
+				// mapping. Advertising a source for it is the exact defect —
+				// a capability the capture cannot deliver.
+				rep.Measurement.Signals[MetricAttribution] = SourceOtel
+				return rep
+			},
+			want: "a tier is a claim about what was read",
+		},
+		{
+			name: "a none carrying a signal it says it can read",
+			tier: TierNone,
+			detect: func(q EnvironmentQuery) EnvironmentReport {
+				rep := DetectEnvironment(q)
+				rep.Measurement.Signals = map[MetricName]MetricSource{MetricTokens: SourceOtel}
+				return rep
+			},
+			want: "nothing was claimed and something was read",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			violations := tierClaimViolations(tc.tier, fixtures[tc.tier], tc.detect)
+			if len(violations) == 0 {
+				t.Fatal("the tier table accepted a claim it exists to refuse")
+			}
+			if !containsSubstring(violations, tc.want) {
+				t.Errorf("violations %v, want one naming %q", violations, tc.want)
+			}
+		})
+	}
+}
+
+// TestTheTierTableAcceptsTheShippedDetector is the control. Without it every
+// case above is satisfied by a rule that refuses everything.
+func TestTheTierTableAcceptsTheShippedDetector(t *testing.T) {
+	fixtures := tierFixtures(t)
+	for tier, fx := range fixtures {
+		if got := tierClaimViolations(tier, fx, DetectEnvironment); len(got) != 0 {
+			t.Errorf("tier %q: %v", tier, got)
+		}
+	}
+}
+
+// declaredTiers reads the EnvironmentTier constants out of doctor.go.
+//
+// Out of the source rather than out of a list here, for the same reason
+// contractEntries walks the production registry: a list maintained by hand is
+// the list that does not mention the tier somebody added.
+func declaredTiers(t *testing.T) []EnvironmentTier {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "doctor.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse doctor.go: %v", err)
+	}
+
+	var tiers []EnvironmentTier
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			if ident, ok := value.Type.(*ast.Ident); !ok || ident.Name != "EnvironmentTier" {
+				continue
+			}
+			for _, expr := range value.Values {
+				lit, ok := expr.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					t.Errorf("an EnvironmentTier constant in doctor.go is not a string literal, so this check cannot read it")
+					continue
+				}
+				text, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatalf("unquote %s: %v", lit.Value, err)
+				}
+				tiers = append(tiers, EnvironmentTier(text))
+			}
+		}
+	}
+	sort.Slice(tiers, func(i, j int) bool { return tiers[i] < tiers[j] })
+	return tiers
+}
+
+// TestTheTierScanFindsTheTiers is the control on the derivation above: a reader
+// that found nothing would make the table pass over an empty set, which is the
+// fifth way this release has found for a check to pass by not running.
+func TestTheTierScanFindsTheTiers(t *testing.T) {
+	got := declaredTiers(t)
+	want := []EnvironmentTier{TierExport, TierNone}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("declaredTiers read %v out of doctor.go, want %v — the constants and the scan disagree", got, want)
+	}
 }

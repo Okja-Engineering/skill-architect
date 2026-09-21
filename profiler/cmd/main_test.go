@@ -1273,10 +1273,13 @@ func TestHooks_DefaultHomeIsTheOneTheBinaryResolves(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
-		// An absolute path, because PATH inside a hook's environment is not
-		// something this tool gets to assume.
-		if !strings.Contains(string(body), bin+" ingest") {
-			t.Errorf("the registered command is not this binary's ingest:\n%s", body)
+		// The whole command, not a prefix of it. An absolute path, because PATH
+		// inside a hook's environment is not something this tool gets to
+		// assume, and `|| true` so a failure of ours cannot take the user's
+		// session down — the second half is the part a prefix match cannot see,
+		// and a mutation that dropped it passed.
+		if want := bin + " ingest || true"; !strings.Contains(string(body), want) {
+			t.Errorf("the registered command is not %q:\n%s", want, body)
 		}
 	})
 }
@@ -1547,6 +1550,277 @@ func TestTheHooksHelpListsEverySubcommandItDispatches(t *testing.T) {
 	}
 	if !reflect.DeepEqual(dispatched, listed) {
 		t.Errorf("hooks dispatches %v and its help lists %v", dispatched, listed)
+	}
+}
+
+// --- `analyze` and `doctor` ---
+
+// TestAnalyze_SummarisesTheSpoolAndClaimsNothingAboutIt is the command half of
+// the rule the library half keeps: the summary describes the files.
+//
+// The assertion that matters is the negative one. A user runs `analyze` to find
+// out what a week of capture holds, and the document they get back is the one
+// they paste into an issue — so it may not contain a token count, a tool call
+// or a skill activation, because no adapter in this release reads a spool and
+// any of those would be a measurement nobody made.
+func TestAnalyze_SummarisesTheSpoolAndClaimsNothingAboutIt(t *testing.T) {
+	bin := buildProfiler(t)
+	home := homesafe.SandboxHome(t)
+	spool := filepath.Join(home, "spool")
+
+	for _, payload := range []string{
+		`{"hook_event_name":"sessionStart","conversation_id":"c1","model":"gpt-5"}`,
+		`{"hook_event_name":"preToolUse","conversation_id":"c1","tool_name":"Bash"}`,
+		`{"hook_event_name":"beforeSubmitPrompt","conversation_id":"c1","prompt":"do not quote me"}`,
+	} {
+		_, stderr, code := runCLIIn(t, bin, cliRun{home: home, stdin: payload}, "ingest", "--spool-dir", spool)
+		if code != 0 {
+			t.Fatalf("seeding the spool failed with status %d: %s", code, stderr)
+		}
+	}
+
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "analyze", "--spool-dir", spool)
+	if code != 0 {
+		t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+	}
+
+	var summary profiler.SpoolSummary
+	if err := json.Unmarshal([]byte(stdout), &summary); err != nil {
+		t.Fatalf("stdout is not a summary: %v\n%s", err, stdout)
+	}
+	if summary.Lines != 3 || summary.Envelopes != 3 {
+		t.Errorf("lines = %d, envelopes = %d, want 3 and 3", summary.Lines, summary.Envelopes)
+	}
+	if summary.PayloadKeys["tool_name"] != 1 {
+		t.Errorf("payload_keys[tool_name] = %d, want 1", summary.PayloadKeys["tool_name"])
+	}
+	if summary.Dir != spool {
+		t.Errorf("dir = %q, want %q", summary.Dir, spool)
+	}
+
+	// The vocabulary of a measurement, asked of the document itself.
+	for _, forbidden := range []string{"\"tokens\"", "\"tool_calls\"", "\"skill_activation\"", "\"present\"", "do not quote me"} {
+		if strings.Contains(stdout, forbidden) {
+			t.Errorf("the summary carries %s, which is a claim about what the harness did:\n%s", forbidden, stdout)
+		}
+	}
+}
+
+// TestAnalyze_SaysSoWhenThereIsNoSpoolToRead keeps the distinction the library
+// makes: a spool that was never written is not a capture that recorded nothing.
+func TestAnalyze_SaysSoWhenThereIsNoSpoolToRead(t *testing.T) {
+	bin := buildProfiler(t)
+	home := homesafe.SandboxHome(t)
+	missing := filepath.Join(home, "never-captured")
+
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "analyze", "--spool-dir", missing)
+
+	if code != 1 {
+		t.Errorf("exit status = %d, want 1 — a spool that is not there is not an empty summary\n%s%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, missing) {
+		t.Errorf("stderr = %q, want it to name the directory it could not read", stderr)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("a summary was printed for a spool that could not be read:\n%s", stdout)
+	}
+}
+
+// TestAnalyze_DefaultsToTheSpoolUnderTheResolvedHome is the risky wiring: a
+// command with no --spool-dir must read the spool under the home the binary
+// resolves, which the sandboxed runner has pointed at a directory of this
+// test's own.
+func TestAnalyze_DefaultsToTheSpoolUnderTheResolvedHome(t *testing.T) {
+	bin := buildProfiler(t)
+	home := homesafe.SandboxHome(t)
+	homeTheBinaryResolves(t, bin, home)
+
+	_, stderr, code := runCLIIn(t, bin, cliRun{home: home, stdin: `{"hook_event_name":"stop"}`}, "ingest")
+	if code != 0 {
+		t.Fatalf("seeding failed with status %d: %s", code, stderr)
+	}
+
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "analyze")
+	if code != 0 {
+		t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+	}
+	var summary profiler.SpoolSummary
+	if err := json.Unmarshal([]byte(stdout), &summary); err != nil {
+		t.Fatalf("stdout is not a summary: %v\n%s", err, stdout)
+	}
+	if want := filepath.Join(home, ".skill-architect", "spool"); summary.Dir != want {
+		t.Errorf("dir = %q, want %q — analyze and ingest have to agree about where the spool is", summary.Dir, want)
+	}
+	if summary.Lines != 1 {
+		t.Errorf("lines = %d, want the one line ingest just wrote", summary.Lines)
+	}
+}
+
+// TestDoctor_ReportsASpoolWithoutClaimingItMeasuresAnything is the wording
+// ruling at the command layer, where a user actually reads it.
+//
+// The spool is registered, written and counted, and the report still says the
+// tier is none — because no adapter reads a spool. Both halves are asserted on
+// the text of the document, not on the struct, since the text is what a user
+// sees and what they quote.
+func TestDoctor_ReportsASpoolWithoutClaimingItMeasuresAnything(t *testing.T) {
+	bin := buildProfiler(t)
+	home := homesafe.SandboxHome(t)
+	homeTheBinaryResolves(t, bin, home)
+
+	if _, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "hooks", "install"); code != 0 {
+		t.Fatalf("hooks install failed with status %d: %s", code, stderr)
+	}
+	if _, stderr, code := runCLIIn(t, bin, cliRun{home: home, stdin: `{"hook_event_name":"stop"}`}, "ingest"); code != 0 {
+		t.Fatalf("ingest failed with status %d: %s", code, stderr)
+	}
+
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "doctor")
+	if code != 0 {
+		t.Fatalf("exit status = %d, want 0 — detection is a report, not a gate\n%s", code, stderr)
+	}
+
+	var rep profiler.EnvironmentReport
+	if err := json.Unmarshal([]byte(stdout), &rep); err != nil {
+		t.Fatalf("stdout is not a report: %v\n%s", err, stdout)
+	}
+
+	// What it observed: our own registration, found by the command this binary
+	// registers rather than by a string that looks like it.
+	if len(rep.Observed.HooksJSON.RegisteredEvents) == 0 {
+		t.Errorf("doctor found no registered events after this binary's own `hooks install`:\n%s", stdout)
+	}
+	if rep.Observed.Spool.Lines != 1 {
+		t.Errorf("spool lines = %d, want the one line ingest wrote", rep.Observed.Spool.Lines)
+	}
+
+	// What it may not say.
+	if rep.Measurement.Tier != profiler.TierNone {
+		t.Errorf("tier = %q on a machine whose only telemetry is a spool nothing reads", rep.Measurement.Tier)
+	}
+	if rep.Observed.Spool.Yields == "" {
+		t.Error("the spool counts ship with nothing saying what they yield")
+	}
+	for _, forbidden := range []string{"\"hooks\"", "\"server_api\"", "\"enterprise\""} {
+		if strings.Contains(stdout, forbidden) {
+			t.Errorf("the report carries the tier %s, which no capture in this release delivers:\n%s", forbidden, stdout)
+		}
+	}
+}
+
+// TestDoctor_ReportsTheTierItProbedFor is the other direction, and the one that
+// keeps the command from being a report that can only ever say "none".
+func TestDoctor_ReportsTheTierItProbedFor(t *testing.T) {
+	bin := buildProfiler(t)
+	home := homesafe.SandboxHome(t)
+	export := filepath.Join("..", "testdata", "otlp", "full_export.ndjson")
+	absExport, err := filepath.Abs(export)
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: home},
+		"doctor", "--harness", "claude_code", "--otel-file", absExport)
+	if code != 0 {
+		t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+	}
+
+	var rep profiler.EnvironmentReport
+	if err := json.Unmarshal([]byte(stdout), &rep); err != nil {
+		t.Fatalf("stdout is not a report: %v\n%s", err, stdout)
+	}
+	if rep.Measurement.Tier != profiler.TierExport {
+		t.Fatalf("tier = %q, want %q (reason %q)", rep.Measurement.Tier, profiler.TierExport, rep.Measurement.Reason)
+	}
+	if rep.Measurement.Export != absExport {
+		t.Errorf("export = %q, want %q", rep.Measurement.Export, absExport)
+	}
+	if len(rep.Measurement.Signals) == 0 {
+		t.Error("a tier above none carrying no signals, so nothing says what it was derived from")
+	}
+}
+
+// TestDoctor_NeverWritesToTheHomeItInspects is the property that makes doctor
+// safe to run anywhere: it is a read.
+//
+// A command that reports on a configuration is the one a user runs when
+// something is already wrong, and one that repaired what it found would be
+// changing the thing being diagnosed.
+func TestDoctor_NeverWritesToTheHomeItInspects(t *testing.T) {
+	bin := buildProfiler(t)
+	home := homesafe.SandboxHome(t)
+
+	before := treeUnder(t, home)
+	if _, stderr, code := runCLIIn(t, bin, cliRun{home: home}, "doctor"); code != 0 {
+		t.Fatalf("exit status = %d: %s", code, stderr)
+	}
+	after := treeUnder(t, home)
+
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("doctor changed the home it was inspecting:\n before %v\n after  %v", before, after)
+	}
+	if len(after) != 0 {
+		t.Errorf("the sandbox home is not empty, so an unchanged tree proves less than it should: %v", after)
+	}
+}
+
+// treeUnder is every path under root, relative and sorted.
+func treeUnder(t *testing.T, root string) []string {
+	t.Helper()
+	var found []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		if rel != "." {
+			found = append(found, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	sort.Strings(found)
+	return found
+}
+
+// TestDoctorLooksForTheCommandHooksInstallRegisters is a derivation, because
+// there is no way to test it by running.
+//
+// `doctor` reports which events carry *our* entry, and "ours" is an exact
+// string. If the two commands were resolved in two places, a change to one
+// would leave doctor reporting that nothing is registered on a machine `hooks
+// install` had just configured — and every test would still pass, because each
+// half would be self-consistent. A mutation that changed the command proved
+// exactly that: it survived the whole suite.
+//
+// So both go through resolveHookCommand, and that is read out of main.go rather
+// than remembered.
+func TestDoctorLooksForTheCommandHooksInstallRegisters(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+
+	for _, caller := range []string{"cmdDoctor", "hooksFlags"} {
+		if !declaresFunc(file, caller) {
+			t.Fatalf("main.go declares no %q, so this check reads nothing", caller)
+		}
+		if !callsFunc(file, caller, "resolveHookCommand") {
+			t.Errorf("%s does not resolve the hook command through resolveHookCommand: two spellings of the "+
+				"registered command means doctor can report that nothing is registered on a machine hooks "+
+				"install has just configured, with every test still green", caller)
+		}
+	}
+
+	// The control: a function that does not call it has to come back false, or
+	// the two assertions above are satisfied by a check that reads nothing.
+	if callsFunc(file, "cmdCompare", "resolveHookCommand") {
+		t.Error("callsFunc reports a call from a function that makes none, so the derivation above cannot fail")
 	}
 }
 

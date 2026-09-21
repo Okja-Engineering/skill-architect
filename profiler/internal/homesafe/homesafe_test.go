@@ -242,6 +242,83 @@ func TestSandboxHome_RefusesADirectoryInsideTheRealHome(t *testing.T) {
 	}
 }
 
+// TestBarrier_RefusesWhenItCannotEvenNameTheHome covers the two refusal paths
+// that fire when the barrier cannot get as far as comparing anything.
+//
+// Both are the same rule as the unresolvable-path case, one step earlier: if the
+// real home cannot be named, or cannot be resolved, then nothing has been shown
+// to be outside it and every directory has to be refused. A barrier that
+// shrugged here would wave through every path on a machine with a broken $HOME,
+// which is the one machine most likely to have a surprising one.
+//
+// HOME is set for the duration of the test only, and nothing is written.
+func TestBarrier_RefusesWhenItCannotEvenNameTheHome(t *testing.T) {
+	// A directory the process cannot traverse, so resolving the home itself
+	// fails with EACCES rather than with "does not exist".
+	sealed := filepath.Join(t.TempDir(), "sealed")
+	if err := os.Mkdir(sealed, 0o000); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sealed, 0o700) })
+	unresolvableHome := filepath.Join(sealed, "home")
+
+	elsewhere := t.TempDir()
+
+	for _, tc := range []struct {
+		name string
+		home string
+	}{
+		{"the home cannot be named at all", ""},
+		{"the home cannot be resolved", unresolvableHome},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.home == unresolvableHome {
+				if _, err := filepath.EvalSymlinks(unresolvableHome); err == nil || os.IsNotExist(err) {
+					t.Skipf("this filesystem resolves %s without a permission error, so the case is not reachable here", unresolvableHome)
+				}
+			}
+			t.Setenv("HOME", tc.home)
+
+			contained, why, err := RealHomeContains(elsewhere)
+			if err == nil {
+				t.Error("no error was reported for a home the barrier could not work with")
+			}
+			if !contained {
+				t.Errorf("%s was reported as outside a home that could not be %s", elsewhere, tc.name)
+			}
+			if why == "" {
+				t.Error("no reason was given for the refusal")
+			}
+
+			// And the abort path that carries the error, which is a second
+			// branch from the one the refusal above returns on.
+			rec := &recorder{}
+			MustBeOutside(rec, elsewhere)
+			if len(rec.messages) == 0 {
+				t.Fatal("the barrier let a directory through while it could not name the home to compare it to")
+			}
+			if !strings.Contains(rec.messages[0], "refusing") {
+				t.Errorf("the refusal reads %q", rec.messages[0])
+			}
+		})
+	}
+}
+
+// The three statements in homesafe.go that no test reaches, and why none of
+// them can be:
+//
+//   - `filepath.Rel` returning an error inside PathContains. It errors when one
+//     path is relative and the other absolute, and resolve returns absolute
+//     paths for both.
+//   - `filepath.Abs` returning an error inside resolve. It fails only when the
+//     working directory cannot be read.
+//   - resolve reaching the filesystem root with nothing resolved. The root
+//     always resolves, so the loop leaves before it.
+//
+// Written down rather than covered with a fake filesystem: each is a branch
+// that returns the same refusal as the ones above, and the alternative is an
+// indirection in production code existing only so a test can reach it.
+
 // TestHomeBarrier_StopsTheWriteThatWouldFollow is the reproduction of the
 // defect this barrier exists for: not "does the guard notice", but "does the
 // guard stop the next statement".

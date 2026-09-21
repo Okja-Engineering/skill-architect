@@ -653,6 +653,126 @@ spool that has been silently empty for a week is otherwise found a week late.
 **1** with the reason on stderr for a usage error and for a file that could not
 be parsed.
 
+## Summarising a spool (`profiler analyze`)
+
+`AnalyzeSpool(dir)` reports what a spool directory contains. `profiler analyze`
+prints it as JSON.
+
+**It describes the files, and nothing about what the harness did.** No payload
+in this repository has been produced by a running Cursor, so a reader that turns
+`tool_name` into a tool call or `context_tokens` into a token count is asserting
+the documentation is right — in the data, where a hedge in prose cannot follow
+it, and a summary travels. Concretely, the summary carries no metric state, no
+source and no signal result of any kind, and
+`TestSpoolSummary_MakesNoSignalClaim` refuses those types by reflection so the
+claim cannot be reintroduced later.
+
+| field | |
+|---|---|
+| `dir` | the directory summarised |
+| `files`, `lines` | `*.jsonl` files read, and non-blank lines in them |
+| `envelopes`, `unreadable_lines` | the two parts `lines` divides into. A line that could not be decoded is **counted**, not skipped in silence: a corpus reported smaller than it is reads as a capture that did not happen |
+| `stripped_envelopes` | lines written in metadata-only mode. Their payload bytes are not comparable with an unstripped line's |
+| `schema_versions`, `event_names` | envelope field values, counted verbatim. A field that was absent counts under the empty string rather than under `unknown`, which is the writer's word for a payload that named no event |
+| `capture_days` | lines per UTC day of the capture time — when the hook ran here, not a time the harness reported |
+| `last_capture_at` | the newest capture time, as the maximum across every file rather than the last line of the last one |
+| `conversation_ids` | distinct non-empty `conversation_id` values |
+| `payload_bytes` | the stored size of the payloads. **Bytes, not tokens**: the draft divided them by four and called the result estimated context tokens |
+| `object_payloads`, `other_payloads` | payloads the key census could walk, and those it could not. Input that was not JSON is stored as a JSON string on purpose, and is still a payload that arrived |
+| `payload_keys` | how many payloads carried each top-level key. **This is the census**, and it is what a later adapter should be written against |
+| `payload_key_values` | the values of those keys, for keys that are not content and whose value is a string of at most 64 characters |
+
+Two bounds on the value census. **Content keys are counted and never quoted** —
+the same set `--strict` replaces with sizes, asked of the one place it is
+declared, because a summary is a document a user pastes into an issue. **Numbers
+are not valued**, because a histogram of every number in a spool is a table of
+measurements nobody made.
+
+A spool directory that is not there is an **error**, not an empty summary, for
+the reason `LoadSessionEvents` gives. `analyze` exits **0** with the summary on
+stdout, or **1** with the reason on stderr.
+
+`profiler/queries/` asks the same corpus bigger questions in DuckDB SQL, under
+the same rule. Its column list is derived from `SpoolEvent` and its default
+spool directory from `DefaultSpoolDir`, so neither can fall behind the writer.
+
+## Reporting what a machine can measure (`profiler doctor`)
+
+`DetectEnvironment(EnvironmentQuery)` reports what this build can turn into a
+measured profile here. `profiler doctor` prints it as JSON and exits **0**
+whatever it finds — detection is a report, not a gate — or **1** for a usage
+error.
+
+The document has two halves, and a reader cannot confuse them:
+
+- **`measurement`** — what a registered harness actually read. `tier`,
+  `harness`, `export`, the probe's own `signals` and a `reason`.
+- **`observed`** — what is on this machine. `hooks_json` and `spool`: paths,
+  counts, and why a read failed when it did. No tier, no state, no source.
+
+### The tier is what a probe read, and nothing else
+
+| tier | what it asserts |
+|---|---|
+| `none` | nothing was read that this build can turn into a profile |
+| `export` | a registered harness probed the export supplied and reports at least one signal from a real source |
+
+**The only input to a tier is a capability report from a probe over a real
+file.** Nothing found on the machine can raise it, because nothing found on a
+machine is a measurement: a file existing, a hook being registered and an
+environment variable being set are all true of installations that measure
+nothing. So `doctor` reports a measurement surface only when it is given
+`--harness` and `--otel-file`, and everything else it prints is an observation.
+
+`TestEveryEnvironmentTierIsOneACaptureDelivers` reads the tier constants out of
+`doctor.go` and requires, for each one above `none`, an input from which
+`DetectEnvironment` reports it **and** from which a capture of the same export
+produces a `present` signal. A tier added without one turns that table red. It
+is the fourth rule of the adapter contract, applied to the one capability claim
+in this codebase that is not made by an adapter.
+
+### The hook surface produces no signal in this release, and the report says so
+
+There is no adapter that reads a spool. So there is **no hook tier**, and there
+is no signal the spool can contribute to one. What `doctor` may say is that a
+spool exists and how much is in it — `files`, `lines`, `unreadable_lines`,
+`payload_bytes`, `last_capture_at` — and every spool observation ships this
+sentence beside those counts, in the document rather than in the prose:
+
+> no measurement: no adapter in this build reads the spool, so these lines are a
+> capture to be parsed later and no profile, token count or tool call can be
+> produced from them
+
+What it may **not** say is that this machine can capture tokens, tool calls or
+anything else from Cursor.
+
+### Our registration, matched the way the install writes it
+
+`hooks_json.registered_hook_events` is the events whose entries carry **exactly**
+the command the query named, read through the same `readHooksDoc` and matched by
+the same `entryCommand` that `hooks install` and `hooks uninstall` use. The CLI
+resolves that command in one place for both subcommands, so `doctor` cannot come
+to look for a string `install` does not write.
+
+A `hooks.json` that exists and cannot be parsed is reported as **present with a
+reason**, not as a machine with nothing registered; an unreadable spool
+directory likewise. Either reported as absent would be the reader's own failure
+told to the user as a fact about their machine.
+
+### Three things it does not report
+
+- **A Cursor user-data directory.** The draft read
+  `~/Library/Application Support/Cursor` and reported `cursor_installed`. That
+  path is macOS's only, so `false` means "not on a Mac" as often as "no Cursor"
+  — and whether Cursor is installed is not a statement about what can be
+  measured.
+- **`CURSOR_ADMIN_API_KEY` as a `server_api` tier.** There is no Admin API
+  client in this repository.
+- **`OTEL_EXPORTER_OTLP_ENDPOINT` as an `enterprise` tier.** An endpoint is
+  where a harness sends telemetry, not a file this tool can read.
+
+`doctor` writes nothing, anywhere. It is a read of a home and a read of a file.
+
 ## Adapter implementations (Slice 1 scope)
 
 ### Claude Code adapter (Slice 1)
