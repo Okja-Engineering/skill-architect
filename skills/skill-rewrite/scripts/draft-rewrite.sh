@@ -231,10 +231,29 @@ skill_name="${skill_name##*/}"
 #     `$HOME/.claude` as a string prefix and is not inside it, so a
 #     `HasPrefix`-style test refuses a destination that is perfectly fine.
 #
+# And the ordering half of that, which is not a refinement of it but the whole
+# of whether it holds: **the symlinks are resolved before any `..` is folded.**
+# This script folded `..` textually first and followed symlinks afterwards, and
+# for a release that meant the bound could be got past purely by spelling.
+# `$HOME/aside/../x.md`, where `aside` is a link into `$HOME/.claude/skills`,
+# folded to `$HOME/x.md` — outside every protected root — while the redirect
+# went through the kernel, which resolves `aside` first, and wrote the draft
+# into `$HOME/.claude`. The same fold refuses a legitimate destination the other
+# way round, when a link *inside* a protected directory points out of it. A
+# `..` and a symlink interleave, so this cannot be had by swapping the order of
+# two steps: each `..` has to be folded against however much of the path is
+# resolved at that point, which is what path_resolved now does.
+#
 # And the third property from the same place: **a path that cannot be resolved
 # counts as protected.** "I could not tell where this would land" must not read
 # as "go ahead", so it is not exit 1 — the caller's command line is not what was
-# wrong — but cannot_compute and exit 3.
+# wrong — but cannot_compute and exit 3. What counts as unresolvable is narrow,
+# and it used to be far too wide: while resolution ended in one `cd -P` over the
+# deepest existing ancestor, every destination that already existed as a
+# *regular file* came back unresolvable, because you cannot `cd` into a file.
+# That was an undocumented fifth refusal, it made `-o` unable to re-run over its
+# own output, and it stood in front of the leaf-symlink rule so that rule never
+# ran at all.
 #
 # The decision lives here rather than in verdict-guard.sh because the guard's
 # primitives are about computing a verdict over a skill, and this is about where
@@ -243,99 +262,92 @@ skill_name="${skill_name##*/}"
 # second one ever takes a destination, this moves to the guard rather than being
 # copied.
 
-# path_absolute <path> — absolute against the caller's working directory, with
-# `.` and `..` folded away textually.
+# path_resolved <path> — the place a write on this path would land: every
+# directory component's symlinks followed, in the order the kernel follows them,
+# with `..` folded only against what has already been resolved.
 #
-# Textually, because the destination is a file this script is about to create and
-# need not exist yet, so there is nothing to ask the kernel about. `..` stops at
-# the root the way the kernel stops it, which is what makes a climb with an
-# absolute tail resolve to that tail rather than to nonsense. awk's status is
-# read here, where awk is called, and an empty answer is a failure: awk exiting 0
-# having printed nothing would leave every comparison below against the empty
-# string.
-path_absolute() {
-  local p
-  local folded
-  local status
-  p="$1"
-  case "$p" in
-    /*) ;;
-    *) p="$PWD/$p" ;;
-  esac
-  status=0
-  folded="$(printf '%s\n' "$p" | awk '
-    {
-      n = split($0, part, "/")
-      out = ""
-      depth = 0
-      for (i = 1; i <= n; i++) {
-        s = part[i]
-        if (s == "" || s == ".") continue
-        if (s == "..") {
-          if (depth > 0) { sub(/\/[^\/]*$/, "", out); depth-- }
-          continue
-        }
-        out = out "/" s
-        depth++
-      }
-      if (out == "") out = "/"
-      print out
-    }
-  ')" || status=$?
-  [[ $status -eq 0 && -n "$folded" ]] || return 1
-  printf '%s\n' "$folded"
-}
-
-# path_resolved <path> — the same path with every directory component's symlinks
-# followed, through the part of it that exists.
+# # Why it walks one component at a time
 #
-# Not a plain `cd -P` on the whole path, for two reasons: the leaf need not exist
-# yet, and on macOS a scratch directory arrives through /var and lives at
-# /private/var, so comparing unresolved strings answers "outside" for a path that
-# is in fact inside. The deepest existing ancestor is resolved and the remainder
-# appended — the place the path *would* be created, which is what the decision is
-# about.
+# There used to be a `path_absolute` above this, which made the path absolute and
+# folded `.` and `..` away with awk *before* anything was resolved; then this
+# function found the deepest existing ancestor and `cd -P`'d that. Both steps
+# were defensible on their own and the pair of them was the defect the section
+# above describes: awk folded a `..` that crossed a symlink against the link's
+# own name, and by the time `cd -P` ran the component that would have answered
+# the question was gone from the string. `..` and a symlink interleave — a path
+# may cross a link, climb out of its target, and cross another — so no ordering
+# of a whole-string fold and a whole-string resolve is correct. Folding has to
+# happen *during* the walk, against the resolved prefix, which is what this does.
+# `path_absolute` is gone rather than left unused: a textual `..` folder sitting
+# in the file whose one invariant forbids textual `..` folding is the next bug.
 #
-# A symlink at the leaf is deliberately left unfollowed. It is not this
-# function's to chase: following it would need another tool and another bounded
-# loop for cycles, and the decision below refuses a leaf symlink outright, which
-# closes the same hole with less machinery. `CDPATH=` and `--` for the reason
-# verdict-guard.sh sets out at length.
+# # The rule, once, for every component
 #
-# The loop climbs only while a component **does not exist at all**, which is not
-# the same as "is not a directory" and the difference is the whole of whether
-# this function can be relied on. Written as `! -d`, a component that exists and
-# cannot be entered — a directory with no execute bit, a symlink cycle — was
-# indistinguishable from one nobody has created yet, so it was climbed past and
-# the path came back "resolved" with the unresolvable part still in it. That is
-# the second of the two properties homesafe states — a path that cannot be
-# resolved must not read as resolved — and it was quietly missing here until a
-# mutation over the caller found it. `-e` is paired with `-L` for the reason
-# tests/lib/masked-path.sh pairs them: `-e` alone is false for a broken symlink
-# and for a cycle, which are exactly the entries this has to stop on rather than
-# step over.
+# A component that **is a directory** is resolved by entering it: `cd -P` gives
+# the physical path, which follows a link, a chain of links, a link whose target
+# is relative, and the platform's own aliasing — on macOS a scratch directory
+# arrives through /var and lives at /private/var, so comparing unresolved strings
+# answers "outside" for a path that is in fact inside. A component that **is not
+# there at all** is appended as named: the destination is a file this script is
+# about to create, and the place it *would* be created is what the decision is
+# about. A **leaf that exists and is not a directory** is appended as named too —
+# a regular file is a perfectly good destination, and this is the case the old
+# `cd -P` could not express, so it called it unresolvable. Anything else — a
+# component mid-path that is not a directory, a directory that cannot be entered,
+# a symlink cycle — has **no answer**, and no answer is exit 3 rather than a
+# guess. `-e` is paired with `-L` for the reason tests/lib/masked-path.sh pairs
+# them: `-e` alone is false for a broken symlink and for a cycle, which are
+# exactly the entries this has to stop on rather than step over.
+#
+# A symlink at the *leaf* is therefore left unfollowed, and deliberately: the
+# decision below refuses a leaf symlink outright, so there is no hole to close by
+# chasing it, and chasing it would need another tool this script does not
+# require. `-d` follows links, so a leaf that is a link to a *directory* is
+# resolved and refused as the directory it is.
+#
+# There is no explicit cycle counter because there is nothing here that loops on
+# one: `-d` is false for a cycle (the kernel answers ELOOP) and the walk consumes
+# one component of a finite string per iteration. `CDPATH=` and `--` for the
+# reason verdict-guard.sh sets out at length.
 path_resolved() {
-  local abs
-  local head
-  local tail
-  abs="$(path_absolute "$1")" || return 1
-  head="$abs"
-  tail=""
-  while [[ "$head" != / ]] && [[ ! -e "$head" && ! -L "$head" ]]; do
-    if [[ -n "$tail" ]]; then
-      tail="${head##*/}/$tail"
+  local spelled
+  local remaining
+  local name
+  local candidate
+  local resolved
+  spelled="$1"
+  case "$spelled" in
+    /*) ;;
+    *) spelled="$PWD/$spelled" ;;
+  esac
+  resolved=/
+  remaining="${spelled#/}"
+  while [[ -n "$remaining" ]]; do
+    case "$remaining" in
+      */*) name="${remaining%%/*}"; remaining="${remaining#*/}" ;;
+      *)   name="$remaining"; remaining="" ;;
+    esac
+    case "$name" in
+      ''|.) continue ;;
+      ..)
+        resolved="${resolved%/*}"
+        [[ -n "$resolved" ]] || resolved=/
+        continue
+        ;;
+    esac
+    candidate="${resolved%/}/$name"
+    if [[ -d "$candidate" ]]; then
+      resolved="$(CDPATH= cd -P -- "$candidate" 2>/dev/null && pwd -P)" || return 1
+      [[ -n "$resolved" ]] || return 1
+    elif [[ ! -e "$candidate" && ! -L "$candidate" ]]; then
+      resolved="$candidate"
+    elif [[ -z "$remaining" ]]; then
+      resolved="$candidate"
     else
-      tail="${head##*/}"
+      return 1
     fi
-    head="${head%/*}"
-    [[ -n "$head" ]] || head=/
   done
-  head="$(CDPATH= cd -P -- "$head" 2>/dev/null && pwd -P)" || return 1
-  if [[ -n "$tail" ]]; then
-    printf '%s\n' "${head%/}/$tail"
-  else
-    printf '%s\n' "$head"
-  fi
+  printf '%s\n' "$resolved"
 }
 
 # path_inside <parent> <child> — child is parent, or something under it. Both

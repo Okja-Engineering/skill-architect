@@ -577,6 +577,17 @@ assert "the prefix-sibling destination was written" test -f "$prefix_out"
 # FAIL and installed anyway: the status is a refusal, nothing was written at the
 # destination, and nothing was left in the target directory either. A drafter
 # that said no and wrote anyway would pass the first.
+#
+# It reads the status and not merely `!= 0`, and the difference is a whole
+# defect. While this asked only for nonzero, every refusal below was satisfied
+# by exit 3 — *"the destination could not be resolved, so where the draft would
+# be written is unknown"* — which is a different answer from the one being
+# asserted: it says no verdict was reached, not that the caller named a
+# destination the drafter will not write. `path_resolved` was emitting it for
+# any destination that merely already existed as a regular file, and two of the
+# refusals here were passing on it while the rules they name never ran. The
+# status registry the header publishes makes 1 a usage error, so a refusal of
+# the caller's destination is 1 and nothing else.
 refused_out() {
   local home="$1"
   local target="$2"
@@ -584,6 +595,11 @@ refused_out() {
   draft_run_home "$home" -t "$target" -o "$dest"
   if [ "$code" -eq 0 ]; then
     printf 'the drafter accepted a destination it must refuse: %s\n' "$dest" >&2
+    return 1
+  fi
+  if [ "$code" -ne 1 ]; then
+    printf 'the drafter refused %s with exit %s; a refusal of the destination is exit 1, and %s means no verdict was reached:\n%s\n' \
+      "$dest" "$code" "$code" "$errout" >&2
     return 1
   fi
   return 0
@@ -701,6 +717,142 @@ assert "the protected directories are anchored on \$HOME, not on a literal home 
 # up would pass either way.
 assert "a refused destination exits 1, the status the header registers for a usage error" \
   test "$code" -eq 1
+
+# --- the bound, against where a write on that spelling actually lands ---------
+#
+# Everything above names a destination somebody thought of, and that is how the
+# bound came to be defeatable purely by spelling. `path_absolute` folded `..`
+# away textually and `path_resolved` followed symlinks only afterwards, so a
+# `..` that crossed a symlink was folded against the *link's own name* instead
+# of against its target. `$HOME/aside/../draft.md`, where `aside` is a link into
+# `$HOME/.claude/skills`, folded to `$HOME/draft.md` — outside every protected
+# root by every test above — and the draft landed in `$HOME/.claude` at exit 0.
+# The same defect runs the other way: a link inside a protected directory
+# pointing out of it made the drafter refuse a destination that lands nowhere
+# near one, which costs a caller a legitimate place to write.
+#
+# So no case below names an expected verdict, and that is the repair to the
+# *test* rather than to the script. Each spelling is performed twice over two
+# trees built by one function: once as a plain redirect, so the filesystem says
+# where a write on that exact spelling lands, and once through the drafter. The
+# drafter must refuse precisely when the bytes landed inside the protected
+# directory. The oracle is the kernel, so a spelling nobody here thought of is
+# judged as well — which is the half a hand-written table of refusals cannot
+# reach, and the half this defect lived in for a release.
+#
+# Every directory in each tree exists and only the leaf is new, which is the
+# position a real caller is in: nothing in the path is folded by anybody before
+# the kernel resolves it.
+containment_tree() {
+  local h="$1"
+  rm -rf "$h"
+  mkdir -p "$h/.claude/skills" "$h/.claude-notes" "$h/plain" "$h/elsewhere"
+  # Beside the protected directory, pointing into it — and a chain of two, so
+  # one hop of resolution is not mistaken for all of it.
+  ln -s "$h/.claude/skills" "$h/aside"
+  ln -s "$h/aside" "$h/chain"
+  # Inside the protected directory, pointing out of it. Once with an absolute
+  # target and once with a relative one, because a relative target is resolved
+  # against the link's own directory and that is a second thing to get wrong.
+  ln -s "$h/elsewhere" "$h/.claude/away"
+  ln -s "../elsewhere" "$h/.claude/rel"
+}
+
+# <destination template> — the drafter's verdict for this spelling is the
+# answer the filesystem gives for it. `@H` stands for the home the tree is
+# built under, so the same template can be instantiated in two trees.
+containment_agrees() {
+  local template="$1"
+  local oracle_home="$work/bound-oracle/h"
+  local drafter_home="$work/bound-drafter/h"
+  local oracle_dest drafter_dest marker landed verdict ctarget
+  containment_tree "$oracle_home"
+  containment_tree "$drafter_home"
+  oracle_dest="${template//@H/$oracle_home}"
+  drafter_dest="${template//@H/$drafter_home}"
+
+  # The oracle. A marker rather than a stat comparison, because `find -type f`
+  # does not follow the links this tree hangs out of the protected directory
+  # and a grep for content cannot be fooled by one.
+  marker="where-did-this-land-$$-${RANDOM}"
+  if ! printf '%s\n' "$marker" > "$oracle_dest" 2>/dev/null; then
+    printf 'the oracle write on %s could not be performed, so this case has no verdict to compare against\n' \
+      "$oracle_dest" >&2
+    return 1
+  fi
+  if [ -n "$(find "$oracle_home/.claude" -type f -exec grep -lF -- "$marker" {} + 2>/dev/null || true)" ]; then
+    landed=inside
+  else
+    landed=outside
+  fi
+
+  ctarget="$(target_from tests/fixtures/f01/valid-full bound-target)"
+  draft_run_home "$drafter_home" -t "$ctarget" -o "$drafter_dest"
+  if [ "$code" -eq 0 ]; then verdict=accepted; else verdict=refused; fi
+
+  if [ "$landed" = inside ] && [ "$verdict" = refused ]; then return 0; fi
+  if [ "$landed" = outside ] && [ "$verdict" = accepted ]; then return 0; fi
+  printf 'the destination %s: a write on that spelling lands %s the protected directory, and the drafter %s it (exit %s)\n%s\n' \
+    "$template" "$landed" "$verdict" "$code" "$errout" >&2
+  return 1
+}
+
+# Five of these twelve spellings are the defect, in both of its directions, and
+# seven are the controls that stop the repair from being "refuse everything".
+# They are one list because the script cannot tell them apart either.
+for bound_case in \
+  '@H/.claude/skills/b1.md' \
+  '@H/aside/b2.md' \
+  '@H/chain/b3.md' \
+  '@H/aside/../b4.md' \
+  '@H/chain/../b5.md' \
+  '@H/aside/../../.claude/skills/b6.md' \
+  '@H/.claude/away/../b7.md' \
+  '@H/.claude/rel/../b8.md' \
+  '@H/.claude/away/b9.md' \
+  '@H/.claude-notes/b10.md' \
+  '@H/plain/../.claude/skills/b11.md' \
+  '@H/.claude/skills/../../plain/b12.md'
+do
+  assert "the drafter's verdict for $bound_case is where a write on it lands" \
+    containment_agrees "$bound_case"
+done
+
+# `-o` re-run over its own output. The flag exists so a draft can be kept
+# somewhere of the caller's choosing, and a caller who audits the same skill
+# twice writes to the same file twice — which the default destination does
+# happily, overwriting the previous `REWRITE-DRAFT.md`. While `path_resolved`
+# ended in `cd -P`, every destination that already existed as a regular file
+# came back unresolvable, so the second run exited 3 saying it could not tell
+# where the draft would go: an undocumented fifth refusal, and the one
+# destination the flag is most likely to be pointed at twice.
+idem_target="$(target_from tests/fixtures/f01/valid-full idempotent-out)"
+idem_out="$out_home/plain/idempotent.md"
+rm -f "$idem_out"
+draft_run_home "$out_home" -t "$idem_target" -o "$idem_out"
+assert "the first run to a fresh destination exits 0" test "$code" -eq 0
+idem_first="$work/idempotent-first"
+cp "$idem_out" "$idem_first"
+draft_run_home "$out_home" -t "$idem_target" -o "$idem_out"
+assert "-o re-run over its own output exits 0, as the default destination does" \
+  test "$code" -eq 0
+assert "-o re-run over its own output rewrote the draft rather than leaving the first one" \
+  test -f "$idem_out"
+assert "the re-run did not report that it could not tell where the draft would go" \
+  test -z "$(printf '%s\n' "$errout" | grep -F 'could not be resolved' || true)"
+
+# And the same property one step out: a destination that is somebody else's
+# existing file is a destination, not a path with no answer. The drafter
+# overwrites it, which is what `-o` promises — "anywhere else you can write, it
+# will write" — and the refusals are a short list rather than a sandbox.
+existing_target="$(target_from tests/fixtures/f01/valid-full existing-file-out)"
+existing_out="$out_home/plain/notes-of-mine.md"
+printf 'my own notes\n' > "$existing_out"
+draft_run_home "$out_home" -t "$existing_target" -o "$existing_out"
+assert "a destination that already exists as a regular file is written, not refused" \
+  test "$code" -eq 0
+assert "the draft replaced the file that was there" \
+  grep -q 'Rewrite draft' "$existing_out"
 
 # And the other half of the resolution rule, which is the one that cannot be
 # got at by choosing a better destination: **a path that cannot be resolved
