@@ -379,6 +379,107 @@ complete and nothing in it is comparable, and **1** for every usage error
 including a profile that could not be read. The report is written to stdout
 whatever the status: when nothing compared, the reasons are the answer.
 
+## Experiment contract (`skill-architect/experiment/v1`)
+
+`compare` is handed two profiles. The **experiment** is the layer that produces
+them: it declares two conditions, expands them into the runs that will be
+executed, executes those runs, and hands each pair to `CompareProfiles`. Three
+documents, each with its own schema because each is stored and read back:
+
+| document | schema | produced by |
+|---|---|---|
+| design | `skill-architect/experiment/v1` | a human, by hand |
+| plan | `skill-architect/experiment-plan/v1` | `GeneratePlan(design)` |
+| result | `skill-architect/experiment-result/v1` | `RunPlan(plan)` |
+
+Because the experiment is what *makes* the pair, it is the only layer that can
+refuse to make a bad one. It refuses at three times, earliest first.
+
+### 1. The design refuses any declaration the runner cannot honour
+
+A design may declare only what the runner actually does. Running a design that
+asked for a randomised order in blocked order, or for a ratio by subtraction,
+produces a document that is the record of an experiment nobody ran — and the
+document is what outlives the run.
+
+- `ordering` — only `blocked` (every repetition of one task family, then the
+  next). `random` is **refused**, not accepted-and-noted: nothing randomises.
+- `analysis_method` — only `difference`. The comparison subtracts; nothing here
+  computes a ratio.
+- `stopping_rule` — only `fixed`. Stopping early on a peek needs alpha-spending
+  or a minimum-N guard to stay honest; until that machinery exists, accepting
+  the word would permit peeking and call it a stopping rule.
+- `name`, `task_families` (no empty names), and each condition's `command`,
+  `snapshot_hash` and `skill_dir` are required.
+- Each `command` must mention **`$PROFILE`**. The plan chooses where each
+  profile goes; a command that ignores it writes somewhere nothing reads.
+- **Both conditions must name the same harness**, and it must be one the
+  registry answers to. Two harnesses measure with different meters, so a
+  difference between them is not a difference in the skill. `compare` treats a
+  differing `harness` as a *note* — a human handing it two profiles may have a
+  reason — but the experiment is deciding what to capture, so it refuses. This
+  is why a run can never produce a cross-harness pair.
+
+Defaults are applied before the refusals: `repetitions` defaults to 1, the three
+declarations to their single supported values, and `harness` to the registered
+adapter **only while exactly one is registered** — with two, there is no longer
+one thing the design could have meant, and it has to say which.
+
+`LoadExperimentDesign` normalizes as it reads, so a design cannot enter through
+a file unchecked.
+
+### 2. The plan is a document, expanded once and executed later
+
+One run per repetition of each task family; each run is a **pair** — a
+`baseline` step and a `candidate` step as named fields, so a run with one step
+cannot be written down at all.
+
+- `$TASK`, `$REP` and `$PROFILE` are substituted into the command at plan time.
+- Environment variables are **not** expanded. A plan is kept and run later,
+  possibly elsewhere: expanding the planning machine's environment would bake
+  its values into the record, and an unset variable would become an empty string
+  at plan time instead of being the shell's problem at run time. The shell that
+  runs the step expands what is left.
+- A task family becomes one path component, with everything but letters, digits,
+  `-` and `_` replaced. There is no `.` left to make a `..` out of and no
+  separator left to start a component, so a task family cannot name a file
+  outside `output_dir`.
+- Every step in a plan writes its own profile path. `LoadPlan` refuses a plan
+  with no runs, a step with no command or no profile path, and two steps of one
+  run writing the same path.
+
+### 3. The run refuses a profile that is not the one the step declared
+
+- The step's command is run by `sh -c`. Its **stdout is redirected to stderr**,
+  because stdout belongs to the result document a wrapper parses.
+- The profile file is stamped before and after. A command that exits 0 and
+  writes nothing is refused — the path is then either empty or, worse, holds a
+  profile from an earlier run, which would be compared and reported as this
+  run's numbers.
+- The profile is read with `LoadProfile` and checked against what the step
+  declared: `harness`, `snapshot_hash`, `skill_dir`. A profile that disagrees is
+  the wrong file.
+- What is left is **the comparison's own refusal**, which is not restated here.
+  The two commands are the caller's and nothing can promise they are the same
+  build of the profiler, so a pair read by two adapter versions is still
+  possible — and `CompareProfiles` refuses it, upstream of every subtraction.
+
+A refused comparison is a **result, not an error**: every run is an independent
+observation, and one pair the comparator will not subtract does not discard the
+runs that worked. A step that fails, or that produces a profile the plan did not
+ask for, **is** an error and stops the experiment; the setup is wrong and every
+run after it would be wrong the same way.
+
+The result's own `comparable` is **derived**: true when the experiment ran at
+least one run and *every* run of it compared something. The "at least one" is
+not defensive — "every run compared" is vacuously true of no runs, and an
+experiment that executed nothing would otherwise report itself a success.
+
+`experiment run` exits **0** when every run compared something, **2** when it
+ran and some run did not, and **1** for every usage error and every failed step.
+The result is on stdout for 0 and 2; a failed step leaves no result to print.
+`design` and `plan` execute nothing and exit **0** or **1**.
+
 ## Adapter implementations (Slice 1 scope)
 
 ### Claude Code adapter (Slice 1)

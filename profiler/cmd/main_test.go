@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -50,10 +51,23 @@ func TestCaptureFlagError_AllowsTheOtelOnlyInvocation(t *testing.T) {
 
 // buildProfiler builds the CLI the way a user does, because the exit status is
 // a property of the process and not of any function inside it.
+//
+// The binary is built with -cover when GOCOVERDIR is set, which `go test
+// -cover` sets for the test process and plain `go test` does not. Without it
+// the coverage figure for this package is an artifact: every test here runs the
+// CLI as a *subprocess*, and the tool counts only statements executed in the
+// test process — so adding a subcommand exercised end to end makes the reported
+// percentage fall. With it, the subprocess writes its counters into the same
+// directory and `go test -cover ./cmd` reports what the suite actually reaches:
+// 8.5% becomes 91.5%, measured at e26b2a5.
 func buildProfiler(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "profiler")
-	build := exec.Command("go", "build", "-o", bin, ".")
+	args := []string{"build", "-o", bin}
+	if os.Getenv("GOCOVERDIR") != "" {
+		args = append(args, "-cover", "-coverpkg=github.com/Okja-Engineering/skill-architect/profiler/cmd")
+	}
+	build := exec.Command("go", append(args, ".")...)
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}
@@ -231,6 +245,12 @@ func TestRequestedHelpExitsZero(t *testing.T) {
 		{"--help on capture", []string{"capture", "--help"}},
 		{"--help on compare", []string{"compare", "--help"}},
 		{"help as a word", []string{"help"}},
+		{"-h on experiment", []string{"experiment", "-h"}},
+		{"--help on experiment", []string{"experiment", "--help"}},
+		{"help as a word under experiment", []string{"experiment", "help"}},
+		{"-h on experiment design", []string{"experiment", "design", "-h"}},
+		{"-h on experiment plan", []string{"experiment", "plan", "-h"}},
+		{"-h on experiment run", []string{"experiment", "run", "-h"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := exec.Command(bin, tc.args...)
@@ -269,6 +289,23 @@ func TestUsageErrorsExitOneSoThatTwoMeansOneThing(t *testing.T) {
 	}
 	absent := filepath.Join(dir, "absent.json")
 
+	// experiment reads a design or a plan, so its ways of getting it wrong
+	// include the documents themselves — and the two flags that name them are
+	// alternatives, not a pair.
+	//
+	// Both documents are *valid*, deliberately: a case that names two files one
+	// of which would be refused anyway proves nothing about the refusal being
+	// tested, because the command would exit 1 on the document either way.
+	designDoc := experimentDesign(t, dir,
+		storedProfile(profiler.AdapterVersion, "old", 1000, 10000),
+		storedProfile(profiler.AdapterVersion, "new", 500, 6000))
+	design := writeJSONFile(t, dir, "design.json", designDoc)
+	validPlan, err := profiler.GeneratePlan(designDoc)
+	if err != nil {
+		t.Fatalf("generate a valid plan: %v", err)
+	}
+	plan := writeJSONFile(t, dir, "plan.json", validPlan)
+
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -296,6 +333,21 @@ func TestUsageErrorsExitOneSoThatTwoMeansOneThing(t *testing.T) {
 		{"a candidate that is not there", []string{"compare", "--baseline", valid, "--candidate", absent}},
 		{"a baseline that is not a profile", []string{"compare", "--baseline", notAProfile, "--candidate", valid}},
 		{"a candidate that is not a profile", []string{"compare", "--baseline", valid, "--candidate", notAProfile}},
+		{"experiment with no subcommand", []string{"experiment"}},
+		{"an unknown experiment subcommand", []string{"experiment", "frobnicate"}},
+		{"experiment design with no file", []string{"experiment", "design"}},
+		{"experiment plan with no file", []string{"experiment", "plan"}},
+		{"experiment run with neither a design nor a plan", []string{"experiment", "run"}},
+		// Two sources for one plan: whichever were preferred, the other was
+		// silently ignored, and the document that ran is not the one the caller
+		// thinks they named.
+		{"experiment run with both a design and a plan", []string{"experiment", "run", "--design", design, "--plan", plan}},
+		{"an unknown flag on experiment plan", []string{"experiment", "plan", "--bogus-flag"}},
+		{"an unknown flag on experiment run", []string{"experiment", "run", "--bogus-flag"}},
+		{"a design that is not there", []string{"experiment", "plan", "--file", absent}},
+		{"a design that is not a design", []string{"experiment", "plan", "--file", notAProfile}},
+		{"a plan that is not a plan", []string{"experiment", "run", "--plan", notAProfile}},
+		{"a design given where a plan is wanted", []string{"experiment", "run", "--plan", design}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := exec.Command(bin, tc.args...)
@@ -430,11 +482,11 @@ func storedProfile(adapterVersion, sessionID string, input, totalMs int) profile
 	return p
 }
 
-func writeProfileFile(t *testing.T, dir, name string, p profiler.Profile) string {
+func writeJSONFile(t *testing.T, dir, name string, v any) string {
 	t.Helper()
-	data, err := json.MarshalIndent(p, "", "  ")
+	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		t.Fatalf("marshal profile: %v", err)
+		t.Fatalf("marshal %s: %v", name, err)
 	}
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
@@ -443,18 +495,30 @@ func writeProfileFile(t *testing.T, dir, name string, p profiler.Profile) string
 	return path
 }
 
+func writeProfileFile(t *testing.T, dir, name string, p profiler.Profile) string {
+	t.Helper()
+	return writeJSONFile(t, dir, name, p)
+}
+
+// runCLI runs the command and returns everything a caller can observe: the two
+// streams apart, because which of them a thing was said on is part of the
+// contract, and the status, because it is what a script branches on.
+func runCLI(t *testing.T, bin string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	var outBuf, errBuf strings.Builder
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	_ = cmd.Run()
+	return outBuf.String(), errBuf.String(), cmd.ProcessState.ExitCode()
+}
+
 // runCompare runs the command and returns everything a caller can observe.
 // The report is parsed only when stdout holds one; a usage error prints no
 // report at all, and that is itself part of the contract.
 func runCompare(t *testing.T, bin string, args ...string) (report profiler.ComparisonReport, stdout, stderr string, code int) {
 	t.Helper()
-	cmd := exec.Command(bin, append([]string{"compare"}, args...)...)
-	var outBuf, errBuf strings.Builder
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
-	_ = cmd.Run()
-	stdout, stderr = outBuf.String(), errBuf.String()
-	code = cmd.ProcessState.ExitCode()
+	stdout, stderr, code = runCLI(t, bin, append([]string{"compare"}, args...)...)
 	if strings.HasPrefix(strings.TrimSpace(stdout), "{") {
 		if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 			t.Fatalf("stdout is not a comparison report: %v\n%s", err, stdout)
@@ -603,6 +667,311 @@ func TestCompare_EveryMetricInTheReportNamesBothSources(t *testing.T) {
 	}
 }
 
+// --- experiment ---
+//
+// `experiment run` is the command that *makes* the pairs `compare` reads. Its
+// rules live beside the runner in package profiler and are tested there; these
+// are the command — the three subcommands a user types, what they print, which
+// stream they print it on, and the status a wrapping script branches on.
+
+// experimentDesign builds a design whose two commands copy prepared profiles
+// into place: the shape of a real experiment, with the capture replaced by
+// something these tests can predict.
+func experimentDesign(t *testing.T, dir string, baseline, candidate profiler.Profile) profiler.ExperimentDesign {
+	t.Helper()
+	basePath := writeProfileFile(t, dir, "baseline-fixture.json", baseline)
+	candPath := writeProfileFile(t, dir, "candidate-fixture.json", candidate)
+	condition := func(name string, p profiler.Profile, fixture string) profiler.Condition {
+		return profiler.Condition{
+			Name:         name,
+			Harness:      p.Harness,
+			SnapshotHash: p.SnapshotHash,
+			SkillDir:     p.SkillDir,
+			Command:      fmt.Sprintf("cp %q \"$PROFILE\"", fixture),
+		}
+	}
+	return profiler.ExperimentDesign{
+		Schema:       profiler.ExperimentSchema,
+		Name:         "skill-rewrite-efficiency",
+		TaskFamilies: []string{"audit"},
+		Repetitions:  1,
+		OutputDir:    filepath.Join(dir, "results"),
+		Baseline:     condition("no-skill", baseline, basePath),
+		Candidate:    condition("with-skill", candidate, candPath),
+	}
+}
+
+// runExperiment runs a subcommand and parses the document it printed, when it
+// printed one. A usage error prints no document, and that is part of the
+// contract too.
+func runExperiment(t *testing.T, bin string, args ...string) (result profiler.ExperimentResult, stdout, stderr string, code int) {
+	t.Helper()
+	stdout, stderr, code = runCLI(t, bin, append([]string{"experiment"}, args...)...)
+	if strings.HasPrefix(strings.TrimSpace(stdout), "{") {
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("stdout is not a JSON document: %v\n%s", err, stdout)
+		}
+	}
+	return result, stdout, stderr, code
+}
+
+// The failure this command could introduce that `compare` cannot: the two
+// capture commands are the caller's, and nothing stops one of them being an
+// older build of the profiler. An experiment that subtracted that pair would
+// report the reader's changes as the skill's, with the authority of a document
+// that says an experiment was run.
+func TestExperimentRun_RefusesAPairReadByTwoAdapterVersions(t *testing.T) {
+	bin := buildProfiler(t)
+	dir := t.TempDir()
+	design := experimentDesign(t, dir,
+		storedProfile("0.4.1", "old", 1000, 10000),
+		storedProfile(profiler.AdapterVersion, "new", 500, 6000))
+	designFile := writeJSONFile(t, dir, "design.json", design)
+
+	result, stdout, stderr, code := runExperiment(t, bin, "run", "--design", designFile)
+
+	if code != 2 {
+		t.Errorf("exit status = %d, want 2 — no run of this experiment compared anything\n%s", code, stderr)
+	}
+	if result.Comparable {
+		t.Error("the result says the experiment is comparable")
+	}
+	if len(result.Runs) != 1 {
+		t.Fatalf("runs = %d, want 1 — the run happened and its refusal is the answer", len(result.Runs))
+	}
+	for _, want := range []string{"0.4.1", profiler.AdapterVersion} {
+		if !strings.Contains(result.Runs[0].Comparison.Refusal, want) {
+			t.Errorf("refusal = %q, want it to name version %q", result.Runs[0].Comparison.Refusal, want)
+		}
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr = %q, want it to name version %q — a human running this must not have to parse the JSON", stderr, want)
+		}
+	}
+	// -500 is the delta this pair would have produced.
+	if strings.Contains(stdout, "-500") {
+		t.Errorf("the refused delta is in the result anyway:\n%s", stdout)
+	}
+
+	// The control: the same experiment with both profiles read by one adapter
+	// version does compare, and does produce that delta. Without it, a `run`
+	// that refused everything would pass every assertion above.
+	controlDir := t.TempDir()
+	control := experimentDesign(t, controlDir,
+		storedProfile(profiler.AdapterVersion, "old", 1000, 10000),
+		storedProfile(profiler.AdapterVersion, "new", 500, 6000))
+	controlFile := writeJSONFile(t, controlDir, "design.json", control)
+	got, controlOut, _, controlCode := runExperiment(t, bin, "run", "--design", controlFile)
+	if controlCode != 0 {
+		t.Fatalf("exit status = %d, want 0 — one adapter version, so the pair compares", controlCode)
+	}
+	if !got.Comparable {
+		t.Fatal("the control experiment did not compare, so the refusal above proves nothing")
+	}
+	if !strings.Contains(controlOut, "-500") {
+		t.Errorf("the control did not report the delta, so the refusal above proves nothing:\n%s", controlOut)
+	}
+}
+
+// The exit status is what a script branches on, and it means the same three
+// things `capture` and `compare` made it mean: 0 the command did what it says,
+// 2 it ran and produced nothing comparable, 1 the caller or the setup is wrong.
+func TestExperimentRun_ExitStatusSaysWhetherEveryRunCompared(t *testing.T) {
+	bin := buildProfiler(t)
+
+	comparable := func(t *testing.T) string {
+		dir := t.TempDir()
+		d := experimentDesign(t, dir,
+			storedProfile(profiler.AdapterVersion, "old", 1000, 10000),
+			storedProfile(profiler.AdapterVersion, "new", 500, 6000))
+		return writeJSONFile(t, dir, "design.json", d)
+	}
+	refused := func(t *testing.T) string {
+		dir := t.TempDir()
+		d := experimentDesign(t, dir,
+			storedProfile("0.4.1", "old", 1000, 10000),
+			storedProfile(profiler.AdapterVersion, "new", 500, 6000))
+		return writeJSONFile(t, dir, "design.json", d)
+	}
+	stepFails := func(t *testing.T) string {
+		dir := t.TempDir()
+		d := experimentDesign(t, dir,
+			storedProfile(profiler.AdapterVersion, "old", 1000, 10000),
+			storedProfile(profiler.AdapterVersion, "new", 500, 6000))
+		d.Candidate.Command = `echo "$PROFILE" >/dev/null; exit 3`
+		return writeJSONFile(t, dir, "design.json", d)
+	}
+	wroteNothing := func(t *testing.T) string {
+		dir := t.TempDir()
+		d := experimentDesign(t, dir,
+			storedProfile(profiler.AdapterVersion, "old", 1000, 10000),
+			storedProfile(profiler.AdapterVersion, "new", 500, 6000))
+		d.Baseline.Command = `true # "$PROFILE"`
+		return writeJSONFile(t, dir, "design.json", d)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		design func(*testing.T) string
+		want   int
+		about  string
+	}{
+		{"an experiment whose every run compared", comparable, 0, "the pair was read the same way on both sides"},
+		{"an experiment whose run was refused", refused, 2, "the comparison produced no number, and 2 is how a wrapper learns that"},
+		{"a capture command that fails", stepFails, 1, "the setup is wrong; there is no result to report"},
+		{"a capture command that writes no profile", wroteNothing, 1, "the step did not produce what the plan asked for"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, stdout, stderr, code := runExperiment(t, bin, "run", "--design", tc.design(t))
+			if code != tc.want {
+				t.Errorf("exit status = %d, want %d — %s\n%s", code, tc.want, tc.about, stderr)
+			}
+			if tc.want == 1 {
+				// An experiment that could not be run has no result to print,
+				// and printing an empty one would be a document saying nothing
+				// happened rather than that something failed.
+				if strings.TrimSpace(stdout) != "" {
+					t.Errorf("a failed experiment printed a document on stdout:\n%s", stdout)
+				}
+				return
+			}
+			// 0 and 2 both produced a result, because when nothing compared the
+			// reasons in it are the point.
+			if result.Schema != profiler.ExperimentResultSchema {
+				t.Errorf("stdout schema = %q, want %q\n%s", result.Schema, profiler.ExperimentResultSchema, stdout)
+			}
+			if (code == 0) != result.Comparable {
+				t.Errorf("exit status %d disagrees with the result's own comparable=%v", code, result.Comparable)
+			}
+		})
+	}
+}
+
+// stdout is the result document a wrapper parses, and the capture commands are
+// the caller's — they print whatever they print. Their output must not end up
+// inside the document.
+func TestExperimentRun_KeepsWhatTheCaptureCommandsPrintOffStdout(t *testing.T) {
+	bin := buildProfiler(t)
+	dir := t.TempDir()
+	design := experimentDesign(t, dir,
+		storedProfile(profiler.AdapterVersion, "old", 1000, 10000),
+		storedProfile(profiler.AdapterVersion, "new", 500, 6000))
+	noise := "capture-command-chatter"
+	design.Baseline.Command = fmt.Sprintf("echo %s; %s", noise, design.Baseline.Command)
+	designFile := writeJSONFile(t, dir, "design.json", design)
+
+	result, stdout, stderr, code := runExperiment(t, bin, "run", "--design", designFile)
+	if code != 0 {
+		t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+	}
+	// The word appears in the document legitimately, inside the recorded
+	// command — a result has to say what it ran. What must not appear is the
+	// echoed *line*, which is what the command printed.
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.TrimSpace(line) == noise {
+			t.Errorf("the capture command's own output is on stdout, where the document is:\n%s", stdout)
+		}
+	}
+	if !strings.Contains(stderr, noise) {
+		t.Errorf("the capture command's output went nowhere; it must still be visible on stderr:\n%s", stderr)
+	}
+	if result.Schema != profiler.ExperimentResultSchema {
+		t.Errorf("stdout is not a result document:\n%s", stdout)
+	}
+	// And the document is the whole of stdout: a line before it would leave a
+	// wrapper unable to parse what it stored.
+	if trimmed := strings.TrimSpace(stdout); !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+		t.Errorf("stdout is not one JSON document:\n%s", stdout)
+	}
+}
+
+// `design` and `plan` are the two steps before anything is executed: one says
+// what the design means once the defaults are applied, the other says what will
+// be run. Both are refusals-first, because refusing after the money is spent is
+// not refusing.
+func TestExperimentDesignAndPlan_AnswerBeforeAnythingIsExecuted(t *testing.T) {
+	bin := buildProfiler(t)
+	dir := t.TempDir()
+	design := experimentDesign(t, dir,
+		storedProfile(profiler.AdapterVersion, "old", 1000, 10000),
+		storedProfile(profiler.AdapterVersion, "new", 500, 6000))
+	design.Repetitions = 3
+	design.Ordering = ""
+	designFile := writeJSONFile(t, dir, "design.json", design)
+
+	t.Run("design prints the design with its defaults applied", func(t *testing.T) {
+		stdout, stderr, code := runCLI(t, bin, "experiment", "design", "--file", designFile)
+		if code != 0 {
+			t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+		}
+		var got profiler.ExperimentDesign
+		if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+			t.Fatalf("stdout is not a design: %v\n%s", err, stdout)
+		}
+		if got.Ordering != "blocked" || got.StoppingRule != "fixed" || got.AnalysisMethod != "difference" {
+			t.Errorf("design = %+v, want the defaults filled in", got)
+		}
+	})
+
+	t.Run("plan materializes one run per repetition", func(t *testing.T) {
+		stdout, stderr, code := runCLI(t, bin, "experiment", "plan", "--file", designFile)
+		if code != 0 {
+			t.Fatalf("exit status = %d, want 0\n%s", code, stderr)
+		}
+		var plan profiler.ExperimentPlan
+		if err := json.Unmarshal([]byte(stdout), &plan); err != nil {
+			t.Fatalf("stdout is not a plan: %v\n%s", err, stdout)
+		}
+		if plan.Schema != profiler.ExperimentPlanSchema {
+			t.Errorf("schema = %q, want %q", plan.Schema, profiler.ExperimentPlanSchema)
+		}
+		if len(plan.Runs) != 3 {
+			t.Errorf("runs = %d, want 3", len(plan.Runs))
+		}
+		// Nothing was executed: `plan` is the step you read before you spend.
+		for _, run := range plan.Runs {
+			if _, err := os.Stat(run.Baseline.ProfilePath); err == nil {
+				t.Errorf("plan wrote a profile at %q — it must execute nothing", run.Baseline.ProfilePath)
+			}
+		}
+	})
+
+	t.Run("a plan can be run later from the file", func(t *testing.T) {
+		stdout, _, code := runCLI(t, bin, "experiment", "plan", "--file", designFile)
+		if code != 0 {
+			t.Fatalf("plan exit status = %d, want 0", code)
+		}
+		planFile := filepath.Join(dir, "plan.json")
+		if err := os.WriteFile(planFile, []byte(stdout), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		result, _, stderr, code := runExperiment(t, bin, "run", "--plan", planFile)
+		if code != 0 {
+			t.Fatalf("run exit status = %d, want 0\n%s", code, stderr)
+		}
+		if len(result.Runs) != 3 {
+			t.Errorf("runs = %d, want 3 — the plan on disk is what was executed", len(result.Runs))
+		}
+	})
+
+	t.Run("a design the rules refuse is refused by both, and says why", func(t *testing.T) {
+		refused := design
+		refused.StoppingRule = "threshold"
+		file := writeJSONFile(t, dir, "refused.json", refused)
+		for _, sub := range []string{"design", "plan"} {
+			stdout, stderr, code := runCLI(t, bin, "experiment", sub, "--file", file)
+			if code != 1 {
+				t.Errorf("%s exit status = %d, want 1", sub, code)
+			}
+			if !strings.Contains(stderr, "stopping_rule") {
+				t.Errorf("%s said %q on stderr, want the reason", sub, stderr)
+			}
+			if strings.TrimSpace(stdout) != "" {
+				t.Errorf("%s printed a document for a design it refused:\n%s", sub, stdout)
+			}
+		}
+	})
+}
+
 // --- The help and the dispatcher cannot come to disagree ---
 //
 // Every slice from here to the release adds a subcommand. A command the
@@ -611,7 +980,7 @@ func TestCompare_EveryMetricInTheReportNamesBothSources(t *testing.T) {
 // Both sets are derived — one from main.go's own switch, one from the help text
 // the binary prints — so neither can be updated without the other.
 func TestTheHelpListsEveryCommandTheDispatcherAccepts(t *testing.T) {
-	dispatched := dispatchedCommands(t)
+	dispatched := caseLiteralsIn(t, "main")
 	if len(dispatched) == 0 {
 		t.Fatal("no command was read out of main.go's dispatcher, so this check reads nothing")
 	}
@@ -619,7 +988,7 @@ func TestTheHelpListsEveryCommandTheDispatcherAccepts(t *testing.T) {
 	bin := buildProfiler(t)
 	cmd := exec.Command(bin, "help")
 	helpText, _ := cmd.CombinedOutput()
-	listed := commandsInHelp(string(helpText))
+	listed := commandsUnder(string(helpText), "commands:")
 	if len(listed) == 0 {
 		t.Fatalf("no command was read out of the help text, so this check reads nothing:\n%s", helpText)
 	}
@@ -637,17 +1006,54 @@ func TestTheHelpListsEveryCommandTheDispatcherAccepts(t *testing.T) {
 	}
 }
 
-// dispatchedCommands reads the command names out of the switch in main(),
-// rather than out of a list written down here that would go stale the same way
-// the help text does.
-func dispatchedCommands(t *testing.T) []string {
+// A subcommand with subcommands of its own has the same two halves and the same
+// way of coming apart: `experiment` dispatches three words and prints a list of
+// three words, and nothing but this holds them to each other.
+func TestTheExperimentHelpListsEverySubcommandItDispatches(t *testing.T) {
+	dispatched := caseLiteralsIn(t, "cmdExperiment")
+	if len(dispatched) == 0 {
+		t.Fatal("no subcommand was read out of cmdExperiment's switch, so this check reads nothing")
+	}
+
+	bin := buildProfiler(t)
+	helpText, _, code := runCLI(t, bin, "experiment", "help")
+	if code != 0 {
+		t.Errorf("`experiment help` exited %d, want 0 — help that was asked for is not an error", code)
+	}
+	listed := commandsUnder(helpText, "subcommands:")
+	if len(listed) == 0 {
+		t.Fatalf("no subcommand was read out of the help text, so this check reads nothing:\n%s", helpText)
+	}
+	if !reflect.DeepEqual(dispatched, listed) {
+		t.Errorf("experiment dispatches %v and its help lists %v", dispatched, listed)
+	}
+}
+
+// caseLiteralsIn reads the string literals of the switch inside one named
+// function of main.go, rather than out of a list written down here that would
+// go stale the same way the help text does.
+//
+// Scoped to one function, not to the file: every subcommand that dispatches
+// subcommands of its own adds a switch, and a file-wide walk would read
+// `experiment`'s three words as three top-level commands and fail the check
+// above for a reason that is not a defect.
+func caseLiteralsIn(t *testing.T, funcName string) []string {
 	t.Helper()
 	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
 	if err != nil {
 		t.Fatalf("parse main.go: %v", err)
 	}
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if d, ok := decl.(*ast.FuncDecl); ok && d.Name.Name == funcName {
+			fn = d
+		}
+	}
+	if fn == nil {
+		t.Fatalf("main.go declares no function %q, so this check reads nothing", funcName)
+	}
 	var names []string
-	ast.Inspect(file, func(n ast.Node) bool {
+	ast.Inspect(fn, func(n ast.Node) bool {
 		clause, ok := n.(*ast.CaseClause)
 		if !ok {
 			return true
@@ -669,12 +1075,12 @@ func dispatchedCommands(t *testing.T) []string {
 	return names
 }
 
-// commandsInHelp reads the first word of every line under "commands:".
-func commandsInHelp(help string) []string {
+// commandsUnder reads the first word of every line under a header.
+func commandsUnder(help, header string) []string {
 	var names []string
 	inBlock := false
 	for _, line := range strings.Split(help, "\n") {
-		if strings.HasPrefix(line, "commands:") {
+		if strings.HasPrefix(line, header) {
 			inBlock = true
 			continue
 		}
