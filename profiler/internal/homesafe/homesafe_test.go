@@ -189,6 +189,92 @@ func TestPathContains_AgreesWithWhereTheWriteLands(t *testing.T) {
 	}
 }
 
+// TestPathContains_RefusesAPathItCannotResolve covers the refusal paths the
+// component walk introduced, because "a path that cannot be resolved counts as
+// contained" is one of this package's three stated properties and a refusal
+// nobody has watched fire is not a refusal.
+//
+// Both cases are answers the old implementation got from EvalSymlinks and this
+// one has to produce itself: an empty path is not a path, and a symlink chain
+// that does not end has to be bounded rather than followed. An unbounded walk
+// inside a safety barrier is a barrier that never answers, which is worse than
+// one that refuses.
+func TestPathContains_RefusesAPathItCannotResolve(t *testing.T) {
+	root := t.TempDir()
+
+	t.Run("an empty path", func(t *testing.T) {
+		if _, err := PathContains(root, ""); err == nil {
+			t.Error("PathContains accepted an empty child path instead of refusing to answer")
+		}
+		if _, err := PathContains("", root); err == nil {
+			t.Error("PathContains accepted an empty parent path instead of refusing to answer")
+		}
+	})
+
+	t.Run("a symlink chain that does not end", func(t *testing.T) {
+		// Relative targets, so the cycle is two links and not two absolute
+		// paths that happen to point at each other: the walk splices a
+		// relative target in against the resolved prefix, which is the arm
+		// that would loop.
+		if err := os.Symlink("b", filepath.Join(root, "a")); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		if err := os.Symlink("a", filepath.Join(root, "b")); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		// The premise: the kernel cannot resolve it either, so this is a path
+		// with no answer and not one this test made up.
+		if _, err := os.Stat(filepath.Join(root, "a")); err == nil {
+			t.Fatal("the cycle resolved, so this case is not about a cycle")
+		}
+		if _, err := PathContains(root, filepath.Join(root, "a", "draft.md")); err == nil {
+			t.Error("PathContains answered for a path whose symlink chain does not end; " +
+				"an unresolvable path must be a refusal, not a verdict")
+		}
+	})
+}
+
+// TestPathContains_ResolvesARelativePathAgainstTheWorkingDirectory pins the
+// other half of making a path absolute.
+//
+// The working directory is prepended by concatenation rather than by
+// filepath.Join, for the same reason nothing else here joins: Join cleans, and
+// a caller's relative path may carry the `..` this package exists to fold
+// correctly. The walk then resolves the working directory's own symlinks like
+// any other components — which matters on this platform, where a scratch
+// directory arrives through /var and lives at /private/var.
+func TestPathContains_ResolvesARelativePathAgainstTheWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	protected := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(filepath.Join(protected, "skills"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(protected, "skills"), filepath.Join(root, "aside")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	t.Chdir(root)
+
+	for _, tc := range []struct {
+		name  string
+		child string
+		want  bool
+	}{
+		{"a relative path into it", ".claude/skills/draft.md", true},
+		{"a relative path beside it", "elsewhere/draft.md", false},
+		{"a relative `..` crossing a symlink back into it", "aside/../draft.md", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := PathContains(protected, tc.child)
+			if err != nil {
+				t.Fatalf("PathContains(%q, %q): %v", protected, tc.child, err)
+			}
+			if got != tc.want {
+				t.Errorf("PathContains(%q, %q) = %v, want %v", protected, tc.child, got, tc.want)
+			}
+		})
+	}
+}
+
 func insideOrOutside(inside bool) string {
 	if inside {
 		return "inside"
