@@ -372,8 +372,79 @@ never a cost. `skill_activation` is compared as a set of skill names —
 `only_in_baseline` and `only_in_candidate` — because a bare count cannot say
 which skill stopped firing.
 
+### Running a paired experiment
+
+`compare` is handed two profiles. `experiment` is what produces them: you
+declare the two conditions once, and it expands them into runs, executes them,
+and compares each pair.
+
+```bash
+./profiler experiment design --file ./design.json   # what the design means
+./profiler experiment plan   --file ./design.json   # what would be run
+./profiler experiment run    --design ./design.json > ./result.json
+```
+
+A design is JSON you write by hand:
+
+```json
+{
+  "schema": "skill-architect/experiment/v1",
+  "name": "skill-rewrite-efficiency",
+  "task_families": ["refactor-audit", "refactor-rewrite"],
+  "repetitions": 3,
+  "ordering": "blocked",
+  "analysis_method": "difference",
+  "stopping_rule": "fixed",
+  "output_dir": "./results",
+  "baseline": {
+    "name": "no-skill",
+    "harness": "claude_code",
+    "snapshot_hash": "sha-before",
+    "skill_dir": "./skills/skill-audit",
+    "command": "./capture-baseline.sh $TASK $REP \"$PROFILE\""
+  },
+  "candidate": {
+    "name": "with-skill",
+    "harness": "claude_code",
+    "snapshot_hash": "sha-after",
+    "skill_dir": "./skills/skill-audit",
+    "command": "./capture-candidate.sh $TASK $REP \"$PROFILE\""
+  }
+}
+```
+
+Each command is yours: it runs the agent and writes a profile to the path it is
+given as `$PROFILE` — `profiler capture … > "$PROFILE"` is the usual body.
+`$TASK` and `$REP` are substituted too. **Quote `"$PROFILE"`** if your paths can
+contain spaces; the placeholder is replaced before the shell sees it.
+
+**A design may declare only what the runner does.** `ordering` accepts only
+`blocked`, `analysis_method` only `difference`, and `stopping_rule` only
+`fixed` — early stopping needs alpha-spending guards that do not exist here, and
+without them it is peeking. A design asking for anything else is **refused with
+the reason**, not accepted and quietly run as something else. The two conditions
+must also name the same registered `harness`: two harnesses measure with
+different meters, so a difference between them is not a difference in the skill.
+
+`plan` executes nothing — it is the document you read before you spend. `run`
+takes either a design or a materialized plan, never both.
+
+What `run` refuses, after the money is spent: a capture command that exits 0 and
+writes no profile (the file left at that path would be an earlier run's, and it
+would be compared and reported as this run's numbers), and a profile whose
+`harness`, `snapshot_hash` or `skill_dir` is not what the step declared.
+
+What it cannot refuse in advance is the pair itself — your two commands may be
+two different builds of the profiler. That pair reaches `CompareProfiles` and is
+**refused there**, so a run that used a stale baseline reports a refusal and no
+delta rather than the reader's changes as the skill's.
+
+`run` exits **0** when every run compared something, **2** when it ran and some
+run compared nothing, and **1** for a usage error or a failed step. The result
+document is on stdout; the refusals are also on stderr, one line per run.
+
 See [`docs/profiler-spec.md`](docs/profiler-spec.md) for the adapter interface
-contract and the comparison contract.
+contract, the comparison contract and the experiment contract.
 
 ## Install
 
@@ -682,7 +753,7 @@ here fails it rather than going quietly unrun.
 ## What this plugin does not do
 
 - It does not automatically rewrite the audited skill.
-- It does not run live paired comparisons (with-skill vs without-skill) end to end — the profiler captures runtime signals and `profiler compare` reports the differences between two captured profiles, but scheduling and executing the paired runs is still the caller's job.
+- It does not drive the agent itself. `profiler experiment` schedules a paired run (with-skill vs without-skill), executes it and compares each pair, but the command that runs the agent and writes each profile is yours to supply — the plugin never launches a model or spends tokens of its own.
 - It does not judge subjective writing quality or correctness of domain advice.
 
 See [`.out-of-scope.md`](.out-of-scope.md) for deliberate boundaries.

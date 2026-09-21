@@ -15,6 +15,7 @@ import (
 //	profiler capture --harness claude_code --session <id> --snapshot <sha> --skill-dir <path> [--otel-file <path>]
 //	profiler probe --harness claude_code [--otel-file <path>]
 //	profiler compare --baseline <profile.json> --candidate <profile.json>
+//	profiler experiment {design,plan,run} …
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -28,6 +29,8 @@ func main() {
 		cmdCapture(os.Args[2:])
 	case "compare":
 		cmdCompare(os.Args[2:])
+	case "experiment":
+		cmdExperiment(os.Args[2:])
 	case "version":
 		fmt.Println("profiler " + profiler.AdapterVersion)
 	case "-h", "--help", "help":
@@ -91,12 +94,7 @@ func cmdProbe(args []string) {
 	}
 
 	cap, diags := probeWithDiagnostics(adapter)
-	out, err := json.MarshalIndent(cap, "", "  ")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "marshal error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println(string(out))
+	printJSON(cap)
 
 	// After the report, because the report is the answer and these explain it.
 	// On stderr, because stdout is the report and a consumer parses it.
@@ -172,12 +170,7 @@ func cmdCapture(args []string) {
 		os.Exit(1)
 	}
 
-	out, err := json.MarshalIndent(profile, "", "  ")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "marshal error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println(string(out))
+	printJSON(profile)
 	os.Exit(captureExitCode(profile))
 }
 
@@ -241,12 +234,7 @@ func cmdCompare(args []string) {
 	}
 
 	report := profiler.CompareProfiles(base, cand)
-	out, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "marshal error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println(string(out))
+	printJSON(report)
 
 	// A pair-level refusal is the one thing a human must not have to parse the
 	// report to learn: it means every number they came for is absent, and why.
@@ -269,10 +257,190 @@ func cmdCompare(args []string) {
 // status is non-zero, the refusal and the per-signal reasons in it are the
 // whole point.
 func compareExitCode(r profiler.ComparisonReport) int {
-	if r.Comparable {
+	return exitForComparable(r.Comparable)
+}
+
+// experimentExitCode is the same contract one level up: an experiment that ran
+// and produced nothing comparable is a run a wrapper must not store as a
+// result. It is 2 unless *every* run of the experiment compared something.
+func experimentExitCode(r profiler.ExperimentResult) int {
+	return exitForComparable(r.Comparable)
+}
+
+// exitForComparable is the one place the meaning of 2 lives. Two commands
+// answer to it, and a third would be the one that drifted.
+func exitForComparable(comparable bool) int {
+	if comparable {
 		return 0
 	}
 	return 2
+}
+
+// cmdExperiment dispatches the three steps of a paired experiment: say what the
+// design means, say what will be run, run it.
+//
+// The help words are taken before the switch, so the switch holds the
+// subcommands and nothing else — which is what the help/dispatcher derivation
+// in the tests reads.
+func cmdExperiment(args []string) {
+	if len(args) == 0 {
+		experimentUsage(os.Stderr)
+		os.Exit(1)
+	}
+	if helpRequested(args[0]) {
+		experimentUsage(os.Stdout)
+		return
+	}
+	switch args[0] {
+	case "design":
+		cmdExperimentDesign(args[1:])
+	case "plan":
+		cmdExperimentPlan(args[1:])
+	case "run":
+		cmdExperimentRun(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown experiment subcommand: %s\n", args[0])
+		experimentUsage(os.Stderr)
+		os.Exit(1)
+	}
+}
+
+func helpRequested(word string) bool {
+	return word == "-h" || word == "--help" || word == "help"
+}
+
+// cmdExperimentDesign prints the design as the runner will read it, with the
+// defaults filled in and the refusals applied. It is the step before anything
+// is executed, which is the only point at which a refusal is free.
+func cmdExperimentDesign(args []string) {
+	fs := flag.NewFlagSet("experiment design", flag.ContinueOnError)
+	file := fs.String("file", "", "path to the experiment design JSON")
+	parseFlags(fs, args)
+	if *file == "" {
+		fmt.Fprintln(os.Stderr, "required: --file")
+		os.Exit(1)
+	}
+	design, err := profiler.LoadExperimentDesign(*file)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "experiment design error: %v\n", err)
+		os.Exit(1)
+	}
+	printJSON(design)
+}
+
+// cmdExperimentPlan expands a design into the runs that would be executed, and
+// executes none of them.
+func cmdExperimentPlan(args []string) {
+	fs := flag.NewFlagSet("experiment plan", flag.ContinueOnError)
+	file := fs.String("file", "", "path to the experiment design JSON")
+	parseFlags(fs, args)
+	if *file == "" {
+		fmt.Fprintln(os.Stderr, "required: --file")
+		os.Exit(1)
+	}
+	design, err := profiler.LoadExperimentDesign(*file)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "experiment plan error: %v\n", err)
+		os.Exit(1)
+	}
+	plan, err := profiler.GeneratePlan(design)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "experiment plan error: %v\n", err)
+		os.Exit(1)
+	}
+	printJSON(plan)
+}
+
+// cmdExperimentRun executes a plan and compares each pair it produced.
+//
+// A design or a plan, never both: they are two ways of saying which runs to
+// execute, and accepting both would mean silently preferring one while the
+// caller believes the other is what ran.
+func cmdExperimentRun(args []string) {
+	fs := flag.NewFlagSet("experiment run", flag.ContinueOnError)
+	planFile := fs.String("plan", "", "path to a materialized experiment plan JSON")
+	designFile := fs.String("design", "", "path to an experiment design JSON, planned and then run")
+	parseFlags(fs, args)
+	if (*planFile == "") == (*designFile == "") {
+		fmt.Fprintln(os.Stderr, "required: exactly one of --plan or --design")
+		os.Exit(1)
+	}
+
+	plan, err := loadOrGeneratePlan(*planFile, *designFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "experiment run error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// A step that failed, or that produced a profile the plan did not ask for,
+	// leaves no result to print: the setup is wrong, and that is something the
+	// caller fixes — 1, like every other error they can act on. It is not an
+	// experiment that ran and compared nothing, which is 2.
+	result, err := profiler.RunPlan(plan)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "experiment run error: %v\n", err)
+		os.Exit(1)
+	}
+
+	printJSON(result)
+
+	// The refusals, on stderr, one line per run that produced no number. A
+	// human running an experiment must not have to parse the document to learn
+	// that it measured nothing.
+	for _, run := range result.Runs {
+		if run.Comparison.Comparable {
+			continue
+		}
+		reason := run.Comparison.Refusal
+		if reason == "" {
+			reason = "no signal was present in both profiles, so there was nothing to subtract"
+		}
+		fmt.Fprintf(os.Stderr, "experiment: %s r%d: %s\n", run.TaskFamily, run.Repetition, reason)
+	}
+	os.Exit(experimentExitCode(result))
+}
+
+// loadOrGeneratePlan takes the plan from whichever of the two documents the
+// caller named. Exactly one of them is set; the flag layer has already refused
+// the other three combinations.
+func loadOrGeneratePlan(planFile, designFile string) (profiler.ExperimentPlan, error) {
+	if planFile != "" {
+		return profiler.LoadPlan(planFile)
+	}
+	design, err := profiler.LoadExperimentDesign(designFile)
+	if err != nil {
+		return profiler.ExperimentPlan{}, err
+	}
+	return profiler.GeneratePlan(design)
+}
+
+// printJSON writes the document this command exists to produce. Every
+// subcommand prints one and only to stdout, so a shell redirect stores it and
+// nothing else has to be offered to write a file.
+func printJSON(doc any) {
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "marshal error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(out))
+}
+
+func experimentUsage(w *os.File) {
+	fmt.Fprintln(w, `usage: profiler experiment <subcommand> [flags]
+
+subcommands:
+  design    Print a design with its defaults applied, or say why it is refused
+  plan      Expand a design into the runs it would execute, and execute none
+  run       Execute a plan and compare each pair it produces
+
+flags:
+  design --file <design.json>
+  plan   --file <design.json>
+  run    --plan <plan.json> | --design <design.json>
+
+Each subcommand prints its document on stdout. `+"`run`"+` exits 2 when the
+experiment ran and some run of it compared nothing.`)
 }
 
 // captureFlagError reports why the selected adapter cannot honour the flags it
@@ -298,14 +466,17 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage: profiler <command> [flags]
 
 commands:
-  probe     Probe environment and report capabilities
-  capture   Capture a session profile
-  compare   Compare two captured profiles
-  version   Print version
-  help      Print this help (also -h, --help)
+  probe       Probe environment and report capabilities
+  capture     Capture a session profile
+  compare     Compare two captured profiles
+  experiment  Design, plan or run a paired experiment
+  version     Print version
+  help        Print this help (also -h, --help)
 
 examples:
   profiler probe --harness claude_code --otel-file ./otel-export.json
   profiler capture --harness claude_code --session abc123 --snapshot sha123 --skill-dir ./skills/my-skill --otel-file ./otel-export.json
-  profiler compare --baseline ./before.json --candidate ./after.json`)
+  profiler compare --baseline ./before.json --candidate ./after.json
+  profiler experiment plan --file ./design.json
+  profiler experiment run --design ./design.json > ./result.json`)
 }
