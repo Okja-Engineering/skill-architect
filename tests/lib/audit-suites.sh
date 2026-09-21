@@ -25,8 +25,24 @@
 #
 # Usage: audit-suites.sh <file>...
 # Exit 0 when every file is clean, 1 on any violation, 2 on a usage error.
-# The last line is always `sites=<N> files=<M>`, so a caller can tell "nothing
-# is wrong" from "nothing was examined".
+# The last line is always `sites=<N> files=<M> lines=<L> accounted=<A>`, so a
+# caller can tell "nothing is wrong" from "nothing was examined".
+#
+# `lines` and `accounted` are the two a caller can compare against something.
+# Sites and files are what this found. `lines` is what the reader saw, and
+# `wc -l` over the same arguments is its other side. `accounted` is what the
+# walk actually disposed of, and `lines` is its other side: every record leaves
+# the walk through one of four paths and each increments it, so the two are
+# equal unless something skipped a record without saying so.
+#
+# Held equal per file, the pair refuses the whole class of "this reported
+# nothing because it stopped examining" — a truncation, a limit, an off-by-one
+# in a bound, a runaway heredoc terminator — whichever end it was introduced at.
+# That is not a class a floor on the site count can see: a floor of 200 against
+# a real 740 sat here while an injected `FNR > 400 { next }` took the examined
+# surface down by 68%, with one whole suite audited at zero and every published
+# total unchanged. tests/test_harness.sh is the caller, and it drives that same
+# injection as a control so the check is watched firing.
 #
 # Run it over suites and fixtures, never over tests/lib/harness.sh: the harness
 # is where those names are supposed to be defined.
@@ -104,6 +120,8 @@ BEGIN {
   for (i = 1; i <= n; i++) separator[list[i]] = 1
 
   sites = 0
+  lines = 0
+  accounted = 0
   bad = 0
   in_hd = 0
   hd_term = ""
@@ -322,19 +340,33 @@ function detect_hd(l,   tok) {
   if (tok != "") { hd_term = tok; in_hd = 1 }
 }
 
+# Every input record, counted before any rule below can skip one. First, and on
+# its own, so that a heredoc body, a continuation and a comment are all counted
+# as read: the question this answers is how much of the file this program saw.
+{ lines++ }
+
 FNR == 1 { files++; in_hd = 0; acc = ""; hd_term = "" }
 
+# Every record leaves the rule below through exactly one of four paths, and each
+# of them says so. `accounted` is therefore `lines` unless something skipped a
+# record without accounting for it — which is what a limit, an off-by-one in a
+# bound, or a rule inserted above this one all look like from the outside. The
+# pair is what makes "this examined the whole file" an answerable question
+# rather than a claim: `lines` against `wc -l` catches a reader that stopped,
+# `accounted` against `lines` catches a walk that stopped while the reader went
+# on. tests/test_harness.sh holds both, per file, for equality.
 {
   if (in_hd) {
     probe = $0
     sub(/^[ \t]+/, "", probe)
     if (probe == hd_term) in_hd = 0
+    accounted++
     next
   }
 
   probe = $0
   sub(/^[ \t]+/, "", probe)
-  if (acc == "" && (probe == "" || substr(probe, 1, 1) == "#")) next
+  if (acc == "" && (probe == "" || substr(probe, 1, 1) == "#")) { accounted++; next }
 
   cur = $0
   if (acc == "") startline = FNR
@@ -342,17 +374,19 @@ FNR == 1 { files++; in_hd = 0; acc = ""; hd_term = "" }
     sub(/\\[ \t]*$/, "", cur)
     acc = acc cur
     detect_hd($0)
+    accounted++
     next
   }
   acc = acc cur
   detect_hd($0)
   process(acc, startline)
   acc = ""
+  accounted++
 }
 
 END {
   if (acc != "") process(acc, startline)
-  printf "sites=%d files=%d\n", sites, files
+  printf "sites=%d files=%d lines=%d accounted=%d\n", sites, files, lines, accounted
   if (bad > 0) exit 1
   exit 0
 }

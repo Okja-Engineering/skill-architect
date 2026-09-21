@@ -83,6 +83,85 @@ sites_counted() {
   printf '%s\n' "$out" | sed -n 's/^sites=\([0-9]*\).*/\1/p'
 }
 
+# lines_read <file>... — how many input lines the audit's reader saw.
+lines_read() {
+  local out
+  out="$("$AUDIT" "$@" 2>/dev/null)" || true
+  printf '%s\n' "$out" | sed -n 's/^.*lines=\([0-9]*\).*/\1/p'
+}
+
+# lines_accounted <file>... — how many the walk actually disposed of. Every
+# record leaves the audit's main rule through one of four paths and each one
+# counts itself, so this is lines_read unless something skipped a record without
+# saying so.
+lines_accounted() {
+  local out
+  out="$("$AUDIT" "$@" 2>/dev/null)" || true
+  printf '%s\n' "$out" | sed -n 's/^.*accounted=\([0-9]*\).*/\1/p'
+}
+
+# audit_read_whole_file <file> — the audit read every line there is.
+#
+# This is the derived denominator, and it replaces a floor. The site count used
+# to be asserted `-ge 200` against a real 740, which is the shape this file
+# already refused sixty lines below and then left standing here: a hand-written
+# bound cannot say how much of the surface was examined, only that it was not
+# none. Measured — injecting `FNR > 400 { next }` into the audit dropped the
+# examined sites from 727 to 234 with test_install.sh audited at *zero*, and all
+# seven suites stayed green at exactly their published totals on both shells.
+# 68% of the audited surface gone and nothing fired. This audit is the only
+# thing standing behind non-vacuity for the assert_value sites
+# tests/lib/harness.sh says rest on it.
+#
+# The other side of the count is `wc -l`, which is derived from the artifact and
+# compared for equality. It is asked per file rather than in total, because a
+# total can be made up: one suite going unexamined is the case that happened,
+# and it is invisible in a sum. There is no number in this file for the next
+# assertion to make wrong.
+#
+# Two comparisons and not one, because there are two ends to introduce a limit
+# at. `lines` against `wc -l` catches a reader that stopped. `accounted` against
+# `lines` catches a walk that stopped while the reader went on — which is what
+# the measured regression was: a rule above the walk, with awk still reading
+# every record and reporting so.
+audit_read_whole_file() {
+  local suite="$1"
+  local read_lines
+  local walked_lines
+  local file_lines
+  read_lines="$(lines_read "$suite")"
+  walked_lines="$(lines_accounted "$suite")"
+  file_lines="$(wc -l < "$suite" | tr -d '[:space:]')"
+  if [ "${read_lines:-0}" != "$file_lines" ]; then
+    printf 'the audit read %s lines of %s, which has %s: a check over a file it did not finish reading says nothing about the rest of it\n' \
+      "${read_lines:-0}" "$suite" "$file_lines" >&2
+    return 1
+  fi
+  if [ "${walked_lines:-0}" != "$read_lines" ]; then
+    printf 'the audit read %s lines of %s and accounted for %s: %s lines went past the walk without being examined or deliberately skipped\n' \
+      "$read_lines" "$suite" "${walked_lines:-0}" "$((read_lines - ${walked_lines:-0}))" >&2
+    return 1
+  fi
+  return 0
+}
+
+# <audit script> <file> — the line check's verdict over another audit. A
+# subshell, so the override cannot leak into the checks below.
+read_check_over() {
+  ( AUDIT="$1"; shift; audit_read_whole_file "$@" )
+}
+
+# <audit script> <file> — that audit does not read the whole file, and the check
+# says so. Written as the inverse rather than as `! read_check_over`, because
+# the expected diagnostic of a firing control is noise on a passing run.
+read_check_rejects() {
+  if read_check_over "$@" 2>/dev/null; then
+    printf 'the line check accepted an audit that stops reading at line 400, so it cannot refuse one\n' >&2
+    return 1
+  fi
+  return 0
+}
+
 fixtures="$harness_scratch/fixtures"
 mkdir -p "$fixtures"
 
@@ -201,14 +280,58 @@ for suite in $suites; do
     grep -qF -- "$suite" "$WORKFLOW"
   assert "$suite is in the README's list of the tests to run" \
     listed_in_the_readme "$suite"
+  # And the denominator of the audit itself, per suite. `audit_accepts` above
+  # can only ever say "no violation found", and it says exactly that over a
+  # file it stopped reading and over one it never opened.
+  assert "the audit read every line of $suite, not a prefix of it" \
+    audit_read_whole_file "$suite"
+  assert "the audit found an assertion call site in $suite at all" \
+    test "$(sites_counted "$suite")" -gt 0
 done
 
-# The audit ran over something. A tokenizer that matched nothing would report no
-# violations, and every per-suite check above would pass on an empty reading.
+# And the tally over the suites together is the tally over each of them, so the
+# figure this file prints — the one the release notes quote — is the sum of the
+# per-suite figures the checks above hold, rather than a number produced by a
+# run nothing else saw.
 examined="$(sites_counted $suites)"
+per_suite_total=0
+for suite in $suites; do
+  per_suite_total=$((per_suite_total + $(sites_counted "$suite")))
+done
 echo "  assertion call sites examined: $examined"
-assert "the audit examined every suite's assertions, not an empty reading" \
-  test "${examined:-0}" -ge 200
+echo "  per-suite: $(for suite in $suites; do printf '%s=%s ' "${suite##*/}" "$(sites_counted "$suite")"; done)"
+assert "the audit's tally over the suites together is the sum of its tallies over each" \
+  test "${examined:-0}" -eq "$per_suite_total"
+
+# --- Control: the denominator above can say a file was not finished -----------
+#
+# The check that matters most here can only ever say "it read all of it", and a
+# check that cannot say the opposite is the defect this whole file is about. So
+# it is handed the regression that was used to prove the floor it replaced:
+# `FNR > 400 { next }` inside the audit's own awk program, which is what a
+# plausible limit or an off-by-one in a bound looks like from the outside.
+#
+# The audit is copied and the rule inserted rather than the real one edited, so
+# nothing about this control can reach the checks above — and it is driven over
+# a real suite rather than a fixture, because a four-line fixture is under 400
+# lines and a control that cannot reach the limit it is testing is the shape
+# being refused.
+truncating_audit="$fixtures/audit-that-stops-reading.sh"
+awk '/^FNR == 1 \{ files\+\+/ { print "FNR > 400 { next }" } { print }' "$AUDIT" \
+  > "$truncating_audit"
+chmod +x "$truncating_audit"
+
+assert "the injected control really is a different program from the audit" \
+  quietly grep -qF 'FNR > 400' "$truncating_audit"
+assert "an audit that stops reading at line 400 is refused by the line count" \
+  read_check_rejects "$truncating_audit" tests/test_install.sh
+# And the other direction, over the same copied program with the rule taken back
+# out, so the refusal above is the injected rule's doing and not the copy's.
+untruncated_audit="$fixtures/audit-that-reads-it-all.sh"
+grep -v '^FNR > 400 { next }$' "$truncating_audit" > "$untruncated_audit"
+chmod +x "$untruncated_audit"
+assert "the same audit without the rule reads the whole file, so the copy is not what was refused" \
+  read_check_over "$untruncated_audit" tests/test_install.sh
 
 # --- Controls: the audit rejects each shape of a verdict that cannot fail -----
 

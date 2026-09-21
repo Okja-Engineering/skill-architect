@@ -206,6 +206,26 @@ PAYLOAD_PASS='{"findings": [], "passed": true}'
 PAYLOAD_FAIL='{"findings": [{"level": "fail", "rule": "PT001", "message": "script/reference path not found: ./scripts/nope.sh"}], "passed": false}'
 PAYLOAD_DEP='{"findings": [{"level": "fail", "rule": "DEP001", "message": "required tool not found: jq"}], "passed": false, "error": "required tool not found: jq"}'
 
+# The shared guard, named once. Used from here down -- guard_broken_tree builds
+# its drop-one trees out of it, and the encoder cases below source it.
+GUARD=skills/skill-audit/scripts/verdict-guard.sh
+
+# guard_definition_names <guard file> — the shell functions that file defines.
+#
+# All three spellings bash accepts, and this is the repair rather than a
+# nicety. It read one — `name() {` — in both of the places below, and
+# re-spelling eight of the sixteen primitives as `name ()  {` dropped the
+# derived set from 16 to 8 while `verdict_guard_ready` still loaded fine. Half
+# the primitives lost their drop-one coverage and 24 assertions vanished from
+# this suite's published total with zero failures reported. The definitions are
+# the artifact; one way of writing them is not.
+guard_definition_names() {
+  sed -n -E \
+    -e 's/^([a-z_][a-z_0-9]*)[[:space:]]*\(\)[[:space:]]*\{[[:space:]]*$/\1/p' \
+    -e 's/^function[[:space:]]+([a-z_][a-z_0-9]*)([[:space:]]*\(\))?[[:space:]]*\{[[:space:]]*$/\1/p' \
+    "$1" | sort -u
+}
+
 # guard_broken_tree <mode>
 #
 # A copy of the scripts directory whose shared verdict-guard.sh is unusable.
@@ -223,9 +243,15 @@ PAYLOAD_DEP='{"findings": [{"level": "fail", "rule": "DEP001", "message": "requi
 # runs on until `command not found` at the point it needed the one that is gone.
 # A mode defining a proper subset is the only witness that tells a complete
 # check apart from a partial one.
+#
+# `drop-*` reads the same three spellings as guard_definition_names, because a
+# deletion that matches nothing leaves a *working* guard in the tree and every
+# assertion over that mode becomes a statement about a guard that loads. The
+# cases below assert the deletion happened rather than trusting this `sed`.
 guard_broken_tree() {
   local mode="$1"
   local dir="$mask_root/guard-$mode"
+  local name
   if [[ ! -d "$dir" ]]; then
     cp -R skills/skill-audit/scripts "$dir"
     case "$mode" in
@@ -233,8 +259,13 @@ guard_broken_tree() {
       malformed) printf 'if then fi (\n' > "$dir/verdict-guard.sh" ;;
       empty)     printf '# a guard that defines no guards\n' > "$dir/verdict-guard.sh" ;;
       half)      printf 'cannot_compute() { echo "ERROR: $2" >&2; exit 3; }\n' > "$dir/verdict-guard.sh" ;;
-      drop-*)    sed "/^${mode#drop-}() {\$/,/^}\$/d" \
-                   skills/skill-audit/scripts/verdict-guard.sh > "$dir/verdict-guard.sh" ;;
+      drop-*)
+        name="${mode#drop-}"
+        sed -E \
+          -e "/^${name}[[:space:]]*\(\)[[:space:]]*\{[[:space:]]*\$/,/^\}\$/d" \
+          -e "/^function[[:space:]]+${name}([[:space:]]*\(\))?[[:space:]]*\{[[:space:]]*\$/,/^\}\$/d" \
+          "$GUARD" > "$dir/verdict-guard.sh"
+        ;;
     esac
   fi
   echo "$dir"
@@ -727,17 +758,60 @@ done
 # The set is read out of the guard rather than written here, so a primitive
 # added to the shared file tomorrow is covered the day it lands. A hand-kept
 # list is the same defect one level up: it covers the names a fixer remembered,
-# and the one it did not is exactly the one whose absence nothing catches. The
-# count is asserted first, because an expression that matched no definition
-# would make every case below vacuously true.
-guard_definitions="$(sed -n 's/^\([a-z_][a-z_0-9]*\)() {$/\1/p' skills/skill-audit/scripts/verdict-guard.sh)"
-guard_definition_count="$(printf '%s\n' "$guard_definitions" | grep -c '[a-z]' || true)"
-assert_value "the guard's definitions were enumerated, not read as an empty set" \
-  "$([[ "${guard_definition_count:-0}" -ge 6 ]] && echo true || echo false)"
+# and the one it did not is exactly the one whose absence nothing catches.
+#
+# The enumeration itself is guard_definition_names, up beside guard_broken_tree
+# because the drop-one trees are built by the same reading and had the same
+# single-spelling defect.
+#
+# What changes here is that the count is compared for **equality against the
+# guard's other side**
+# rather than asserted as a floor. `-ge 6` against a real 16 is not a
+# denominator: it is a bound that lets the product lose two thirds of itself and
+# still say it was enumerated, which is the precedent this file already records
+# for `-ge 45` at `BROKEN_CASES_EXPECTED` below. The other side is in the
+# artifact and needs no number here: `verdict_guard_ready` is the one question a
+# caller asks after sourcing, and it carries the list of primitives it checks
+# for. The set the file defines must be that list plus `verdict_guard_ready`
+# itself. Either side growing without the other fails here — including the case
+# that is a bug in its own right, a primitive added to the file that the
+# readiness check does not cover.
+# The names verdict_guard_ready requires to be defined, read out of its own
+# body, plus itself — it is defined last on purpose and does not appear in its
+# own list.
+guard_names_ready_requires() {
+  { sed -n '/^verdict_guard_ready()/,/^}$/p' "$GUARD" \
+      | awk '/for[[:space:]]+g[[:space:]]+in/,/;[[:space:]]*do[[:space:]]*$/' \
+      | sed -e 's/.*for[[:space:]]*g[[:space:]]*in//' -e 's/\\[[:space:]]*$//' \
+            -e 's/;[[:space:]]*do[[:space:]]*$//' \
+      | tr ' \t' '\n\n'
+    echo verdict_guard_ready
+  } | { grep -E '^[a-z_][a-z_0-9]*$' || true; } | sort -u
+}
+
+guard_definitions="$(guard_definition_names "$GUARD")"
 echo "  guard primitives examined: $(printf '%s' "$guard_definitions" | tr '\n' ' ')"
+echo "  verdict_guard_ready requires: $(guard_names_ready_requires | tr '\n' ' ')"
+
+assert_value "the guard's definitions were enumerated, not read as an empty set" \
+  "$([[ -n "$guard_definitions" ]] && echo true || echo false)"
+assert_value "verdict_guard_ready's own list was read, so the comparison has two sides" \
+  "$([[ -n "$(guard_names_ready_requires)" ]] && echo true || echo false)"
+assert_value "every primitive the guard defines is one verdict_guard_ready requires, and none it does not" \
+  "$([[ "$guard_definitions" == "$(guard_names_ready_requires)" ]] && echo true || echo false)"
+if [[ "$guard_definitions" != "$(guard_names_ready_requires)" ]]; then
+  echo "  defined : $(printf '%s' "$guard_definitions" | tr '\n' ' ')"
+  echo "  required: $(guard_names_ready_requires | tr '\n' ' ')"
+fi
 
 for gdrop in $guard_definitions; do
   gdir="$(guard_broken_tree "drop-$gdrop")"
+  # The premise of the case, and it is the same class one level down: the tree
+  # is built by deleting the definition with a `sed` of its own, and a deletion
+  # that matched nothing leaves a *working* guard in the tree. Every assertion
+  # below would then be about a guard that loads.
+  assert_value "the drop-$gdrop tree really lost that definition" \
+    "$(guard_definition_names "$gdir/verdict-guard.sh" | grep -qx "$gdrop" && echo false || echo true)"
   run_present "$gdir/check-structure.sh" --json tests/fixtures/f01/valid-full
   assert_value "check-structure.sh --json, guard missing $gdrop: exits 3, not a status meaning a verdict" \
     "$([[ $code -eq 3 ]] && echo true || echo false)"
@@ -760,7 +834,6 @@ done
 # edges of the control range. A message that exercised only the arms someone
 # thought of is how an encoder ships escaping most of what it is handed.
 
-GUARD=skills/skill-audit/scripts/verdict-guard.sh
 assert_value "verdict-guard.sh sits beside the scripts that source it" "$([[ -f "$GUARD" ]] && echo true || echo false)"
 
 guard_nasty=$'he said "boom" \\ then a tab\there, a newline\na return\ra formfeed\fa backspace\bthen \x01 and \x1f'
@@ -1286,8 +1359,24 @@ $ttool
   done
 done
 echo "  tool preconditions walked: $required_tool_count"
-assert_value "the tool preconditions were enumerated, not read as an empty set" \
-  "$([[ "$required_tool_count" -ge 15 ]] && echo true || echo false)"
+# The denominator, and it is an equality for the reason BROKEN_CASES_EXPECTED
+# below sets out at length. `-ge 15` against a real 20 is a bound, not a
+# denominator: the walk could lose a quarter of itself and still say it had been
+# enumerated. Its neighbour does not cover that — the emptiness of
+# `unprobed_tools` is one-directional, so a *shrinking* walk finds fewer tools
+# to be unprobed and passes more easily. This is the floor the comment at
+# BROKEN_CASES_EXPECTED exempted on the grounds that "each sits beside an exact
+# comparison that does the real work", and for this one that was not true.
+#
+# An exact count is a number someone has to change deliberately, in the commit
+# that added or removed the `require_tool`, which is the only moment anyone can
+# say whether the change was meant.
+REQUIRED_TOOL_PRECONDITIONS_EXPECTED=20
+assert_value "the walk visited every one of the $REQUIRED_TOOL_PRECONDITIONS_EXPECTED tool preconditions the scripts state" \
+  "$([[ "$required_tool_count" -eq "$REQUIRED_TOOL_PRECONDITIONS_EXPECTED" ]] && echo true || echo false)"
+if [[ "$required_tool_count" -ne "$REQUIRED_TOOL_PRECONDITIONS_EXPECTED" ]]; then
+  echo "  the scripts state $required_tool_count tool preconditions, and this file says $REQUIRED_TOOL_PRECONDITIONS_EXPECTED"
+fi
 assert_value "every tool a script requires is probed, or is a source proven where it is read" \
   "$([[ -z "$unprobed_tools" ]] && echo true || echo false)"
 if [[ -n "$unprobed_tools" ]]; then
@@ -1570,11 +1659,44 @@ assert_value "every probed tool is asked at least one question by require_tool, 
 # product, which is the only moment anyone can say whether the change was
 # meant.
 #
-# The other floors in this file are not this shape and are left as they are:
-# each sits beside an exact comparison that does the real work — the readme's
-# list against the scripts' in both directions, the probed tools against the
-# required ones, the doc's rows against the headers — so the floor there is
-# only refusing an empty read. Nothing else counts these cases.
+# That ruling was written here with an exemption for "the other floors in this
+# file", on the grounds that each sat beside an exact comparison doing the real
+# work. It was checked at the release gate and it was **false for three of
+# them**, so the exemption is now an enumeration rather than a generality —
+# because a blanket exemption is how the two worst instances of this went
+# another release.
+#
+# Converted to equalities, each having been a bound materially below its real
+# value, with nothing else counting the set:
+#
+#   - the guard's primitives (`-ge 6`, real 16) — now an equality against
+#     `verdict_guard_ready`'s own list, which is in the artifact, so it needs no
+#     number here. Measured: re-spelling eight definitions dropped the derived
+#     set to 8 and took 24 assertions out of this suite silently.
+#   - the tool preconditions (`REQUIRED_TOOL_PRECONDITIONS_EXPECTED`, was
+#     `-ge 15`, real 20) — its neighbour is the emptiness of `unprobed_tools`,
+#     which is one-directional: a shrinking walk finds fewer tools to be
+#     unprobed and passes more easily.
+#   - the preflight candidates (`PREFLIGHT_CANDIDATES_EXPECTED`, was `-ge 6`,
+#     real 8) — nothing below counts them; a lost candidate is a tool the walk
+#     stops driving.
+#
+# Left as floors, and each of these really is only refusing an empty read,
+# because the set it counts is held exactly in both directions beside it:
+#
+#   - the readme's prerequisite list (`-ge 8`, real 10) — `readme_missing` and
+#     `readme_stale` are the two directions, and either side shrinking puts a
+#     name in one of them.
+#   - the scripts whose exit contract was compared (`-ge 5`, real 6) and the
+#     exit-status witness (`-ge 6`, real 6) — a script losing its stated
+#     contract is runnable with none, which `exit_undocumented` names.
+#   - `probe_calls_of >= 1` per tool — that one is the stated requirement
+#     itself ("at least one question"), not a count of a set, and it is reduced
+#     to an equality on `probe_call_floor` immediately below.
+#
+# Everything else numeric in this file is `-gt 0` on a read that must not be
+# empty, a fixture's own content, or a timing bound. None of them is a
+# denominator.
 BROKEN_CASES_EXPECTED=173
 assert_value "the present-but-broken cross product ran every one of its $BROKEN_CASES_EXPECTED cases" \
   "$([[ "$broken_cases" -eq "$BROKEN_CASES_EXPECTED" ]] && echo true || echo false)"
@@ -2184,8 +2306,18 @@ assert_value "SKILL.md's Stage 2 preflight was read, not matched as an empty set
   "$([[ -s "$preflight_file" ]] && echo true || echo false)"
 assert_value "SKILL.md's Stage 2 names the commands the preflight gates, and there are $stage2_script_n of them" \
   "$([[ "$stage2_script_n" -gt 0 ]] && echo true || echo false)"
-assert_value "the preflight's candidate tools were derived from those commands, not read as an empty set" \
-  "$([[ "$preflight_candidate_n" -ge 6 && "$preflight_walked" -eq "$preflight_candidate_n" ]] && echo true || echo false)"
+# The set and the walk over it, and both are equalities. `-ge 6` against a real
+# 8 was the third floor of this shape in this file: the candidates are derived
+# from the Stage 2 commands' own `require_tool` lines, so a command losing one
+# takes a tool out of the walk, and nothing below counts them — `preflight_
+# disagree` simply finds fewer tools to disagree about. An exact count is a
+# number someone changes in the commit that changed the commands.
+PREFLIGHT_CANDIDATES_EXPECTED=8
+assert_value "the preflight's candidate tools are the $PREFLIGHT_CANDIDATES_EXPECTED those commands require, and every one was walked" \
+  "$([[ "$preflight_candidate_n" -eq "$PREFLIGHT_CANDIDATES_EXPECTED" && "$preflight_walked" -eq "$preflight_candidate_n" ]] && echo true || echo false)"
+if [[ "$preflight_candidate_n" -ne "$PREFLIGHT_CANDIDATES_EXPECTED" ]]; then
+  echo "  the Stage 2 commands require $preflight_candidate_n tools, and this file says $PREFLIGHT_CANDIDATES_EXPECTED"
+fi
 # Both halves of the walk have to be populated, or the invariant below is true
 # of a question nobody asked: with nothing in `needed` it says only "the
 # preflight passes", and with nothing in `ignored` it would be satisfied by a
