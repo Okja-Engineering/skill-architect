@@ -514,17 +514,34 @@ func runCLI(t *testing.T, bin string, args ...string) (stdout, stderr string, co
 
 // cliRun is what a run needs that is not an argument: the home the process
 // sees, and what it reads on stdin.
+//
+// shellLine is for the one thing a case cannot ask by naming the binary and its
+// arguments: what the command string `hooks install` *registered* does when a
+// hook runs it. That string is the product's output, read out of the file, and
+// running it means handing it to a shell the way a hook host would — so the
+// runner takes a command line instead of an argv, rather than a case building
+// its own exec.Command. Sandboxing HOME is the whole point of having one runner,
+// and a hook is precisely the case where forgetting it would write into the
+// machine's real spool.
 type cliRun struct {
-	home  string
-	stdin string
+	home      string
+	stdin     string
+	shellLine string
 }
 
-// runCLIIn is the one place in this file that starts the profiler binary.
+// runCLIIn is the one place in this file that starts a process.
 func runCLIIn(t *testing.T, bin string, run cliRun, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
 	homesafe.MustBeOutside(t, run.home)
 
-	cmd := exec.Command(bin, args...)
+	name, argv := bin, args
+	if run.shellLine != "" {
+		if bin != "" || len(args) != 0 {
+			t.Fatalf("a shellLine run takes no binary and no arguments; got %q %v", bin, args)
+		}
+		name, argv = "/bin/sh", []string{"-c", run.shellLine}
+	}
+	cmd := exec.Command(name, argv...)
 	// HOME is replaced rather than appended to, so there is exactly one and no
 	// question of which the child resolves.
 	cmd.Env = append(envWithout(os.Environ(), "HOME"), "HOME="+run.home)
@@ -1273,12 +1290,16 @@ func TestHooks_DefaultHomeIsTheOneTheBinaryResolves(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
-		// The whole command, not a prefix of it. An absolute path, because PATH
-		// inside a hook's environment is not something this tool gets to
-		// assume, and `|| true` so a failure of ours cannot take the user's
-		// session down — the second half is the part a prefix match cannot see,
+		// The whole command, not a prefix of it. An absolute path to the binary,
+		// because PATH inside a hook's environment is not something this tool
+		// gets to assume; an absolute spool directory, for the same reason
+		// applied to `$HOME` — a hook that resolved its own spool wrote
+		// somewhere `doctor` was not looking, which is what
+		// TestHooksInstall_RegistersACommandThatWritesWhereDoctorLooks holds
+		// end to end; and `|| true` so a failure of ours cannot take the user's
+		// session down. That last clause is the part a prefix match cannot see,
 		// and a mutation that dropped it passed.
-		if want := bin + " ingest || true"; !strings.Contains(string(body), want) {
+		if want := bin + " ingest --spool-dir " + profiler.SpoolDirIn(home) + " || true"; !strings.Contains(string(body), want) {
 			t.Errorf("the registered command is not %q:\n%s", want, body)
 		}
 	})
@@ -1387,6 +1408,96 @@ func TestTheFlagWinsOverTheEnvironment(t *testing.T) {
 			t.Error("the default spool under the environment's home was written even though --spool-dir named another")
 		}
 	})
+}
+
+// TestHooksInstall_RegistersACommandThatWritesWhereDoctorLooks is the property
+// the three subcommands were built to share and did not.
+//
+// `resolveHome` and `resolveHookCommand` each carry a comment saying there is
+// one of them so install and doctor cannot come to disagree about the machine
+// they are talking about. For the hooks.json they could not. For the spool they
+// did: the registered command was `<binary> ingest || true` with no
+// `--spool-dir`, so at hook time `ingest` resolved the spool from `$HOME` —
+// whatever `$HOME` happens to be when a hook fires — while `doctor --home X`
+// reported `X/.skill-architect/spool`. A directory the installed hook never
+// writes to, reported as the spool, with every count in it zero.
+//
+// So this asserts the invariant and never mentions the flag that implements it:
+// **the command `install` registered writes to the spool `doctor` reports.** It
+// finds out by reading the command out of the file, running it, and looking in
+// the directory the report names. A repair that passed the spool some other way
+// passes this; a repair that made the flag appear in the command string and got
+// the path wrong does not.
+//
+// `--home` and the environment's `HOME` are two different sandboxes here, which
+// is the only arrangement that can tell: with them equal, the defect is
+// invisible because both answers are the same directory.
+func TestHooksInstall_RegistersACommandThatWritesWhereDoctorLooks(t *testing.T) {
+	bin := buildProfiler(t)
+	flagHome := homesafe.SandboxHome(t)
+	envHome := homesafe.SandboxHome(t)
+	if flagHome == envHome {
+		t.Fatal("the two sandboxes are the same directory, so this case separates nothing")
+	}
+
+	if _, stderr, code := runCLIIn(t, bin, cliRun{home: envHome},
+		"hooks", "install", "--home", flagHome); code != 0 {
+		t.Fatalf("hooks install failed with status %d: %s", code, stderr)
+	}
+
+	// The registration as it sits in the file, not as this test imagines it.
+	var doc struct {
+		Hooks map[string][]struct {
+			Command string `json:"command"`
+		} `json:"hooks"`
+	}
+	body, err := os.ReadFile(filepath.Join(flagHome, ".cursor", "hooks.json"))
+	if err != nil {
+		t.Fatalf("read the hooks.json install just wrote: %v", err)
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("the hooks.json is not the shape this build writes: %v\n%s", err, body)
+	}
+	entries := doc.Hooks["sessionStart"]
+	if len(entries) != 1 || entries[0].Command == "" {
+		t.Fatalf("no registration to run:\n%s", body)
+	}
+	registered := entries[0].Command
+
+	// Run it the way a hook host runs it: through a shell, with the
+	// environment's own HOME, and nothing else said about where the line should
+	// go. Through the sandboxed runner, because a hook is exactly the case
+	// where a forgotten HOME writes into the machine's real spool.
+	if _, stderr, code := runCLIIn(t, "", cliRun{
+		home:      envHome,
+		stdin:     `{"hook_event_name":"sessionStart"}`,
+		shellLine: registered,
+	}); code != 0 {
+		t.Fatalf("the registered command exited %d: %s\nregistered: %s", code, stderr, registered)
+	}
+
+	// What doctor says the spool is, for the same home install was given.
+	stdout, stderr, code := runCLIIn(t, bin, cliRun{home: envHome}, "doctor", "--home", flagHome)
+	if code != 0 {
+		t.Fatalf("doctor exited %d: %s", code, stderr)
+	}
+	var rep profiler.EnvironmentReport
+	if err := json.Unmarshal([]byte(stdout), &rep); err != nil {
+		t.Fatalf("stdout is not a report: %v\n%s", err, stdout)
+	}
+
+	if rep.Observed.Spool.Lines != 1 {
+		t.Errorf("doctor reports %d lines in %q after the command it says is registered wrote one; "+
+			"the registration and the report are not talking about the same spool\nregistered: %s",
+			rep.Observed.Spool.Lines, rep.Observed.Spool.Dir, registered)
+	}
+	if lines := len(readSpool(t, rep.Observed.Spool.Dir)); lines != 1 {
+		t.Errorf("%d lines in the directory doctor names as the spool, want the one the hook wrote", lines)
+	}
+	if _, err := os.Stat(filepath.Join(envHome, ".skill-architect")); err == nil {
+		t.Errorf("the hook wrote under the environment's home (%s) even though install was given --home %s",
+			envHome, flagHome)
+	}
 }
 
 func TestHooks_UsageErrors(t *testing.T) {
