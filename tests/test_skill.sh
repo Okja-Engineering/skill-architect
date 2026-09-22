@@ -1105,9 +1105,9 @@ assert "the reader skipped records only in the files its own scope names, and in
 
 # --- Controls: the reader can say it did not read the whole tree --------------
 #
-# Every comparison above can only ever say "it read all of it". The 35
+# Every comparison above can only ever say "it read all of it". The 42
 # single-line fixture controls at the top of this block cannot say the opposite
-# about any of them: all 35 run in `--over` mode over a file of one line, so
+# about any of them: all 42 run in `--over` mode over a file of one line, so
 # not one reaches the line count it would take to exercise a limit. A control
 # that cannot reach the condition it tests is the shape tests/test_harness.sh
 # explicitly refuses, and this block had it for the whole of the release. (The

@@ -535,9 +535,9 @@ infrastructure rather than as an adapter, and the harness row draws that distinc
 
 **Verification**
 
-- **3137 assertions across seven shell suites, 0 failed, identical under bash 3.2.57 and
+- **3152 assertions across seven shell suites, 0 failed, identical under bash 3.2.57 and
   bash 5.3.15**: `test_f01` 1912, `test_f02` 350, `test_harness` 276, `test_rewrite` 401,
-  `test_skill` 126, `test_install` 52, `test_walk` 20. Against 0.4.3's 2499 across the same
+  `test_skill` 141, `test_install` 52, `test_walk` 20. Against 0.4.3's 2499 across the same
   seven, re-measured from the `v0.4.3` tag rather than quoted — 1868 / 350 / 75 / 85 / 53 /
   48 / 20. Every figure here is each suite's own last line under
   `for s in tests/test_*.sh; do "$B" "$s" | tail -1; done` run once per shell; the three
@@ -570,7 +570,7 @@ infrastructure rather than as an adapter, and the harness row draws that distinc
   computed from the `source` directives, and a `source` whose path cannot be resolved is a
   violation rather than a shrug. At this head that closure is **nine** files — the seven
   suites plus `tests/lib/masked-path.sh` and `tests/lib/mutation-runner.sh` — reporting
-  `sites=829 files=9 lines=11913 accounted=11913`. (The base this work started from measured
+  `sites=837 files=9 lines=12056 accounted=12056`. (The base this work started from measured
   `sites=767 files=7 lines=10288`; the 761/9397 pair an earlier draft published was an
   earlier commit still, which is exactly why the figure is given with its command rather than
   carried forward.) **Each counter has a second reader rather than a floor.** `lines` is held
