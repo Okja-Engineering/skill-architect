@@ -40,6 +40,19 @@ type rule struct {
 	// field; the reason is the whole justification, so there is no way to
 	// opt out silently.
 	rawOnly string
+	// codeOnly, when non-empty, is the written reason this rule reads only
+	// the parts of a file its interpreter executes — commentary is blanked
+	// before the scan. Empty, the default, means the rule reads the whole
+	// document, which is right for every rule whose subject is what a file
+	// *says* rather than what it *does*.
+	//
+	// Same shape as rawOnly and for the same reason: the reason is the whole
+	// justification, ViewCoverage publishes it, and the spec table is
+	// compared to it in both directions, so a rule cannot quietly give up
+	// reach. The two axes are genuinely different questions — rawOnly is
+	// "in what spelling", codeOnly is "in what part" — and a rule may
+	// answer either, both, or neither.
+	codeOnly string
 	// scanBundle inspects cross-file state (e.g. config files, symlinks).
 	scanBundle func(l *Ledger) []Finding
 	// files limits which bundle paths the scan applies to (empty = all
@@ -81,6 +94,9 @@ func (r rule) run(l *Ledger) []Finding {
 		// file still reports both, exactly as it did before views existed.
 		reported := map[int]bool{}
 		for _, v := range r.views(f) {
+			if r.codeOnly != "" {
+				v = v.code()
+			}
 			var batch []Finding
 			for _, ev := range r.scan(v) {
 				line, evidence, ok := locate(f, v, ev)

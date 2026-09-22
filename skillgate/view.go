@@ -233,16 +233,20 @@ type ViewRuleCoverage struct {
 	// RawOnly is the written reason the rule runs on raw text alone, or
 	// empty when it runs on every view.
 	RawOnly string `json:"raw_only,omitempty"`
+	// CodeOnly is the written reason the rule reads only the executed part
+	// of a file, or empty when it reads the whole document.
+	CodeOnly string `json:"code_only,omitempty"`
 }
 
 // ViewCoverage returns every rule that scans text, with the reason it is
-// raw-only when it is one.
+// raw-only and the reason it is code-only when it carries either.
 //
-// This is the view axis of the ceded-lane sentence, and it is *derived*: a
-// rule is view-covered unless it carries a reason not to be, so a rule added
-// later is covered by default and a rule taken off the views cannot be taken
-// off silently. Nothing here is a list anyone maintains — the registry is the
-// list, and view_test.go compares this to the spec in both directions.
+// These are the two ceded-lane axes — *which spelling* and *which part* —
+// and both are *derived*: a rule has full reach on each unless it carries a
+// written reason not to, so a rule added later is covered by default and a
+// rule that gives up reach cannot do so silently. Nothing here is a list
+// anyone maintains — the registry is the list, and view_test.go compares
+// this to the spec in both directions on both axes.
 //
 // Rules that only inspect cross-file state (scanBundle) have no view axis and
 // are absent.
@@ -253,11 +257,110 @@ func ViewCoverage() []ViewRuleCoverage {
 			if r.scan == nil {
 				continue
 			}
-			out = append(out, ViewRuleCoverage{ID: r.id, RawOnly: r.rawOnly})
+			out = append(out, ViewRuleCoverage{ID: r.id, RawOnly: r.rawOnly, CodeOnly: r.codeOnly})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// ---- code regions ----
+//
+// A view answers "in what spelling". Regions answer "in what part", and a
+// rule whose subject is what a script *does* needs both.
+//
+// B2, the defect this closes: `SK-T010` fires wherever a harness config path
+// is spelled, with no notion of what the surrounding code does with it. So
+// it flagged `skills/skill-rewrite/scripts/draft-rewrite.sh` six times, on
+// six comment lines explaining the five home directories the script refuses
+// to write into — and did **not** flag line 623, the live assignment that
+// names all five. The gate reported the protection and missed the code.
+//
+// The repair is the scope those rules already claim: their own header says
+// "applied to script files and code blocks, not prose", and `files` gave
+// them a *file* filter where the sentence promises a *region* one.
+//
+// The narrowing is not a list of benign spellings — that would be the
+// enumerate-the-forms defect this release exists to close, and it would be
+// evadable by respelling the refusal. The side derived here is the
+// **interpreter's** grammar: which bytes a file's own language never
+// executes. An author cannot spell a line as a comment and have it run.
+
+// CommentMarker returns the token that begins a line comment in the language
+// of a bundled path, or "" when the language is not known.
+//
+// Unknown is the safe answer and it is the default: an extensionless
+// `bin/tool`, a language nobody has added, a file under `hooks/` with no
+// suffix — none of them have a marker, so nothing is elided and the rule
+// keeps every byte of the reach it has today. Losing reach requires
+// *positively* identifying the grammar, which is the direction a security
+// rule must fail in.
+func commentMarker(p string) string {
+	for ext, marker := range scriptLangs {
+		if strings.HasSuffix(p, ext) {
+			return marker
+		}
+	}
+	return ""
+}
+
+// elideCommentary blanks every whole-line comment to spaces.
+//
+// Blanked, not deleted, and that is the whole reason this needs no offset
+// map of its own: the result is byte-for-byte the same length as its input,
+// so every offset — a raw line number, a derived view's segment map, S10's
+// or S11's when they land — means exactly what it meant before. The code
+// projection composes with any view instead of competing with it.
+//
+// *Whole-line* is the load-bearing word. A marker only ends a line's code
+// when it begins that line: `echo "#" ; cat ~/.claude/settings.json` is one
+// executed line, and a rule that stopped at the first `#` anywhere would be
+// evadable in a single character. The first non-blank token is the only
+// position where a marker is a comment in every language in scriptLangs.
+//
+// Stated limit: a line a program carries as *data* and later executes —
+// a Python triple-quoted block passed to exec, a JS template literal passed
+// to eval — is elided here if it begins with the marker. That payload is
+// SK-T009's subject (decode or assemble, then execute), and the assembling
+// code is live text this projection keeps.
+func elideCommentary(text, marker string) string {
+	if marker == "" || !strings.Contains(text, marker) {
+		return text
+	}
+	b := []byte(text)
+	for start := 0; start < len(b); {
+		end := start
+		for end < len(b) && b[end] != '\n' {
+			end++
+		}
+		i := start
+		for i < end && (b[i] == ' ' || b[i] == '\t') {
+			i++
+		}
+		if i+len(marker) <= end && string(b[i:i+len(marker)]) == marker {
+			for j := i; j < end; j++ {
+				b[j] = ' '
+			}
+		}
+		start = end + 1
+	}
+	return string(b)
+}
+
+// code returns this view with the file's commentary blanked, or the view
+// itself when its language is unknown or it carries no commentary.
+//
+// The returned view keeps the original's Name, so a finding made on it is
+// tagged with the view it was actually scanned in and the report gains no
+// new vocabulary.
+func (v *View) code() *View {
+	text := elideCommentary(v.Text, commentMarker(v.Path))
+	if text == v.Text {
+		return v
+	}
+	c := *v
+	c.Text = text
+	return &c
 }
 
 // IsRaw reports whether this is the untransformed view.

@@ -139,9 +139,24 @@ func skillFiles(l *Ledger) []*FileContent {
 	return out
 }
 
+// scriptLangs maps a bundled script's extension to the token that begins a
+// line comment in that language.
+//
+// One table, two questions. "Is this file executable class?" and "which of
+// its bytes does its interpreter never run?" are both properties of the same
+// language, and answering them from two lists is how the two drift apart —
+// a language added to one and not the other is a file the gate either scans
+// with the wrong grammar or does not scan at all. isScript reads the keys;
+// commentMarker reads the values.
+var scriptLangs = map[string]string{
+	".sh": "#", ".bash": "#", ".zsh": "#",
+	".py": "#", ".rb": "#", ".pl": "#", ".ps1": "#",
+	".js": "//", ".mjs": "//", ".ts": "//",
+}
+
 // isScript reports whether a path is an executable-class bundled file.
 func isScript(path string) bool {
-	for _, ext := range []string{".sh", ".bash", ".py", ".js", ".mjs", ".ts", ".rb", ".pl", ".ps1", ".zsh"} {
+	for ext := range scriptLangs {
 		if strings.HasSuffix(path, ext) {
 			return true
 		}
