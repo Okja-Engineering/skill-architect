@@ -38,9 +38,10 @@ harness_init
 # The invariants below are walked over every target this suite gates, and a
 # corpus that happened to contain no target the gate blocks would make the
 # REJECT half of the central invariant vacuously true. So the corpus is read
-# back off disk, and the presence of *both* a blocked and an unblocked target in
-# it is a `require`: if the last blocking target ever stops blocking, this suite
-# says so loudly instead of going on passing.
+# back off disk and both sides of that invariant are `require`d before it is
+# walked — the blocking side of the one bundle written to be refused, by name,
+# because asked of the corpus it was satisfied by two of this repository's own
+# skills standing in for a payload that had been removed.
 
 # The shipped-skill census and the frontmatter metadata reader, shared with
 # tests/test_skill.sh. The carrier declaration this suite reads is the one that
