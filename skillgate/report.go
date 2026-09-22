@@ -113,19 +113,33 @@ type SkippedCheck struct {
 	Reason string `json:"reason"` // e.g. "binary not found"
 }
 
-// CheckPreactivationBashLeg is the standing F14 entry in checks_skipped:
-// the one surface no gate can close — reading a skill through the shell
-// instead of the harness's read path. Present on every report.
-const CheckPreactivationBashLeg = "preactivation-bash-leg"
-
-// The two registered checks that own rules but are not tripwire groups. Named
-// constants because the name is load-bearing twice over: it is what
-// --skip-checks matches and what checks_skipped reports, and it is the check a
-// CatalogRule names. A literal repeated across gate.go and the catalog is a
-// literal that can be renamed in one of them.
+// The names of the registered checks that are not tripwire groups — the
+// groups take theirs from tripwireGroups. Named constants because the name is
+// load-bearing three times over: it is what --skip-checks and --only match,
+// what checks_skipped reports, and the check a CatalogRule names. A literal
+// repeated across the registry and the catalog is a literal that can be
+// renamed in one of them.
+//
+// Every name here is registered in the one place that knows the set —
+// builtinChecks() in checks.go — and published by --list-checks.
 const (
 	CheckICM                = "icm"
 	CheckHarnessFrontmatter = "harness-frontmatter"
+	CheckSkillSpector       = "skillspector"
+	CheckAgnix              = "agnix"
+	CheckSkillValidator     = "skill-validator"
+
+	// CheckPreactivationBashLeg is the standing F14 boundary: the one surface
+	// no gate can close — reading a skill through the shell instead of the
+	// harness's read path. Registered as a check that can never run, so it is
+	// published like the rest and reported skipped on every report.
+	CheckPreactivationBashLeg = "preactivation-bash-leg"
+
+	// CheckICMTokenBudget is a leg inside icm, not a check of its own: it is
+	// reported skipped when no token counter measured the body, and there is
+	// nothing to select or skip independently. Declared on icm's Legs so a
+	// reader who meets the name in checks_skipped can look it up.
+	CheckICMTokenBudget = "icm-token-budget"
 )
 
 // Provenance records where the bundle came from (G0). For a local directory

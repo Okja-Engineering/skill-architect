@@ -260,11 +260,20 @@ promised here.
 
 ## checks_skipped contract
 
-Every stage or scanner that did not run is a named entry:
-`skillspector`, `agnix`, `skill-validator`, `icm`, `icm-token-budget`,
-`preactivation-bash-leg`, or `<name>` with reason `skipped by option`
-(`--skip-checks`). Absent optional tools are named skips, never silent, and
-never load-bearing for `REJECT`.
+Every check that did not run is a named entry. The names are the registered
+checks — `skillgate gate --list-checks` publishes the set, and there is no
+second list to keep in step with it; an entry may also name a **leg** inside a
+check, published on the same line as the check that reports it.
+
+A check is a named skip whether it declined (an absent optional binary), was
+excluded (`--skip-checks`), was not selected (`--only`), can never run (the
+standing F14 boundary), or crashed. A run narrowed by `--only` therefore names
+every check it did not inspect with, and cannot read as a full run. Absent
+optional tools are named skips, never silent, and never load-bearing for
+`REJECT`.
+
+A name that matches no registered check is refused rather than absorbed, in
+both `--skip-checks` and `--only`.
 
 ## Verdict and exit codes
 
@@ -313,9 +322,14 @@ raw finding, so a consumer written before views existed reads an unchanged
 report; `file`, `line` and `evidence` are the raw source either way.
 
 CLI: `skillgate gate <dir-or-url> [--baseline f] [--fail-on-incomplete]
-[--format json|sarif] [-o file] [--skip-checks a,b]`. A flag may appear
-before or after the target and the report is identical either way; `--` ends
-flag parsing, so a target whose name begins with `-` is written
+[--format json|sarif] [-o file] [--skip-checks a,b] [--only a,b]`. A flag may
+appear before or after the target and the report is identical either way; `--`
+ends flag parsing, so a target whose name begins with `-` is written
 `gate -- -target`. Exactly one target is required, an undefined flag is
 refused wherever it appears, and a flag whose value is missing is refused
 rather than read from the arguments beside it.
+
+`skillgate gate --list-checks` prints the registered checks and the rules each
+runs, and exits. It needs no target and produces no report, so the report
+flags do not apply to it. It is the source of the names `--skip-checks` and
+`--only` accept — see **checks_skipped contract**.
