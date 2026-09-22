@@ -35,6 +35,9 @@ Binary on PATH:
 skillgate gate <dir-or-git-url> [-o report.json] [--format json|sarif] [--baseline b.json] [--fail-on-incomplete]
 ```
 
+Flags may be written before or after the target; the report is the same either
+way. `--` ends flag parsing, for a target whose name begins with `-`.
+
 From the repo checkout:
 
 ```sh
