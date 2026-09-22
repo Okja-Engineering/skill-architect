@@ -12,11 +12,31 @@ import (
 // deterministic get a rule; judgment dimensions (scope, trigger quality,
 // examples) stay with skill-audit the skill, not the gate.
 //
-// SK-I001 frontmatter completeness   · name + description present
-// SK-I002 name/dir agreement          · frontmatter name == bundle dir
-// SK-I003 description length          · spec hard limit 1024 chars
-// SK-I004 body size                   · progressive disclosure: ≤500 lines
-// SK-I005 body token budget           · needs a measured counter (skipped named otherwise)
+// These rules build their findings inline rather than through a `rule` scan:
+// they need the parsed frontmatter, the bundle's directory name and the
+// measured token budget, none of which a per-file text scan has. So they
+// declare what identifies them here, and the code below reads its id, severity
+// and quality out of the declaration — stated once, and the same values
+// RuleCatalog publishes.
+
+var (
+	// ruleI001 — frontmatter completeness: name + description present.
+	ruleI001 = CatalogRule{ID: "SK-I001", Severity: SeverityMedium, Quality: "maintainability", Check: CheckICM}
+	// ruleI002 — name/dir agreement, the name charset, and same-name
+	// collisions inside one package.
+	ruleI002 = CatalogRule{ID: "SK-I002", Severity: SeverityLow, Quality: "maintainability", Check: CheckICM}
+	// ruleI003 — description length against the spec hard limit.
+	ruleI003 = CatalogRule{ID: "SK-I003", Severity: SeverityMedium, Quality: "maintainability", Check: CheckICM}
+	// ruleI004 — body size: progressive disclosure's line floor.
+	ruleI004 = CatalogRule{ID: "SK-I004", Severity: SeverityMedium, Quality: "maintainability", Check: CheckICM}
+	// ruleI005 — body token budget; needs a measured counter, else a named skip.
+	ruleI005 = CatalogRule{ID: "SK-I005", Severity: SeverityMedium, Quality: "maintainability", Check: CheckICM}
+)
+
+// icmRules is the pack, as RuleCatalog reads it. A rule declared above and
+// missing here is registered nowhere and reaches no catalog; catalog_test.go
+// fails on it by name.
+var icmRules = []CatalogRule{ruleI001, ruleI002, ruleI003, ruleI004, ruleI005}
 
 const icmDescriptionLimit = 1024
 const icmBodyLineLimit = 500
@@ -46,7 +66,7 @@ func icmCheck(l *Ledger, budget *TokenBudget) ([]Finding, []SkippedCheck) {
 		}
 		if len(missing) > 0 {
 			findings = append(findings, Finding{
-				RuleID: "SK-I001", Severity: SeverityMedium, Quality: "maintainability",
+				RuleID: ruleI001.ID, Severity: ruleI001.Severity, Quality: ruleI001.Quality,
 				Message: "frontmatter missing required keys: " + strings.Join(missing, ", "),
 				File:    sf.Entry.Path, EffortMinutes: 10, Source: "skillgate",
 			})
@@ -59,7 +79,7 @@ func icmCheck(l *Ledger, budget *TokenBudget) ([]Finding, []SkippedCheck) {
 		if n := fm.Keys["name"]; n != "" {
 			if !validSkillName(n) {
 				findings = append(findings, Finding{
-					RuleID: "SK-I002", Severity: SeverityLow, Quality: "maintainability",
+					RuleID: ruleI002.ID, Severity: ruleI002.Severity, Quality: ruleI002.Quality,
 					Message: "frontmatter name must be lowercase alphanumeric + hyphens (≤64 chars)",
 					File:    sf.Entry.Path, Evidence: n,
 					EffortMinutes: 5, Source: "skillgate",
@@ -67,7 +87,7 @@ func icmCheck(l *Ledger, budget *TokenBudget) ([]Finding, []SkippedCheck) {
 			}
 			if n != base {
 				findings = append(findings, Finding{
-					RuleID: "SK-I002", Severity: SeverityLow, Quality: "maintainability",
+					RuleID: ruleI002.ID, Severity: ruleI002.Severity, Quality: ruleI002.Quality,
 					Message: "frontmatter name does not match directory name",
 					File:    sf.Entry.Path, Evidence: n + " vs " + base,
 					EffortMinutes: 5, Source: "skillgate",
@@ -78,7 +98,7 @@ func icmCheck(l *Ledger, budget *TokenBudget) ([]Finding, []SkippedCheck) {
 		// SK-I003 — spec hard limit on description.
 		if d := fm.Keys["description"]; len(d) > icmDescriptionLimit {
 			findings = append(findings, Finding{
-				RuleID: "SK-I003", Severity: SeverityMedium, Quality: "maintainability",
+				RuleID: ruleI003.ID, Severity: ruleI003.Severity, Quality: ruleI003.Quality,
 				Message: "description exceeds the 1024-char spec limit",
 				File:    sf.Entry.Path, Evidence: strconv.Itoa(len(d)) + " chars",
 				EffortMinutes: 10, Source: "skillgate",
@@ -91,7 +111,7 @@ func icmCheck(l *Ledger, budget *TokenBudget) ([]Finding, []SkippedCheck) {
 			lines := strings.Count(body, "\n") + 1
 			if lines > icmBodyLineLimit {
 				findings = append(findings, Finding{
-					RuleID: "SK-I004", Severity: SeverityMedium, Quality: "maintainability",
+					RuleID: ruleI004.ID, Severity: ruleI004.Severity, Quality: ruleI004.Quality,
 					Message: "SKILL.md body exceeds 500 lines — move depth into references/",
 					File:    sf.Entry.Path, Evidence: strconv.Itoa(lines) + " lines",
 					EffortMinutes: 30, Source: "skillgate",
@@ -123,7 +143,7 @@ func icmCheck(l *Ledger, budget *TokenBudget) ([]Finding, []SkippedCheck) {
 	for _, name := range names {
 		if paths := byName[name]; len(paths) > 1 {
 			findings = append(findings, Finding{
-				RuleID: "SK-I002", Severity: SeverityLow, Quality: "maintainability",
+				RuleID: ruleI002.ID, Severity: ruleI002.Severity, Quality: ruleI002.Quality,
 				Message: "name claimed by multiple skills in one package — silent shadow under Cursor's undocumented root precedence",
 				File:    paths[1], Evidence: name + ": " + strings.Join(paths, ", "),
 				EffortMinutes: 10, Source: "skillgate",
@@ -145,7 +165,7 @@ func icmCheck(l *Ledger, budget *TokenBudget) ([]Finding, []SkippedCheck) {
 			if strings.HasSuffix(tf.File, "SKILL.md") || strings.Contains(tf.File, "SKILL.md body") {
 				if tf.Tokens > icmBodyTokenLimit {
 					findings = append(findings, Finding{
-						RuleID: "SK-I005", Severity: SeverityMedium, Quality: "maintainability",
+						RuleID: ruleI005.ID, Severity: ruleI005.Severity, Quality: ruleI005.Quality,
 						Message: "SKILL.md body exceeds the ~8k-token stage-context ceiling",
 						File:    tf.File, Evidence: strconv.Itoa(tf.Tokens) + " tokens (measured)",
 						EffortMinutes: 45, Source: "skillgate",
