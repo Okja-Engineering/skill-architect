@@ -45,8 +45,9 @@ import (
 
 // View names. The raw view is always present and always first.
 const (
-	viewRaw      = "raw"
-	viewSkeleton = "skeleton"
+	viewRaw           = "raw"
+	viewSkeleton      = "skeleton"
+	viewCompactLetter = "compactLetter"
 )
 
 // View is one rendering of a file's text together with the map back to the
@@ -196,6 +197,7 @@ func (b viewBuilder) build(raw string) (string, []viewSeg) {
 // rendering survives dedup when two views find the same place.
 var viewBuilders = []viewBuilder{
 	{name: viewSkeleton, stages: []viewStage{foldSkeleton}},
+	{name: viewCompactLetter, stages: []viewStage{foldSkeleton, compactLetterSpacing}},
 }
 
 // composeSegs composes two offset maps: outer maps a stage's own offsets onto
@@ -494,4 +496,220 @@ func isStrippableControl(r rune) bool {
 	return unicode.Is(unicode.Cf, r) ||
 		unicode.Is(unicode.Cc, r) ||
 		unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r)
+}
+
+// ---- the CompactLetter view ----
+//
+// The channel this closes is *visible* interleaving: `i g n o r e  a l l
+// p r e v i o u s  i n s t r u c t i o n s` is the blocker-severity SK-T002
+// payload, and no amount of Unicode folding reaches it, because every
+// character in it is already exactly what it looks like. The skeleton view
+// removes the *invisible* interleaving channel — Cf, the non-whitespace Cc,
+// the default-ignorables — and it can remove them everywhere, unconditionally,
+// because an invisible character is never content. A visible character is
+// content, so removing one needs evidence that interleaving is happening at
+// all. That evidence is the run.
+//
+// **The rule is a grammar, not a list of spellings.** A letter-spacing run is
+// six or more isolated letters in a row — each one separated from the next by
+// a non-empty gap that contains no letter and no digit. Prose is not written
+// that way; letter-spaced payloads are, whatever they are spelled with. So
+// the separator is not enumerated: space, NBSP, `.`, `-`, `_`, `*`, a
+// non-ASCII Z-separator, U+FFFD, and the filler nobody has thought of yet are
+// all simply "not a letter", and all close together or none does.
+//
+// This is where the gate parts company with upstream's AE6
+// (docs/research/rule-language.md §2, ss:artifacts.py:1662-1700), which
+// carries four enumerations beside the same run detector: a security-term
+// list, four command-phrase alternations, a benign-term list and a pair of
+// spelling-example context regexes. It needs them because AE6 *emits a
+// finding* from the run itself, so it has to decide whether the run spells
+// something dangerous. A view emits nothing. It changes what the rules can
+// see, and the rules already hold the vocabulary — so the whole enumeration
+// layer has no job here and is not ported.
+//
+// What compaction may *not* do is as load-bearing as what it does:
+//
+//   - **It never crosses a line break.** Letter-spacing is a within-line
+//     typographic device, and line structure is what every rule's evidence is
+//     cut on: a compaction that swallowed a newline would move every finding
+//     after it and would let two lines' text form a match that is in neither.
+//   - **It only ever brings letters together.** Gaps inside a run are
+//     removed or become one space; text outside a run is untouched. So,
+//     unlike a fold, it cannot manufacture syntax out of prose — the failure
+//     the skeleton view measured when NFKC turned a bare `‥` into `..` and
+//     fired a path-traversal blocker.
+
+// compactMinRunLetters is the shortest sequence of isolated letters the view
+// reads as letter-spacing rather than as prose. Upstream's AE6 uses the same
+// bound (rule-language.md §2, ss:artifacts.py:204). It is a threshold on the
+// shape of the run, not a vocabulary: nothing here knows or asks what the run
+// might spell.
+const compactMinRunLetters = 6
+
+// letterSpacingRun is one maximal stretch of isolated letters, in rune
+// indices, half-open and always ending on a letter.
+type letterSpacingRun struct{ start, end int }
+
+// compactLetterSpacing removes the separators inside letter-spacing runs.
+//
+// Within a run, the *narrowest* gap is the unit separator — the one that
+// stands between the letters of a word — and it is removed. A wider gap is
+// where the words divide and becomes a single space, because that is what a
+// wider gap means: letter-spaced text has always set the word boundary wider
+// than the letter boundary, since a word boundary rendered the same as a
+// letter boundary is unreadable. Taking the unit from the run rather than
+// fixing it at one character is what makes `i  g  n  o  r  e    a  l  l`
+// compact as correctly as `i g n o r e  a l l`, with no constant to tune.
+//
+// Preserving the word boundary is not a nicety: the gate's phrase rules are
+// written with `\s+` between their words, so a compaction that collapsed the
+// whole run to `ignoreallpreviousinstructions` would close nothing at all.
+func compactLetterSpacing(text string) (string, []viewSeg) {
+	rs, bo := runeOffsets(text)
+	runs := letterSpacingRuns(rs)
+	if len(runs) == 0 {
+		// Nothing interleaved: the identity, with the nil map that says so.
+		return text, nil
+	}
+
+	var sb segBuilder
+	sb.b.Grow(len(text))
+	pass := func(from, to int) { // rune range, verbatim
+		if from < to {
+			sb.emit(text[bo[from]:bo[to]], bo[from], bo[to]-bo[from], true)
+		}
+	}
+
+	prev := 0
+	for _, run := range runs {
+		pass(prev, run.start)
+		unit := unitGap(rs, run)
+		for i := run.start; i < run.end; {
+			if isRunLetter(rs[i]) {
+				pass(i, i+1)
+				i++
+				continue
+			}
+			gap := i
+			for i < run.end && !isRunLetter(rs[i]) {
+				i++
+			}
+			repl := ""
+			if i-gap > unit {
+				repl = " "
+			}
+			sb.emit(repl, bo[gap], bo[i]-bo[gap], false)
+		}
+		prev = run.end
+	}
+	pass(prev, len(rs))
+	return sb.done()
+}
+
+// letterSpacingRuns finds every maximal run of isolated letters of at least
+// compactMinRunLetters. A run is: a letter that does not follow a letter,
+// then repeatedly a non-empty gap of separators followed by a single letter.
+// Two adjacent letters end the run — the spacing has stopped — and so does a
+// gap that reaches a line break or the end of the text.
+//
+// Ported from upstream's `_concealed_instruction_run_spans`
+// (ss:artifacts.py:1662-1700) by way of difftest's `concealedInstructionRunSpans`,
+// which is its measured-equivalent Go transliteration; the departure is the
+// separator class, which excludes line terminators here.
+func letterSpacingRuns(rs []rune) []letterSpacingRun {
+	var runs []letterSpacingRun
+	for i := 0; i < len(rs); {
+		if !isRunLetter(rs[i]) || (i > 0 && isRunLetter(rs[i-1])) {
+			i++
+			continue
+		}
+		start, lastLetterEnd, letters := i, i+1, 1
+		c := i + 1
+		for c < len(rs) {
+			gap := c
+			for c < len(rs) && isSeparator(rs[c]) {
+				c++
+			}
+			if c == gap || c >= len(rs) || !isRunLetter(rs[c]) {
+				break
+			}
+			letters++
+			lastLetterEnd = c + 1
+			c = lastLetterEnd
+			if c < len(rs) && isRunLetter(rs[c]) {
+				break
+			}
+		}
+		if letters >= compactMinRunLetters {
+			runs = append(runs, letterSpacingRun{start: start, end: lastLetterEnd})
+			i = lastLetterEnd
+			continue
+		}
+		i = start + 1
+	}
+	return runs
+}
+
+// unitGap is the width, in runes, of the narrowest gap in a run: the run's
+// own letter separator, from which every wider gap is read as a word
+// boundary. A run whose gaps are all the same width is one word.
+func unitGap(rs []rune, run letterSpacingRun) int {
+	unit := 0
+	for i := run.start; i < run.end; {
+		if isRunLetter(rs[i]) {
+			i++
+			continue
+		}
+		gap := i
+		for i < run.end && !isRunLetter(rs[i]) {
+			i++
+		}
+		if w := i - gap; unit == 0 || w < unit {
+			unit = w
+		}
+	}
+	return unit
+}
+
+// isRunLetter reports whether a character counts as one of a run's letters.
+// Combining marks count, so a base character and its mark are two adjacent
+// "letters" and end the run rather than being read as a letter and a
+// separator — the conservative reading, and the one Python's `[^\W\d_]` gives
+// upstream.
+func isRunLetter(r rune) bool {
+	return unicode.IsLetter(r) || unicode.In(r, unicode.Mn, unicode.Mc)
+}
+
+// isSeparator reports whether a character can sit inside a run's gap:
+// anything that is not a letter, a digit or a line terminator.
+//
+// Line terminators are excluded so that a run cannot cross a line, which is
+// what keeps a view's lines the file's lines. The set is the Unicode vertical
+// whitespace that survives the fold — upstream's LOGICAL_LINE_BREAK minus the
+// C0 file/group/record separators, which the skeleton has already stripped as
+// non-whitespace controls.
+func isSeparator(r rune) bool {
+	if unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.In(r, unicode.Mn, unicode.Mc) {
+		return false
+	}
+	switch r {
+	case '\n', '\r', '\v', '\f', '', ' ', ' ':
+		return false
+	}
+	return true
+}
+
+// runeOffsets decodes text into runes beside the byte offset of each, with a
+// final entry holding len(text) so a half-open rune range always has a byte
+// range. Invalid bytes decode to one RuneError each, matching the way the
+// fold passes them through.
+func runeOffsets(text string) ([]rune, []int) {
+	rs := make([]rune, 0, len(text))
+	bo := make([]int, 0, len(text)+1)
+	for i, r := range text {
+		rs = append(rs, r)
+		bo = append(bo, i)
+	}
+	return rs, append(bo, len(text))
 }
