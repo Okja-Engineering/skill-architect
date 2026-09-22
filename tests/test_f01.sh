@@ -2816,10 +2816,43 @@ assert_value "audit-report, body rules satisfied only in frontmatter: summary.pa
 # real 8 is floor == real, which is a number that has to be raised by hand in
 # the commit that changes the fixture and will not be — and the report carries
 # the findings it counted, so the count has a derivation sitting beside it.
-assert_value "audit-report, body rules satisfied only in frontmatter: the policy-failure count is the policy failures it reported" \
-  "$([[ "$(echo "$output" | jq -r '.summary.policy_failures')" \
-        -eq "$(echo "$output" | jq '[.policy.findings[] | select(.level == "fail" and (.rule | startswith("PL")))] | length')" ]] \
-     && echo true || echo false)"
+#
+# Both sides are required to *be* a count before they are compared, and that is
+# not defensive padding. The first version of this compared them directly, and
+# proving it non-vacuous — by faulting audit-report.sh's summary formula — made
+# the script emit no JSON at all, so both `jq` calls returned nothing and
+# `[[ "" -eq "" ]]` is arithmetic-true: the equality **passed** over a report
+# that was not a report. A comparison of two readings has to refuse a reading it
+# did not get, or it is an assertion about the empty string.
+is_a_count() {
+  case "${1:-}" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+summary_policy_count_is_its_findings() {
+  local payload="$1"
+  local stated
+  local emitted
+  stated="$(printf '%s\n' "$payload" | jq -r '.summary.policy_failures' 2>/dev/null)" || stated=""
+  emitted="$(printf '%s\n' "$payload" \
+    | jq '[.policy.findings[] | select(.level == "fail" and (.rule | startswith("PL")))] | length' 2>/dev/null)" || emitted=""
+  if ! is_a_count "$stated"; then
+    printf 'the report states no policy-failure count to compare: %s\n' "${stated:-<nothing>}" >&2
+    return 1
+  fi
+  if ! is_a_count "$emitted"; then
+    printf 'the report carries no policy findings to count against it\n' >&2
+    return 1
+  fi
+  if [ "$stated" -ne "$emitted" ]; then
+    printf 'the summary says %s policy failures and the report carries %s of them\n' "$stated" "$emitted" >&2
+    return 1
+  fi
+  return 0
+}
+assert "audit-report, body rules satisfied only in frontmatter: the policy-failure count is the policy failures it reported" \
+  summary_policy_count_is_its_findings "$output"
 assert_value "audit-report, body rules satisfied only in frontmatter: it counted body rules at all" \
   "$([[ "$(echo "$output" | jq -r '.summary.policy_failures')" -gt 0 ]] && echo true || echo false)"
 assert_value "audit-report, body rules satisfied only in frontmatter: still exits 0, the report generated" \
