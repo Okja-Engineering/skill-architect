@@ -233,8 +233,53 @@ positively identifying the grammar.
 | SK-T010 | Its verb is *touches* — the finding claims the script reaches into another harness's config directory, and a comment reaches into nothing. Measured: it flagged `skills/skill-rewrite/scripts/draft-rewrite.sh` six times, on six comments describing the containment bound that script enforces, and never on the live line naming all five protected directories. |
 | SK-T011 | Its verb is *reads*, and a comment reads nothing. Same subject and same reasoning as SK-T010: a skill that documents the Cursor paths it stays out of is describing the boundary, not crossing it. |
 
+### Word boundaries, and why the two ends are not symmetric
+
+A matcher whose vocabulary is a **word** must not match a substring of a
+longer word. Every rule pattern leg that begins with a word is therefore
+`\b`-anchored at the **start**, and `skillgate`'s test suite enforces it as a
+class rather than by inspection: it runs every rule pattern over every text
+file in the repository and fails on any match beginning mid-word, with **no
+allow-list**. A list of words permitted to match inside words would be the
+enumerate-the-forms defect in a new place.
+
+**The trailing end carries no such blanket rule, and that is a measured
+decision rather than an omission**, because:
+
+> a word's meaning survives suffixing but not prefixing.
+
+Identifiers compound head-first. `cursorAuth`, `cursorDir`, `CursorVersion`
+and `CURSOR_API_KEY` are all genuinely *about* Cursor, and `writeFileSync` is
+genuinely a `writeFile` — whereas `func` is not about `nc`, `guarantee` is
+not about `tee`, and `concat` is not about `ncat`. So a trailing anchor is
+correct only where the leg's vocabulary is a **command word**: a token an
+interpreter resolves as a program or keyword, which cannot be extended and
+remain the same command. `sh` extended is `shadow`.
+
+Two legs qualify and carry a trailing anchor:
+
+| Leg | Rule | What it stops matching |
+|---|---|---|
+| `\|\s*(sudo\s+)?((ba\|z\|fi\|da)?sh\|base64)\b` | SK-T005 | `\|\| showhelp`, `\|\| shadow_code=`, `bashrc\|bash_profile`, and the `\|sh` inside any other regex's `(?:can\|may\|should)` — each a **blocker** for piping the environment into a shell |
+| `\bsubprocess\b` | SK-T009 | `subprocessEnv`, `subprocess_helper` — identifiers that start with the module's name and execute nothing |
+
+The legs that must **stay loose at the end**, with what anchoring them would
+have cost — measured, and pinned in `wordboundary_test.go` so the result
+cannot decay into a guess:
+
+| Leg | Rule | Anchoring it would lose |
+|---|---|---|
+| `\bcursor` | SK-T012's context gate | `cursorAuth` — *the credential-store key the gate exists to gate* — plus `cursorDir`, `CursorVersion`, `cursor_version`, `CURSOR_API_KEY` |
+| `\b(write\|append)File` | SK-T020 | `writeFileSync`, `appendFileSync`, the commonest real spellings |
+| `\burllib` | SK-T005 | `urllib3`, a real library and a real sink |
+| `\btee\s+\S` | SK-T020 | nothing — this leg ends on the first character of the *filename*, a deliberate partial match rather than vocabulary |
+
 ### Stated limits
 
+- **`\| /bin/sh` is not caught** by SK-T005's sink leg or by SK-T007's
+  pipe-to-shell leg: both require the interpreter name immediately after the
+  pipe, and neither accepts a leading path. This is a vocabulary-and-form
+  gap, not a boundary one, and nothing in this release closes it.
 - A payload a program carries as **data** and later executes — a Python
   triple-quoted block passed to `exec`, a JS template literal passed to
   `eval` — is elided by the code projection if its lines begin with the
