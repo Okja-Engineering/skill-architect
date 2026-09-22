@@ -6,6 +6,11 @@ package difftest
 // Upstream requires the SkillSpector venv interpreter: set SKILLSPECTOR_PYTHON
 // (default /tmp/skillspector-venv/venv/bin/python). If the interpreter or the
 // skillspector module is absent the test SKIPS — an honest gap, never a pass.
+//
+// The report is written only when SKILLGATE_E2_REPORT_DIR names an absolute
+// directory outside the repository; otherwise it is logged and nothing is
+// written. See TestMain in tree_guard_test.go, which fails the package if any
+// test here changes the tree.
 
 import (
 	"bytes"
@@ -153,13 +158,200 @@ func repoRoot(t *testing.T) string {
 	return filepath.Dir(filepath.Dir(wd))
 }
 
-func TestDifferential(t *testing.T) {
-	py := os.Getenv("SKILLSPECTOR_PYTHON")
-	if py == "" {
-		py = "/tmp/skillspector-venv/venv/bin/python"
+const (
+	// envInterpreter names the SkillSpector venv interpreter to run upstream with.
+	envInterpreter = "SKILLSPECTOR_PYTHON"
+	// defaultInterpreter is where the E2 setup notes put the venv.
+	defaultInterpreter = "/tmp/skillspector-venv/venv/bin/python"
+	// envReportDir opts into writing the E2 report, and says where. There is no
+	// default: the report is an experiment artefact, and the only destination a
+	// default could name is somewhere the runner did not ask for.
+	envReportDir = "SKILLGATE_E2_REPORT_DIR"
+)
+
+func skillspectorInterpreter() string {
+	if py := os.Getenv(envInterpreter); py != "" {
+		return py
 	}
+	return defaultInterpreter
+}
+
+// upstreamUnavailable reports why the upstream runner cannot be used with py,
+// or "" if it can. Both legs are probed — the interpreter file and the
+// skillspector module inside it — because an interpreter that exists but
+// cannot import the module is the ordinary case, and probing only the file
+// turns the documented skip into a traceback.
+func upstreamUnavailable(py string) string {
 	if _, err := os.Stat(py); err != nil {
-		t.Skipf("skillspector interpreter not found at %s (set SKILLSPECTOR_PYTHON)", py)
+		return fmt.Sprintf("interpreter not found at %s (set %s)", py, envInterpreter)
+	}
+	out, err := exec.Command(py, "-c", "import skillspector").CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(lastLine(string(out)))
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Sprintf("%s cannot import the skillspector module — %s (set %s to the venv interpreter)", py, detail, envInterpreter)
+	}
+	return ""
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	return lines[len(lines)-1]
+}
+
+// e2ReportDir resolves the opt-in destination for the E2 report. It returns ""
+// when no report was asked for, and refuses any destination inside root: the
+// differential reads the repository as part of its corpus, so writing its
+// findings back into that corpus both corrupts the next run's input and makes
+// `git status` — which the release's boundary checks read — report work nobody
+// did.
+func e2ReportDir(root string) (string, error) {
+	dir := os.Getenv(envReportDir)
+	if dir == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("%s=%q must be an absolute path: a relative one resolves inside the repository", envReportDir, dir)
+	}
+	resolvedDir, err := resolveExisting(dir)
+	if err != nil {
+		return "", err
+	}
+	resolvedRoot, err := resolveExisting(root)
+	if err != nil {
+		return "", err
+	}
+	if resolvedDir == resolvedRoot || strings.HasPrefix(resolvedDir, resolvedRoot+string(filepath.Separator)) {
+		return "", fmt.Errorf("%s=%q is inside the repository at %s: the E2 report is a generated artefact and may not land in the tree", envReportDir, dir, root)
+	}
+	return dir, nil
+}
+
+// resolveExisting canonicalises p through its nearest existing ancestor, so a
+// destination that has not been created yet is still compared against the
+// repository by real path rather than by spelling. On macOS /tmp is a symlink
+// to /private/tmp, and a containment check that skipped this would be trivially
+// evaded by the spelling of the path.
+func resolveExisting(p string) (string, error) {
+	p = filepath.Clean(p)
+	rest := ""
+	for {
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Join(resolved, rest), nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return "", fmt.Errorf("cannot resolve %s: no existing ancestor", p)
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
+}
+
+// The documented contract at the top of this file: the differential skips when
+// upstream cannot be run, and never fails for its absence. Both legs have to be
+// probed, because an interpreter that exists but cannot import skillspector is
+// the common case — a stock python3 is on every machine this runs on, and the
+// venv is on almost none.
+func TestUpstreamUnavailableNamesEitherMissingLeg(t *testing.T) {
+	dir := t.TempDir()
+	importable := stubInterpreter(t, dir, "importable", 0)
+	bare := stubInterpreter(t, dir, "bare", 1)
+	absent := filepath.Join(dir, "no-such-interpreter")
+
+	if got := upstreamUnavailable(importable); got != "" {
+		t.Errorf("interpreter that imports skillspector: got reason %q, want the differential to run", got)
+	}
+	for _, tc := range []struct{ name, py, want string }{
+		{"absent interpreter", absent, absent},
+		{"interpreter cannot import the module", bare, "skillspector"},
+	} {
+		got := upstreamUnavailable(tc.py)
+		if got == "" {
+			t.Errorf("%s: no reason returned — the differential would run and fail instead of skipping", tc.name)
+			continue
+		}
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("%s: reason %q does not name %q", tc.name, got, tc.want)
+		}
+		if !strings.Contains(got, envInterpreter) {
+			t.Errorf("%s: reason %q does not say which variable fixes it", tc.name, got)
+		}
+	}
+}
+
+// stubInterpreter writes an executable that exits with code, standing in for an
+// interpreter with and without the skillspector module. A stub rather than a
+// real python because the contract under test is "what do we do when the
+// interpreter cannot do the job", and that must be decidable on a machine with
+// no Python at all.
+func stubInterpreter(t *testing.T, dir, name string, code int) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	script := fmt.Sprintf("#!/bin/sh\nexit %d\n", code)
+	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// Where the E2 report may land. The shipped version wrote it into
+// docs/research/experiments/ on every run, which is how two generated files
+// came to sit in the working copy with no commit behind them.
+func TestE2ReportDirRefusesTheRepositoryTree(t *testing.T) {
+	root := repoRoot(t)
+	outside := t.TempDir()
+
+	t.Run("unset means no report", func(t *testing.T) {
+		t.Setenv(envReportDir, "")
+		dir, err := e2ReportDir(root)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if dir != "" {
+			t.Errorf("got %q, want no destination — the report is opt-in", dir)
+		}
+	})
+
+	t.Run("inside the repository is refused", func(t *testing.T) {
+		inside := filepath.Join(root, "docs", "research", "experiments")
+		t.Setenv(envReportDir, inside)
+		dir, err := e2ReportDir(root)
+		if err == nil {
+			t.Fatalf("got destination %q, want refusal — a test may not write into the repository", dir)
+		}
+		if !strings.Contains(err.Error(), inside) {
+			t.Errorf("error %q does not name the refused path", err)
+		}
+	})
+
+	t.Run("relative is refused", func(t *testing.T) {
+		t.Setenv(envReportDir, "reports")
+		if dir, err := e2ReportDir(root); err == nil {
+			t.Fatalf("got destination %q, want refusal — a relative path resolves inside the repository", dir)
+		}
+	})
+
+	t.Run("outside the repository is accepted", func(t *testing.T) {
+		t.Setenv(envReportDir, outside)
+		dir, err := e2ReportDir(root)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if dir != outside {
+			t.Errorf("got %q, want %q", dir, outside)
+		}
+	})
+}
+
+func TestDifferential(t *testing.T) {
+	py := skillspectorInterpreter()
+	if reason := upstreamUnavailable(py); reason != "" {
+		t.Skip("skipping the upstream differential: " + reason)
 	}
 	runner := filepath.Join(".", "run_upstream.py")
 	root := repoRoot(t)
@@ -262,15 +454,36 @@ func TestDifferential(t *testing.T) {
 		}
 	}
 
-	outDir := filepath.Join(root, "docs", "research", "experiments")
-	os.MkdirAll(outDir, 0o755)
-	os.WriteFile(filepath.Join(outDir, "E2-differential.md"), []byte(sb.String()), 0o644)
-	raw, _ := json.MarshalIndent(map[string]any{
+	raw, err := json.MarshalIndent(map[string]any{
 		"upstream_records": len(upstream),
 		"go_records":       len(ours),
 		"results":          results,
 	}, "", "  ")
-	os.WriteFile(filepath.Join(outDir, "E2-differential.json"), raw, 0o644)
+	if err != nil {
+		t.Fatalf("encode report: %v", err)
+	}
 
+	// The report is always in the test log; the files are the opt-in.
 	t.Logf("upstream=%d go=%d\n%s", len(upstream), len(ours), sb.String())
+
+	outDir, err := e2ReportDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outDir == "" {
+		t.Logf("no %s set — report not written to disk", envReportDir)
+		return
+	}
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string][]byte{
+		"E2-differential.md":   []byte(sb.String()),
+		"E2-differential.json": raw,
+	} {
+		if err := os.WriteFile(filepath.Join(outDir, name), body, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	t.Logf("report written to %s", outDir)
 }
