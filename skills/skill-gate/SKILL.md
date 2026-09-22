@@ -13,7 +13,7 @@ metadata:
 
 # skill-gate
 
-Wraps the `skillgate` Go binary (slice 1: the safety gate — G0 quarantine, G1 coverage ledger, G2 tripwire Pack B, G3 SkillSpector shell-out, G7 verdict).
+Wraps the `skillgate` Go binary: quarantine and provenance for a fetched bundle, a coverage ledger over every file, the deterministic rule packs, the opt-in advisory integrations, the always-on token budget, and one verdict. `skillgate gate --list-checks` prints what actually ran — read that rather than a list here, which would be one more enumeration to keep in step.
 
 ## Contract
 
@@ -21,7 +21,8 @@ Wraps the `skillgate` Go binary (slice 1: the safety gate — G0 quarantine, G1 
 - Every file in the bundle gets a terminal ledger outcome — inspected (with SHA-256) or skipped with a named reason.
 - Any skipped check or uninspected file caps the verdict at CAUTION; on a fetched (untrusted) target, an incomplete ledger REJECTs.
 - A baseline may suppress a finding, but only with a mandatory written `reason` and only while the finding's content fingerprint is unchanged — drift fails closed.
-- SkillSpector, agnix, and skill-validator are opt-in and advisory only: their findings report at true severity but can never force REJECT. The block set is owned by the 20-rule Go tripwire pack, which needs no Python and no Rust.
+- SkillSpector, agnix, and skill-validator are opt-in and advisory only: their findings report at true severity but can never force REJECT. The block set is owned by the Go tripwire pack (`SK-T*`), which needs no Python, no Rust and no external binary at runtime; its one module dependency is `golang.org/x/text`, for the Unicode normalisation the views are built on.
+- A lexical rule scans normalised **views** of a file as well as its raw text, so a payload defeats it by meaning rather than by spelling. A finding discovered on a view carries `view`; its `file`, `line` and `evidence` are always the raw source. The views, and the gaps they do **not** close, are in the skillgate contract spec (docs/skillgate-spec.md in the skill-architect repository) — every one of those gaps is driven by a test rather than promised in prose.
 - `report.tokens` carries the always-on context budget: exact o200k_base counts per file via skill-validator, plus `items[]` — per-item char-exact attribution for skill description lines, manifest-declared tool descriptions, and tool input schemas (the classes a file list misses). Never presented as billed usage.
 - The audited unit is the package, not the skill dir: a manifest may ship `skills` beside executable `extensions`, and manifest-declared executables are the bundled-hook class (SK-T017).
 - F14 — the gate audits before load and never contains what has loaded. Every claim is scoped to the read path and the moment before load; `preactivation-bash-leg` is a standing entry in `checks_skipped` because the bash leg is open on every harness. CAUTION is the reachable ceiling today.
@@ -55,8 +56,8 @@ Exit codes: `0` = APPROVE/CAUTION · `1` = REJECT or incomplete ledger under `--
 ## Interpreting the report
 
 - `verdict` + `coverage` + `checks_skipped[]` are the summary contract — read them together, never the verdict alone.
-- `ledger[]` shows every file's outcome and hash; `findings[]` carry `rule_id`, `severity`, `source`, `fingerprint`, and optional `advisory`/`suppressed` flags.
-- `SS-*` findings are SkillSpector advisories (opt-in). `SK-T001`–`SK-T020` are the deterministic tripwire floor.
+- `ledger[]` shows every file's outcome and hash; `findings[]` carry `rule_id`, `severity`, `source`, `fingerprint`, optional `advisory`/`suppressed` flags, and `view` when the finding was discovered on a normalised rendering. The contract spec's Report schema section is the field list; this line is a reading guide, not the schema.
+- `SS-*` findings are SkillSpector advisories (opt-in). The `SK-*` findings are the deterministic floor, and `skillgate gate --list-checks` publishes which rules each check runs — that listing is the gate's own account of itself, so it cannot fall out of step the way a range written here would.
 - `provenance.sha256_manifest` is the bundle digest — re-gate if it changes (rug-pull detection lands with baselines per bundle).
 
 ## Optional deep scan

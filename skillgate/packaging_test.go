@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -321,4 +322,93 @@ func isStandardImportPath(p string) bool {
 // mod — equal, or below it.
 func importCoveredBy(imp, mod string) bool {
 	return imp == mod || strings.HasPrefix(imp, mod+"/")
+}
+
+// The third manifest trap, and the one this release walked into: a *prose*
+// claim about the dependency surface that the manifest has moved out from
+// under.
+//
+// `skills/skill-gate/SKILL.md` said the block set "needs no Python and no
+// Rust", which stayed true, beside a spec sentence that said "no external
+// dependency", which did not — the view layer takes `golang.org/x/text` for
+// NFKC and full casefold. Both sentences were written when the production
+// module had no require block at all. The honest restatement names the
+// dependency, and naming it by hand is how the *next* one goes unmentioned, so
+// the sentence is read rather than trusted.
+//
+// Two sides, neither derived from the other: the module paths are parsed out of
+// the spec's Markdown, and the direct requires out of `go.mod` with the same
+// reader TestModuleDependencySurfacesAreDeclared uses.
+func TestTheDependencyClaimNamesTheDependencies(t *testing.T) {
+	documented := map[string]string{}
+	for _, p := range modulePathsIn(specDependencyParagraph(t)) {
+		documented[p] = "a direct require of the production module"
+	}
+	declared := map[string]string{}
+	for _, r := range parseGoModManifest(t, ".").Requires {
+		if r.Indirect {
+			continue // pinned for a transitive, not claimed by this module
+		}
+		declared[r.Path] = "a direct require of the production module"
+	}
+	if len(declared) == 0 && len(documented) == 0 {
+		t.Fatal("the module has no direct require and the spec names none: nothing was compared, and a " +
+			"dependency taken tomorrow would be checked against an empty claim")
+	}
+	sub := enumerationSubject{
+		noun:       "module",
+		claim:      "dependency surface",
+		artifact:   "skillgate/go.mod's direct require block",
+		documented: specPath + " §Rule catalog, the dependency-surface paragraph",
+	}
+	for _, v := range enumerationDivergences(sub, declared, documented) {
+		t.Error(v)
+	}
+}
+
+// specDependencyParagraph returns the dependency-surface paragraph of the rule
+// catalog section, failing if it is gone — a claim that has been deleted is not
+// a claim that has been checked.
+func specDependencyParagraph(t *testing.T) string {
+	t.Helper()
+	const opener = "**Dependency surface.**"
+	var b strings.Builder
+	found := false
+	for _, sl := range specSection(t, specCatalogHeading) {
+		if strings.HasPrefix(strings.TrimSpace(sl.text), opener) {
+			found = true
+		} else if found && strings.TrimSpace(sl.text) == "" {
+			break
+		}
+		if found {
+			b.WriteString(sl.text + " ")
+		}
+	}
+	if !found {
+		t.Fatalf("%s §%s no longer carries a %s paragraph: the dependency claim this checks is gone",
+			specPath, specCatalogHeading, opener)
+	}
+	return b.String()
+}
+
+// reBacktickToken is a backtick-quoted token in the prose.
+var reBacktickToken = regexp.MustCompile("`([^`]+)`")
+
+// modulePathsIn returns the module paths a paragraph names, by the toolchain's
+// own rule rather than by a list: a module path's first element is a domain, so
+// it carries a dot. That is what tells `golang.org/x/text` from the
+// `skillgate/go.mod` and `packaging_test.go` in the same sentence, with no
+// exception list to keep in step.
+func modulePathsIn(text string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range reBacktickToken.FindAllStringSubmatch(text, -1) {
+		tok := m[1]
+		if !strings.Contains(tok, "/") || isStandardImportPath(tok) || seen[tok] {
+			continue
+		}
+		seen[tok] = true
+		out = append(out, tok)
+	}
+	return out
 }
