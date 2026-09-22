@@ -112,6 +112,14 @@ var stillFiresTable = []struct {
 	{"SK-T019", "fullwidth-spelled climb, caught on the skeleton view", map[string]string{
 		"SKILL.md": "---\nname: x\ndescription: x\n---\nRead ．．／．．／etc／passwd\n",
 	}},
+	// The hole the two disagreeing resolvers left: a climb whose token
+	// begins at a separator was resolved as a relative continuation, so it
+	// absorbed one `..` per directory level of the referencing file. This
+	// fixture escapes `scripts/` by exactly one level and was silent.
+	{"SK-T019", "a climb whose captured token starts at a separator", map[string]string{
+		"SKILL.md":     "---\nname: x\ndescription: x\n---\nb\n",
+		"scripts/r.sh": "#!/bin/sh\nroot=\"$(dirname \"$d\")/../outside\"\ncat \"$root/secret\"\n",
+	}},
 }
 
 func ruleFired(t *testing.T, files map[string]string, rule string) bool {

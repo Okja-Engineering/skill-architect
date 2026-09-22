@@ -1,7 +1,6 @@
 package skillgate
 
 import (
-	"path"
 	"regexp"
 	"strings"
 )
@@ -274,8 +273,18 @@ var ruleT019 = rule{
 		var ev []string
 		seen := map[string]bool{}
 		for _, r := range pathRefs(v.Text) {
-			joined := path.Join(dir, r.ref)
-			if joined != ".." && !strings.HasPrefix(joined, "../") {
+			// resolveRef, not a second copy of it. The gate had two
+			// resolvers that disagreed about a leading `/`: refgraph reads
+			// it as package-root absolute, this rule read it as a relative
+			// continuation, and the difference is a hole that widens with
+			// the referencing file's depth. Measured — from `scripts/`,
+			// `"$(dirname "$d")/../skill-audit"` resolved to `skill-audit`
+			// and the escape went unreported, which is why this rule named
+			// draft-rewrite.sh's shellcheck comment and not line 49, the
+			// live code that performs the climb. The two readings can only
+			// differ when the climb escapes, so agreeing with refgraph
+			// widens the rule and never narrows it.
+			if _, escaped := resolveRef(dir, r.ref); !escaped {
 				continue // resolves inside the bundle — legal
 			}
 			line := lineAt(v.Text, r.at)
