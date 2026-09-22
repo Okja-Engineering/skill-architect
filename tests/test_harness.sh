@@ -1792,13 +1792,20 @@ holds_line_refuses_absent() {
 assert "holds_line refuses a pattern the text does not hold, so it can still fail" \
   holds_line_refuses_absent
 
-# And the anchoring, because a matcher that quietly dropped the caller's
-# options or their `^` would pass both assertions above while matching far more
-# than the call site asked for. `MATCHME` is on the text's first line and not
-# at the start of any other, so an unanchored reading and an anchored one
-# disagree here.
+# And the anchoring, because a matcher that quietly dropped the caller's `^`
+# would pass both assertions above while matching far more than the call site
+# asked for — and the call sites this replaces are anchored patterns whose
+# whole job is to name *which* finding came back.
+#
+# `here` is on the text's first line and at the start of no line, so an
+# anchored reading and an unanchored one disagree over it. Both directions are
+# asserted: the pattern has to be found where it sits and refused where it is
+# anchored, or a matcher that simply answered no would satisfy the refusal on
+# its own.
+assert "holds_line finds an unanchored pattern where it actually sits" \
+  holds_line "$(still_writing_producer)" 'here'
 holds_line_keeps_the_anchor() {
-  ! holds_line "$(still_writing_producer)" '^TRAILER-NOT-AT-LINE-START'
+  ! holds_line "$(still_writing_producer)" '^here'
 }
 assert "holds_line keeps the caller's anchoring rather than widening the match" \
   holds_line_keeps_the_anchor
