@@ -376,14 +376,23 @@ infrastructure rather than as an adapter, and the harness row draws that distinc
   `../docs`, `../README.md`) do not reach — and fails the build on a line that *assigns*
   work to the release being cut, while leaving a line that records history alone: "0.5.0 did
   not add one" passes, and `tracked for <the version being cut>` does not. It reads a closed vocabulary of
-  deferral verbs rather than the version string, and the reason is the ratio: `git grep -o`
-  finds the version **101** times across 91 lines, the check reports no findings, so **every
-  one of those 101 is correct** and a check on the string alone would fire on all of them.
+  deferral verbs rather than the version string, and the reason is the ratio:
+  `git grep -o '0\.5\.0' | wc -l` against `git grep -n '0\.5\.0' | wc -l` puts the version on
+  far more lines than this release has promises, the check reports no findings, so **every
+  one of them is correct** and a check on the string alone would fire on all of them.
   (An earlier draft of this entry said "about seventy … about sixty of those are correct",
-  which undercounted the total and, worse, implied a third of them were wrong. Both places
-  that carried a variant of it — the reader's own header comment and `tests/test_skill.sh` —
-  now publish **no numeral at all**: a figure in a comment that nothing re-derives is stale
-  by the next release, and the argument does not rest on it.)
+  which undercounted the total and, worse, implied a third of them were wrong. The two
+  places that carried a variant of it — the reader's own header comment and
+  `tests/test_skill.sh` — publish **no numeral at all**: a figure in a comment that nothing
+  re-derives is stale by the next release, and the argument does not rest on it. **This
+  sentence published one for the same quantity four lines above that claim, and it does not
+  now.** Its corpus was the whole tracked tree, which contains this document and the release
+  notes, and those two hold about a third of the occurrences — so a reflow that changes no
+  word moves it, nothing in the repository re-derives it, and the census was doing no work
+  that the ratio does not do. It went stale exactly that way while this round was being
+  written: three occurrences and two lines left the tree through prose edits alone, before
+  anyone recounted. The commands stay, because a reader can take the measurement; the output
+  goes, because it cannot stay true.)
 
   **That vocabulary is a set of verbs, and this release is where it stopped being a set of
   spellings.** The matcher tested the raw record, so every alternative in its own closed set
