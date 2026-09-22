@@ -212,18 +212,24 @@ GUARD=skills/skill-audit/scripts/verdict-guard.sh
 
 # guard_definition_names <guard file> — the shell functions that file defines.
 #
-# All three spellings bash accepts, and this is the repair rather than a
-# nicety. It read one — `name() {` — in both of the places below, and
-# re-spelling eight of the sixteen primitives as `name ()  {` dropped the
-# derived set from 16 to 8 while `verdict_guard_ready` still loaded fine. Half
-# the primitives lost their drop-one coverage and 24 assertions vanished from
-# this suite's published total with zero failures reported. The definitions are
-# the artifact; one way of writing them is not.
+# Every spelling bash accepts, and this is the repair rather than a nicety. It
+# read one — `name() {` — in both of the places below, and re-spelling eight of
+# the sixteen primitives as `name ()  {` dropped the derived set from 16 to 8
+# while `verdict_guard_ready` still loaded fine. Half the primitives lost their
+# drop-one coverage and 24 assertions vanished from this suite's published
+# total with zero failures reported. The definitions are the artifact; one way
+# of writing them is not.
+#
+# It reads three spellings no longer, because a list of spellings was the
+# defect one level out as well: the round that wrote that sed also wrote `any of
+# bash's three spellings` into tests/lib/audit-suites.sh, and `name ( ) {` — a
+# fourth, legal on 3.2.57 and on 5.3.15 — was in neither. So there is one reader
+# of shell function definitions in this repository now, it reads the grammar
+# rather than a set of spellings, and tests/test_harness.sh holds it against
+# what bash says each spelling defines.
+GUARD_READER=tests/lib/audit-suites.sh
 guard_definition_names() {
-  sed -n -E \
-    -e 's/^([a-z_][a-z_0-9]*)[[:space:]]*\(\)[[:space:]]*\{[[:space:]]*$/\1/p' \
-    -e 's/^function[[:space:]]+([a-z_][a-z_0-9]*)([[:space:]]*\(\))?[[:space:]]*\{[[:space:]]*$/\1/p' \
-    "$1" | sort -u
+  "$GUARD_READER" --names "$1"
 }
 
 # guard_broken_tree <mode>
@@ -779,8 +785,31 @@ done
 # The names verdict_guard_ready requires to be defined, read out of its own
 # body, plus itself — it is defined last on purpose and does not appear in its
 # own list.
+# guard_ready_body <guard file> — the body of verdict_guard_ready, located
+# without assuming how it was spelled.
+#
+# It used to be `sed -n '/^verdict_guard_ready()/,/^}$/p'`, which is the same
+# defect the reader above just lost: re-spelling that one definition as
+# `function verdict_guard_ready {` — legal, `bash -n` clean — collapsed the
+# required list to a single name and reddened this suite for no real defect.
+# Fail-closed rather than fail-open, so it cost a false alarm and not a hole,
+# but a guard that fires on a legal edit is a guard somebody turns off.
+#
+# A bare call on its own line must not match, which is why the parentheses or
+# the `function` keyword is required rather than optional.
+guard_ready_body() {
+  awk '
+    !inside && /^[ \t]*(function[ \t]+verdict_guard_ready([ \t]*\([ \t]*\))?|verdict_guard_ready[ \t]*\([ \t]*\))[ \t]*\{?[ \t]*$/ {
+      inside = 1
+      next
+    }
+    inside && /^\}[ \t]*$/ { exit }
+    inside { print }
+  ' "$1"
+}
+
 guard_names_ready_requires() {
-  { sed -n '/^verdict_guard_ready()/,/^}$/p' "$GUARD" \
+  { guard_ready_body "$GUARD" \
       | awk '/for[[:space:]]+g[[:space:]]+in/,/;[[:space:]]*do[[:space:]]*$/' \
       | sed -e 's/.*for[[:space:]]*g[[:space:]]*in//' -e 's/\\[[:space:]]*$//' \
             -e 's/;[[:space:]]*do[[:space:]]*$//' \
@@ -803,6 +832,50 @@ if [[ "$guard_definitions" != "$(guard_names_ready_requires)" ]]; then
   echo "  defined : $(printf '%s' "$guard_definitions" | tr '\n' ' ')"
   echo "  required: $(guard_names_ready_requires | tr '\n' ' ')"
 fi
+
+# --- Control: both readers survive every spelling of the definition ----------
+#
+# The equality above is only as good as the two readers under it, and both used
+# to be spelling-dependent in opposite directions. The definition reader missed
+# `name ( ) {`, which is a **fail-open**: eight primitives re-spelled that way
+# left the derived set at 8 with the guard loading fine. The body locator matched
+# only `^verdict_guard_ready()`, which is a **fail-closed**: re-spelling that one
+# definition as `function verdict_guard_ready {` collapsed the required list to a
+# single name and reddened this suite for no defect at all.
+#
+# So the guard file is re-spelled, one spelling at a time, and both derivations
+# have to come back unchanged. The list of spellings is the one enumeration left
+# in this block, and it is a list of mechanisms rather than of primitives: it
+# applies to all sixteen at once.
+guard_respellings="$(mktemp -d)"
+guard_respelling_n=0
+while IFS= read -r respelling; do
+  [[ -n "$respelling" ]] || continue
+  guard_respelling_n=$((guard_respelling_n + 1))
+  respelled="$guard_respellings/verdict-guard-$guard_respelling_n.sh"
+  # Every definition in the file, rewritten into this spelling. `@N` is the name.
+  sed -E "s/^([a-z_][a-z_0-9]*)\(\)[[:space:]]*\{[[:space:]]*\$/$(printf '%s' "$respelling" | sed 's/@N/\\1/; s/[&]/\\\\&/g')/" \
+    "$GUARD" > "$respelled"
+  assert_value "the guard re-spelled as \`$respelling\` still parses, so the case is about the reader" \
+    "$(bash -n "$respelled" 2>/dev/null && echo true || echo false)"
+  assert_value "the definition reader finds the same primitives when they are spelled \`$respelling\`" \
+    "$([[ "$(guard_definition_names "$respelled")" == "$guard_definitions" ]] && echo true || echo false)"
+  assert_value "the readiness list reads the same when its own definition is spelled \`$respelling\`" \
+    "$([[ "$(guard_ready_body "$respelled" | tr -d ' \t')" == "$(guard_ready_body "$GUARD" | tr -d ' \t')" ]] && echo true || echo false)"
+done <<'GUARD_RESPELLINGS'
+@N() {
+@N () {
+@N  ()  {
+@N ( ) {
+@N (  ) {
+function @N {
+function @N() {
+function @N ( ) {
+GUARD_RESPELLINGS
+rm -rf "$guard_respellings"
+echo "  guard definition spellings driven: $guard_respelling_n"
+assert_value "the re-spelling sweep drove spellings at all, rather than reading an empty list" \
+  "$([[ "$guard_respelling_n" -gt 0 ]] && echo true || echo false)"
 
 for gdrop in $guard_definitions; do
   gdir="$(guard_broken_tree "drop-$gdrop")"
@@ -1681,22 +1754,41 @@ assert_value "every probed tool is asked at least one question by require_tool, 
 #     real 8) — nothing below counts them; a lost candidate is a tool the walk
 #     stops driving.
 #
-# Left as floors, and each of these really is only refusing an empty read,
-# because the set it counts is held exactly in both directions beside it:
+# Then the enumeration was itself checked, and it had gone stale in the one
+# release it lived through — which is the whole argument against writing one.
+# It omitted a floor, stated one value that had never been right, and
+# generalised over a comparison it did not cover. So the four remaining floors
+# are **gone** rather than listed, and what replaced each of them is derived:
 #
-#   - the readme's prerequisite list (`-ge 8`, real 10) — `readme_missing` and
-#     `readme_stale` are the two directions, and either side shrinking puts a
-#     name in one of them.
-#   - the scripts whose exit contract was compared (`-ge 5`, real 6) and the
-#     exit-status witness (`-ge 6`, real 6) — a script losing its stated
-#     contract is runnable with none, which `exit_undocumented` names.
-#   - `probe_calls_of >= 1` per tool — that one is the stated requirement
-#     itself ("at least one question"), not a count of a set, and it is reduced
-#     to an equality on `probe_call_floor` immediately below.
+#   - the readme's prerequisite list — was `-ge 8` against a real 10. The
+#     sentence beside it says "was read, not matched as an empty set", which is
+#     what `-gt 0` says and what 8 never said. The real denominator is
+#     `readme_missing` and `readme_stale`, two directions over the same set.
+#   - the scripts whose exit contract was compared — was `-ge 5` against a real
+#     **5**, not the 6 the enumeration claimed. Floor == real, so it was a
+#     number waiting to be raised by hand in a commit that would not think to.
+#     Now `-gt 0`, beside `exit_undocumented`, which names every runnable
+#     script with no stated contract.
+#   - the exit-status witness — was `-ge 6` against a real 6, the same shape.
+#     Now `-gt 0`, beside `exit_witness_unwitnessed` and
+#     `exit_witness_unstated`, which are the two directions.
+#   - `audit-report`'s policy-failure count — was `-ge 8` against a real 8, and
+#     it was **absent from the enumeration entirely**, which is the failure mode
+#     of enumerating: the row nobody wrote is the one nothing catches. It is now
+#     an equality against the findings the same payload reports, so the count
+#     has its other side in the artifact.
 #
-# Everything else numeric in this file is `-gt 0` on a read that must not be
-# empty, a fixture's own content, or a timing bound. None of them is a
-# denominator.
+# What is left, and it is not a floor: `probe_calls_of >= 1` per tool is the
+# stated requirement itself ("at least one question"), not a count of a set, and
+# it is reduced to an equality on `probe_call_floor` immediately below.
+#
+# Everything else numeric in this file is one of: `-gt 0` on a read that must
+# not be empty; a comparison of two measured values, such as `bcalls -gt
+# bprobe` in the adverse sweep, where both sides are derived and the walk
+# between them is bounded by `BROKEN_CASES_EXPECTED` below; a fixture's own
+# content; or a timing bound. None of them is a denominator, and that sentence
+# is a rule about shapes rather than a list of lines, which is the only kind of
+# generalisation that does not go stale.
 BROKEN_CASES_EXPECTED=173
 assert_value "the present-but-broken cross product ran every one of its $BROKEN_CASES_EXPECTED cases" \
   "$([[ "$broken_cases" -eq "$BROKEN_CASES_EXPECTED" ]] && echo true || echo false)"
@@ -2129,7 +2221,7 @@ echo "  of those, required outside require_tool and proved so above:$unguarded_p
 assert_value "the tools required outside require_tool were proved and carried into the census, not read as an empty set" \
   "$([[ -n "$unguarded_proved" ]] && echo true || echo false)"
 assert_value "the readme's prerequisite list was read, not matched as an empty set" \
-  "$([[ "$readme_required_n" -ge 8 ]] && echo true || echo false)"
+  "$([[ "$readme_required_n" -gt 0 ]] && echo true || echo false)"
 assert_value "every tool a script requires is listed as a prerequisite in the readme" \
   "$([[ -z "$readme_missing" ]] && echo true || echo false)"
 if [[ -n "$readme_missing" ]]; then
@@ -2514,7 +2606,7 @@ done
 
 echo "  scripts whose exit contract was compared: $exit_documented"
 assert_value "the exit contracts were enumerated, not read as an empty set" \
-  "$([[ "$exit_documented" -ge 5 ]] && echo true || echo false)"
+  "$([[ "$exit_documented" -gt 0 ]] && echo true || echo false)"
 assert_value "every runnable script states its own exit contract in its header" \
   "$([[ -z "$exit_undocumented" ]] && echo true || echo false)"
 if [[ -n "$exit_undocumented" ]]; then
@@ -2720,8 +2812,16 @@ assert_value "structure --json, body rules satisfied only in frontmatter: exits 
 run_present skills/skill-audit/scripts/audit-report.sh "$BLEED"
 assert_value "audit-report, body rules satisfied only in frontmatter: summary.passed is false" \
   "$([[ "$(echo "$output" | jq -r '.summary.passed')" == "false" ]] && echo true || echo false)"
-assert_value "audit-report, body rules satisfied only in frontmatter: counts every body rule it broke" \
-  "$([[ "$(echo "$output" | jq -r '.summary.policy_failures')" -ge 8 ]] && echo true || echo false)"
+# An equality against the payload's other side, not a floor. `-ge 8` against a
+# real 8 is floor == real, which is a number that has to be raised by hand in
+# the commit that changes the fixture and will not be — and the report carries
+# the findings it counted, so the count has a derivation sitting beside it.
+assert_value "audit-report, body rules satisfied only in frontmatter: the policy-failure count is the policy failures it reported" \
+  "$([[ "$(echo "$output" | jq -r '.summary.policy_failures')" \
+        -eq "$(echo "$output" | jq '[.policy.findings[] | select(.level == "fail" and (.rule | startswith("PL")))] | length')" ]] \
+     && echo true || echo false)"
+assert_value "audit-report, body rules satisfied only in frontmatter: it counted body rules at all" \
+  "$([[ "$(echo "$output" | jq -r '.summary.policy_failures')" -gt 0 ]] && echo true || echo false)"
 assert_value "audit-report, body rules satisfied only in frontmatter: still exits 0, the report generated" \
   "$([[ $code -eq 0 ]] && echo true || echo false)"
 
@@ -2825,7 +2925,7 @@ for wscript in "$SCRIPTS_DIR"/*.sh skills/skill-rewrite/scripts/*.sh; do
   done
 done
 assert_value "the exit-status witness was collected, not read as an empty set" \
-  "$([[ "$exit_witness_scripts" -ge 6 && -n "$exit_witness" ]] && echo true || echo false)"
+  "$([[ "$exit_witness_scripts" -gt 0 && -n "$exit_witness" ]] && echo true || echo false)"
 assert_value "every status a script's header states is one this suite made it emit" \
   "$([[ -z "$exit_witness_unwitnessed" ]] && echo true || echo false)"
 if [[ -n "$exit_witness_unwitnessed" ]]; then
