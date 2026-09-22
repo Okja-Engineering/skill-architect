@@ -45,8 +45,9 @@ import (
 
 // View names. The raw view is always present and always first.
 const (
-	viewRaw      = "raw"
-	viewSkeleton = "skeleton"
+	viewRaw           = "raw"
+	viewSkeleton      = "skeleton"
+	viewCompactLetter = "compactLetter"
 )
 
 // View is one rendering of a file's text together with the map back to the
@@ -157,19 +158,114 @@ func clamp(n, lo, hi int) int {
 	return n
 }
 
-// viewBuilder is one registered transform. Adding a view is adding an entry
-// here; every rule that has not opted out then runs on it, with no edit at
-// the rule.
+// viewStage is one transform in a view's pipeline: it takes the text of the
+// stage before it and returns its own text with the map back to that text's
+// offsets. A stage that changes nothing returns a nil map, which is the same
+// identity convention View.segs uses.
+//
+// Views are pipelines rather than monoliths because that is what they are:
+// the compact view *is* the skeleton fold with letter-spacing separators
+// removed, and writing it as `{foldSkeleton, compactLetterSpacing}` is the
+// contract rather than a paraphrase of it. composeSegs is what lets a stage
+// be written against the text it actually sees while its findings still
+// anchor to raw.
+type viewStage func(text string) (string, []viewSeg)
+
+// viewBuilder is one registered view. Adding a view is adding an entry here;
+// every rule that has not opted out then runs on it, with no edit at the rule.
 type viewBuilder struct {
-	name  string
-	build func(raw string) (string, []viewSeg)
+	name   string
+	stages []viewStage
+}
+
+// build runs the pipeline over a file's raw text, composing each stage's
+// offset map onto the one before it, so the view that comes out maps its own
+// offsets straight back to raw however many stages produced it.
+func (b viewBuilder) build(raw string) (string, []viewSeg) {
+	text := raw
+	var segs []viewSeg
+	for _, stage := range b.stages {
+		next, stageSegs := stage(text)
+		segs = composeSegs(stageSegs, segs, len(raw))
+		text = next
+	}
+	return text, segs
 }
 
 // viewBuilders is the ordered registry of normalised views. Order is the
 // order findings are discovered in, which matters only for which view's
 // rendering survives dedup when two views find the same place.
 var viewBuilders = []viewBuilder{
-	{name: viewSkeleton, build: buildSkeleton},
+	{name: viewSkeleton, stages: []viewStage{foldSkeleton}},
+	{name: viewCompactLetter, stages: []viewStage{foldSkeleton, compactLetterSpacing}},
+}
+
+// composeSegs composes two offset maps: outer maps a stage's own offsets onto
+// the text it was given, inner maps that text's offsets onto raw. The result
+// maps the stage's offsets onto raw.
+//
+// A nil map means the identity, exactly as View.segs does, so a stage that
+// changed nothing costs nothing here.
+//
+// A linear outer segment is split at the inner map's boundaries rather than
+// carried whole: inside the range it covers, the inner map may be linear in
+// one part and a rewrite in the next, and a composition that kept the outer
+// segment's linearity would interpolate positions through a character that
+// has no interior.
+func composeSegs(outer, inner []viewSeg, rawLen int) []viewSeg {
+	if outer == nil {
+		return inner
+	}
+	if inner == nil {
+		return outer
+	}
+	in := &View{segs: inner, rawLen: rawLen}
+	var out segList
+	for _, o := range outer {
+		if !o.linear {
+			// The whole of o's output came from o's input range as a unit;
+			// that range's raw bounds are the composition.
+			out.add(viewSeg{
+				dStart: o.dStart, dEnd: o.dEnd,
+				sStart: in.SourceOffset(o.sStart), sEnd: in.SourceEnd(o.sEnd),
+			})
+			continue
+		}
+		i := in.segAt(o.sStart)
+		if i < 0 {
+			i = 0
+		}
+		for ; i < len(inner) && inner[i].dStart < o.sEnd; i++ {
+			s := inner[i]
+			lo, hi := max(s.dStart, o.sStart), min(s.dEnd, o.sEnd)
+			if lo >= hi {
+				continue
+			}
+			seg := viewSeg{dStart: o.dStart + (lo - o.sStart), dEnd: o.dStart + (hi - o.sStart)}
+			if s.linear {
+				seg.sStart, seg.sEnd, seg.linear = s.sStart+(lo-s.dStart), s.sStart+(hi-s.dStart), true
+			} else {
+				seg.sStart, seg.sEnd = s.sStart, s.sEnd
+			}
+			out.add(seg)
+		}
+	}
+	return out.segs
+}
+
+// segList accumulates segments, coalescing a linear segment onto the linear
+// segment before it when the two are contiguous on both sides — so a stretch
+// the pipeline left alone costs one entry however long it is.
+type segList struct{ segs []viewSeg }
+
+func (sl *segList) add(s viewSeg) {
+	if s.linear && len(sl.segs) > 0 {
+		if last := &sl.segs[len(sl.segs)-1]; last.linear && last.dEnd == s.dStart && last.sEnd == s.sStart {
+			last.dEnd, last.sEnd = s.dEnd, s.sEnd
+			return
+		}
+	}
+	sl.segs = append(sl.segs, s)
 }
 
 // Views returns the raw view followed by every registered normalised view.
@@ -190,6 +286,21 @@ func (f *FileContent) rawView() *View {
 	return &View{Name: viewRaw, Path: f.Entry.Path, Text: f.Text, rawLen: len(f.Text)}
 }
 
+// newViews builds the raw view and every registered view of one file's text.
+// It is the single place the registry is walked, so a view the ledger builds
+// and a view a test builds are the same object by construction.
+func newViews(path, raw string) []*View {
+	views := make([]*View, 0, 1+len(viewBuilders))
+	views = append(views, &View{Name: viewRaw, Path: path, Text: raw, rawLen: len(raw)})
+	for _, b := range viewBuilders {
+		text, segs := b.build(raw)
+		views = append(views, &View{
+			Name: b.name, Path: path, Text: text, segs: segs, rawLen: len(raw),
+		})
+	}
+	return views
+}
+
 // buildViews materialises every view of every inspected file. Called by
 // BuildLedger after the file list is final, so the views are built once and
 // read many times.
@@ -199,15 +310,7 @@ func (l *Ledger) buildViews() {
 		if f.Entry.Outcome != "inspected" {
 			continue
 		}
-		views := make([]*View, 0, 1+len(viewBuilders))
-		views = append(views, f.rawView())
-		for _, b := range viewBuilders {
-			text, segs := b.build(f.Text)
-			views = append(views, &View{
-				Name: b.name, Path: f.Entry.Path, Text: text, segs: segs, rawLen: len(f.Text),
-			})
-		}
-		f.views = views
+		f.views = newViews(f.Entry.Path, f.Text)
 	}
 }
 
@@ -273,9 +376,46 @@ func (v *View) Tag() string {
 	return v.Name
 }
 
+// ---- building a stage's text and its offset map ----
+
+// segBuilder accumulates a stage's output text together with the map back to
+// the text it was given. Both stages build their map through it, so there is
+// one implementation of the three cases a transform can produce.
+type segBuilder struct {
+	b    strings.Builder
+	segs segList
+}
+
+// emit records one contribution of the input to the output.
+//
+//   - repl == "" is a deletion, and produces no segment at all: the input
+//     bytes it occupied belong to no output byte, which is the honest answer
+//     rather than a fabricated one.
+//   - identity means the output is the input verbatim, so consecutive
+//     identity contributions coalesce into one linear segment however long
+//     the run — a stage that changes one character in a megabyte costs three
+//     segments, not a million.
+//   - otherwise the contribution is a rewrite and gets its own segment:
+//     every output byte in it came from the same input range, so the mapping
+//     inside it is not positional and the segment reports its own bounds.
+func (sb *segBuilder) emit(repl string, sStart, sLen int, identity bool) {
+	dStart := sb.b.Len()
+	sb.b.WriteString(repl)
+	if repl == "" {
+		return
+	}
+	sb.segs.add(viewSeg{
+		dStart: dStart, dEnd: dStart + len(repl),
+		sStart: sStart, sEnd: sStart + sLen,
+		linear: identity,
+	})
+}
+
+func (sb *segBuilder) done() (string, []viewSeg) { return sb.b.String(), sb.segs.segs }
+
 // ---- the Skeleton view ----
 
-// buildSkeleton renders the Unicode fold: per-character NFKC, then the UTS #39
+// foldSkeleton renders the Unicode fold: per-character NFKC, then the UTS #39
 // ASCII confusable skeleton, then removal of format and control characters and
 // default-ignorables.
 //
@@ -296,38 +436,16 @@ func (v *View) Tag() string {
 // that a combining sequence spelled as base + mark is not composed; that is a
 // stated limit, not an oversight, and it costs nothing for the ASCII-phrase
 // rules this view exists to serve.
-func buildSkeleton(raw string) (string, []viewSeg) {
-	var b strings.Builder
-	b.Grow(len(raw))
-	var segs []viewSeg
-
-	// emit records one raw character's contribution. repl == "" deletes it.
-	emit := func(repl string, sStart, sLen int, identity bool) {
-		dStart := b.Len()
-		b.WriteString(repl)
-		if repl == "" {
-			return
-		}
-		if identity && len(segs) > 0 {
-			if last := &segs[len(segs)-1]; last.linear && last.dEnd == dStart && last.sEnd == sStart {
-				last.dEnd += len(repl)
-				last.sEnd += sLen
-				return
-			}
-		}
-		segs = append(segs, viewSeg{
-			dStart: dStart, dEnd: dStart + len(repl),
-			sStart: sStart, sEnd: sStart + sLen,
-			linear: identity,
-		})
-	}
+func foldSkeleton(raw string) (string, []viewSeg) {
+	var sb segBuilder
+	sb.b.Grow(len(raw))
 
 	for i := 0; i < len(raw); {
 		r, n := utf8.DecodeRuneInString(raw[i:])
 		if r == utf8.RuneError && n <= 1 {
 			// Invalid UTF-8: pass the byte through untouched. Normalising
 			// bytes that are not characters would invent text.
-			emit(raw[i:i+1], i, 1, true)
+			sb.emit(raw[i:i+1], i, 1, true)
 			i++
 			continue
 		}
@@ -335,18 +453,18 @@ func buildSkeleton(raw string) (string, []viewSeg) {
 			// ASCII is already NFKC and has no confusable mapping; only the
 			// C0/DEL controls are dropped, and not the whitespace ones.
 			if isStrippableControl(r) {
-				emit("", i, n, false)
+				sb.emit("", i, n, false)
 			} else {
-				emit(raw[i:i+n], i, n, true)
+				sb.emit(raw[i:i+n], i, n, true)
 			}
 			i += n
 			continue
 		}
 		folded := foldRune(r)
-		emit(folded, i, n, folded == raw[i:i+n])
+		sb.emit(folded, i, n, folded == raw[i:i+n])
 		i += n
 	}
-	return b.String(), segs
+	return sb.done()
 }
 
 // foldRune is NFKC then confusable-skeleton then ignorable-removal, for one
@@ -378,4 +496,220 @@ func isStrippableControl(r rune) bool {
 	return unicode.Is(unicode.Cf, r) ||
 		unicode.Is(unicode.Cc, r) ||
 		unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r)
+}
+
+// ---- the CompactLetter view ----
+//
+// The channel this closes is *visible* interleaving: `i g n o r e  a l l
+// p r e v i o u s  i n s t r u c t i o n s` is the blocker-severity SK-T002
+// payload, and no amount of Unicode folding reaches it, because every
+// character in it is already exactly what it looks like. The skeleton view
+// removes the *invisible* interleaving channel — Cf, the non-whitespace Cc,
+// the default-ignorables — and it can remove them everywhere, unconditionally,
+// because an invisible character is never content. A visible character is
+// content, so removing one needs evidence that interleaving is happening at
+// all. That evidence is the run.
+//
+// **The rule is a grammar, not a list of spellings.** A letter-spacing run is
+// six or more isolated letters in a row — each one separated from the next by
+// a non-empty gap that contains no letter and no digit. Prose is not written
+// that way; letter-spaced payloads are, whatever they are spelled with. So
+// the separator is not enumerated: space, NBSP, `.`, `-`, `_`, `*`, a
+// non-ASCII Z-separator, U+FFFD, and the filler nobody has thought of yet are
+// all simply "not a letter", and all close together or none does.
+//
+// This is where the gate parts company with upstream's AE6
+// (docs/research/rule-language.md §2, ss:artifacts.py:1662-1700), which
+// carries four enumerations beside the same run detector: a security-term
+// list, four command-phrase alternations, a benign-term list and a pair of
+// spelling-example context regexes. It needs them because AE6 *emits a
+// finding* from the run itself, so it has to decide whether the run spells
+// something dangerous. A view emits nothing. It changes what the rules can
+// see, and the rules already hold the vocabulary — so the whole enumeration
+// layer has no job here and is not ported.
+//
+// What compaction may *not* do is as load-bearing as what it does:
+//
+//   - **It never crosses a line break.** Letter-spacing is a within-line
+//     typographic device, and line structure is what every rule's evidence is
+//     cut on: a compaction that swallowed a newline would move every finding
+//     after it and would let two lines' text form a match that is in neither.
+//   - **It only ever brings letters together.** Gaps inside a run are
+//     removed or become one space; text outside a run is untouched. So,
+//     unlike a fold, it cannot manufacture syntax out of prose — the failure
+//     the skeleton view measured when NFKC turned a bare `‥` into `..` and
+//     fired a path-traversal blocker.
+
+// compactMinRunLetters is the shortest sequence of isolated letters the view
+// reads as letter-spacing rather than as prose. Upstream's AE6 uses the same
+// bound (rule-language.md §2, ss:artifacts.py:204). It is a threshold on the
+// shape of the run, not a vocabulary: nothing here knows or asks what the run
+// might spell.
+const compactMinRunLetters = 6
+
+// letterSpacingRun is one maximal stretch of isolated letters, in rune
+// indices, half-open and always ending on a letter.
+type letterSpacingRun struct{ start, end int }
+
+// compactLetterSpacing removes the separators inside letter-spacing runs.
+//
+// Within a run, the *narrowest* gap is the unit separator — the one that
+// stands between the letters of a word — and it is removed. A wider gap is
+// where the words divide and becomes a single space, because that is what a
+// wider gap means: letter-spaced text has always set the word boundary wider
+// than the letter boundary, since a word boundary rendered the same as a
+// letter boundary is unreadable. Taking the unit from the run rather than
+// fixing it at one character is what makes `i  g  n  o  r  e    a  l  l`
+// compact as correctly as `i g n o r e  a l l`, with no constant to tune.
+//
+// Preserving the word boundary is not a nicety: the gate's phrase rules are
+// written with `\s+` between their words, so a compaction that collapsed the
+// whole run to `ignoreallpreviousinstructions` would close nothing at all.
+func compactLetterSpacing(text string) (string, []viewSeg) {
+	rs, bo := runeOffsets(text)
+	runs := letterSpacingRuns(rs)
+	if len(runs) == 0 {
+		// Nothing interleaved: the identity, with the nil map that says so.
+		return text, nil
+	}
+
+	var sb segBuilder
+	sb.b.Grow(len(text))
+	pass := func(from, to int) { // rune range, verbatim
+		if from < to {
+			sb.emit(text[bo[from]:bo[to]], bo[from], bo[to]-bo[from], true)
+		}
+	}
+
+	prev := 0
+	for _, run := range runs {
+		pass(prev, run.start)
+		unit := unitGap(rs, run)
+		for i := run.start; i < run.end; {
+			if isRunLetter(rs[i]) {
+				pass(i, i+1)
+				i++
+				continue
+			}
+			gap := i
+			for i < run.end && !isRunLetter(rs[i]) {
+				i++
+			}
+			repl := ""
+			if i-gap > unit {
+				repl = " "
+			}
+			sb.emit(repl, bo[gap], bo[i]-bo[gap], false)
+		}
+		prev = run.end
+	}
+	pass(prev, len(rs))
+	return sb.done()
+}
+
+// letterSpacingRuns finds every maximal run of isolated letters of at least
+// compactMinRunLetters. A run is: a letter that does not follow a letter,
+// then repeatedly a non-empty gap of separators followed by a single letter.
+// Two adjacent letters end the run — the spacing has stopped — and so does a
+// gap that reaches a line break or the end of the text.
+//
+// Ported from upstream's `_concealed_instruction_run_spans`
+// (ss:artifacts.py:1662-1700) by way of difftest's `concealedInstructionRunSpans`,
+// which is its measured-equivalent Go transliteration; the departure is the
+// separator class, which excludes line terminators here.
+func letterSpacingRuns(rs []rune) []letterSpacingRun {
+	var runs []letterSpacingRun
+	for i := 0; i < len(rs); {
+		if !isRunLetter(rs[i]) || (i > 0 && isRunLetter(rs[i-1])) {
+			i++
+			continue
+		}
+		start, lastLetterEnd, letters := i, i+1, 1
+		c := i + 1
+		for c < len(rs) {
+			gap := c
+			for c < len(rs) && isSeparator(rs[c]) {
+				c++
+			}
+			if c == gap || c >= len(rs) || !isRunLetter(rs[c]) {
+				break
+			}
+			letters++
+			lastLetterEnd = c + 1
+			c = lastLetterEnd
+			if c < len(rs) && isRunLetter(rs[c]) {
+				break
+			}
+		}
+		if letters >= compactMinRunLetters {
+			runs = append(runs, letterSpacingRun{start: start, end: lastLetterEnd})
+			i = lastLetterEnd
+			continue
+		}
+		i = start + 1
+	}
+	return runs
+}
+
+// unitGap is the width, in runes, of the narrowest gap in a run: the run's
+// own letter separator, from which every wider gap is read as a word
+// boundary. A run whose gaps are all the same width is one word.
+func unitGap(rs []rune, run letterSpacingRun) int {
+	unit := 0
+	for i := run.start; i < run.end; {
+		if isRunLetter(rs[i]) {
+			i++
+			continue
+		}
+		gap := i
+		for i < run.end && !isRunLetter(rs[i]) {
+			i++
+		}
+		if w := i - gap; unit == 0 || w < unit {
+			unit = w
+		}
+	}
+	return unit
+}
+
+// isRunLetter reports whether a character counts as one of a run's letters.
+// Combining marks count, so a base character and its mark are two adjacent
+// "letters" and end the run rather than being read as a letter and a
+// separator — the conservative reading, and the one Python's `[^\W\d_]` gives
+// upstream.
+func isRunLetter(r rune) bool {
+	return unicode.IsLetter(r) || unicode.In(r, unicode.Mn, unicode.Mc)
+}
+
+// isSeparator reports whether a character can sit inside a run's gap:
+// anything that is not a letter, a digit or a line terminator.
+//
+// Line terminators are excluded so that a run cannot cross a line, which is
+// what keeps a view's lines the file's lines. The set is the Unicode vertical
+// whitespace that survives the fold — upstream's LOGICAL_LINE_BREAK minus the
+// C0 file/group/record separators, which the skeleton has already stripped as
+// non-whitespace controls.
+func isSeparator(r rune) bool {
+	if unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.In(r, unicode.Mn, unicode.Mc) {
+		return false
+	}
+	switch r {
+	case '\n', '\r', '\v', '\f', '', ' ', ' ':
+		return false
+	}
+	return true
+}
+
+// runeOffsets decodes text into runes beside the byte offset of each, with a
+// final entry holding len(text) so a half-open rune range always has a byte
+// range. Invalid bytes decode to one RuneError each, matching the way the
+// fold passes them through.
+func runeOffsets(text string) ([]rune, []int) {
+	rs := make([]rune, 0, len(text))
+	bo := make([]int, 0, len(text)+1)
+	for i, r := range text {
+		rs = append(rs, r)
+		bo = append(bo, i)
+	}
+	return rs, append(bo, len(text))
 }
