@@ -981,13 +981,21 @@ tests/test_walk.sh
 tests/test_rewrite.sh
 tests/test_f01.sh
 tests/test_f02.sh
+tests/test_gate.sh
 
-# Profiler tests (Go)
-cd profiler && go test ./...
+# Go tests, over every module the workspace declares — currently profiler,
+# skillgate and skillgate/difftest. The set is asked of go.work rather than
+# listed, which is what CI does: a module added to the workspace is covered
+# here with no edit, and `cd profiler` covered one of the three.
+go list -m -f '{{.Dir}}' | while IFS= read -r dir; do (cd "$dir" && go test ./...); done
 ```
 
 `tests/test_harness.sh` holds this list to the suites CI runs, so a suite missing from
 here fails it rather than going quietly unrun.
+
+`tests/test_gate.sh` builds the gate from the source `skills/skill-gate/SKILL.md`
+declares, so it needs a Go toolchain — as does the skill-layout suite, which
+witnesses the same declaration.
 
 ## What this plugin does not do
 
