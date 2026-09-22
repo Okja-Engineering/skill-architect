@@ -1,0 +1,1003 @@
+{
+  "skill": {
+    "name": "skill-rewrite",
+    "source": "/Users/matthewvandusen/Development/Auraprix/skill-architect/skills/skill-rewrite",
+    "scanned_at": "2026-09-13T03:26:46.756907+00:00"
+  },
+  "risk_assessment": {
+    "score": 43,
+    "severity": "MEDIUM",
+    "recommendation": "CAUTION",
+    "max_issue_severity": "HIGH"
+  },
+  "components": [
+    {
+      "path": "SKILL.md",
+      "type": "markdown",
+      "lines": 186,
+      "executable": false,
+      "size_bytes": 7198,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    },
+    {
+      "path": "references/evaluation-matrix.md",
+      "type": "markdown",
+      "lines": 61,
+      "executable": false,
+      "size_bytes": 2424,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    },
+    {
+      "path": "scripts/audit-report.sh",
+      "type": "shell",
+      "lines": 117,
+      "executable": true,
+      "size_bytes": 4070,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    },
+    {
+      "path": "scripts/check-frontmatter.sh",
+      "type": "shell",
+      "lines": 54,
+      "executable": true,
+      "size_bytes": 1440,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    },
+    {
+      "path": "scripts/check-paths.sh",
+      "type": "shell",
+      "lines": 113,
+      "executable": true,
+      "size_bytes": 3232,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    },
+    {
+      "path": "scripts/check-structure.sh",
+      "type": "shell",
+      "lines": 117,
+      "executable": true,
+      "size_bytes": 3514,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    },
+    {
+      "path": "scripts/draft-rewrite.sh",
+      "type": "shell",
+      "lines": 202,
+      "executable": true,
+      "size_bytes": 5076,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    }
+  ],
+  "structured_summaries": [],
+  "issues": [
+    {
+      "id": "AE1",
+      "finding_id": "finding-033d1bd006614e42b311f37b3efa87ed",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 13,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "Draft a rewritten `SKILL.md` for an Agent Skill from a `skill-audit` report. This skill turns audit findings into a concrete rewrite plan and a draft; it does n",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 13,
+          "end_line": null
+        }
+      ]
+    },
+    {
+      "id": "AE1",
+      "finding_id": "finding-033d1bd006614e42b311f37b3efa87ed",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 20,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "Draft a rewritten `SKILL.md` for an Agent Skill from a `skill-audit` report. This skill turns audit findings into a concrete rewrite plan and a draft; it does n",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 20,
+          "end_line": null
+        }
+      ]
+    },
+    {
+      "id": "AE1",
+      "finding_id": "finding-033d1bd006614e42b311f37b3efa87ed",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 31,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "Draft a rewritten `SKILL.md` for an Agent Skill from a `skill-audit` report. This skill turns audit findings into a concrete rewrite plan and a draft; it does n",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 31,
+          "end_line": null
+        }
+      ]
+    },
+    {
+      "id": "AE1",
+      "finding_id": "finding-033d1bd006614e42b311f37b3efa87ed",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 33,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "Draft a rewritten `SKILL.md` for an Agent Skill from a `skill-audit` report. This skill turns audit findings into a concrete rewrite plan and a draft; it does n",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 33,
+          "end_line": null
+        }
+      ]
+    },
+    {
+      "id": "AE1",
+      "finding_id": "finding-033d1bd006614e42b311f37b3efa87ed",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 83,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "Draft a rewritten `SKILL.md` for an Agent Skill from a `skill-audit` report. This skill turns audit findings into a concrete rewrite plan and a draft; it does n",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 83,
+          "end_line": null
+        }
+      ]
+    },
+    {
+      "id": "AE1",
+      "finding_id": "finding-033d1bd006614e42b311f37b3efa87ed",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 100,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "Draft a rewritten `SKILL.md` for an Agent Skill from a `skill-audit` report. This skill turns audit findings into a concrete rewrite plan and a draft; it does n",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 100,
+          "end_line": null
+        }
+      ]
+    },
+    {
+      "id": "AE1",
+      "finding_id": "finding-033d1bd006614e42b311f37b3efa87ed",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 108,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "Draft a rewritten `SKILL.md` for an Agent Skill from a `skill-audit` report. This skill turns audit findings into a concrete rewrite plan and a draft; it does n",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 108,
+          "end_line": null
+        }
+      ]
+    },
+    {
+      "id": "AE1",
+      "finding_id": "finding-033d1bd006614e42b311f37b3efa87ed",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 127,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "Draft a rewritten `SKILL.md` for an Agent Skill from a `skill-audit` report. This skill turns audit findings into a concrete rewrite plan and a draft; it does n",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 127,
+          "end_line": null
+        }
+      ]
+    },
+    {
+      "id": "AE1",
+      "finding_id": "finding-033d1bd006614e42b311f37b3efa87ed",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 137,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "Draft a rewritten `SKILL.md` for an Agent Skill from a `skill-audit` report. This skill turns audit findings into a concrete rewrite plan and a draft; it does n",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 137,
+          "end_line": null
+        }
+      ]
+    }
+  ],
+  "suppressed_count": 0,
+  "suppressed": [],
+  "metadata": {
+    "has_executable_scripts": true,
+    "skillspector_version": "2.11.2",
+    "llm_requested": false,
+    "llm_available": false,
+    "meta_analysis_applied": false,
+    "inference_usage": [],
+    "filtering_mode": "heuristic"
+  },
+  "execution_successful": true,
+  "analysis_completeness": {
+    "total_components": 7,
+    "scanned_components": 7,
+    "coverage_percent": 100.0,
+    "is_complete": false,
+    "status": "partial",
+    "execution_successful": true,
+    "fully_inspected_files": 7,
+    "partially_inspected_files": 0,
+    "entirely_uninspected_files": 0,
+    "ledger_exceptions": [
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 8,
+        "end_line": 8,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 39,
+        "end_line": 39,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 40,
+        "end_line": 40,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 49,
+        "end_line": 49,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 60,
+        "end_line": 60,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 86,
+        "end_line": 86,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 90,
+        "end_line": 90,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 148,
+        "end_line": 148,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 149,
+        "end_line": 149,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 150,
+        "end_line": 150,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 151,
+        "end_line": 151,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 161,
+        "end_line": 161,
+        "fatal": false
+      }
+    ],
+    "scope_exclusions": [],
+    "analyzer_statuses": [
+      {
+        "analyzer_id": "artifact_integrity",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "behavioral_ast",
+        "status": "not_applicable",
+        "planned_work": 0,
+        "completed": 0,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0,
+        "reason_code": "no_applicable_files",
+        "message": "No files matched this analyzer's applicability contract."
+      },
+      {
+        "analyzer_id": "behavioral_taint_tracking",
+        "status": "not_applicable",
+        "planned_work": 0,
+        "completed": 0,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0,
+        "reason_code": "no_applicable_files",
+        "message": "No files matched this analyzer's applicability contract."
+      },
+      {
+        "analyzer_id": "bundled_execution_surface",
+        "status": "not_applicable",
+        "planned_work": 0,
+        "completed": 0,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0,
+        "reason_code": "no_applicable_files",
+        "message": "No files matched this analyzer's applicability contract."
+      },
+      {
+        "analyzer_id": "mcp_least_privilege",
+        "status": "completed",
+        "planned_work": 6,
+        "completed": 6,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "mcp_rug_pull",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "mcp_tool_poisoning",
+        "status": "completed",
+        "planned_work": 1,
+        "completed": 1,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "meta_analyzer",
+        "status": "not_applicable",
+        "planned_work": 0,
+        "completed": 0,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0,
+        "reason_code": "no_applicable_files",
+        "message": "No files matched this analyzer's applicability contract."
+      },
+      {
+        "analyzer_id": "reference_coverage",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_agent_snooping",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_anti_refusal",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_data_exfiltration",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_deserialization",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_excessive_agency",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_harmful_content",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_memory_poisoning",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_output_handling",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_privilege_escalation",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_prompt_injection",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_rogue_agent",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_ssrf",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_supply_chain",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_system_prompt_leakage",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_tool_misuse",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_yara",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      }
+    ],
+    "references": [
+      {
+        "source_path": "SKILL.md",
+        "line": 8,
+        "column": 13,
+        "evidence": "version: \"0.2.0\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 13,
+        "column": 20,
+        "evidence": "Draft a rewritten `SKILL.md` for an Agent Skill from a `skill-audit` report. This skill turns audit findings into a concrete rewrite plan and a draft; it does n",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 20,
+        "column": 54,
+        "evidence": "- You need a structured rewrite plan before editing `SKILL.md`.",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 31,
+        "column": 51,
+        "evidence": "- `target_skill`: one skill directory containing `SKILL.md`.",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 33,
+        "column": 48,
+        "evidence": "- `skill_root`: the directory containing this `SKILL.md` and `scripts/`.",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 39,
+        "column": 9,
+        "evidence": "[[ -f \"$target_skill/SKILL.md\" ]] || { echo \"not a skill dir: $target_skill\" >&2; exit 1; }",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 40,
+        "column": 9,
+        "evidence": "[[ -x \"$skill_root/scripts/audit-report.sh\" ]] || { echo \"vendored audit scripts missing under $skill_root/scripts\" >&2; exit 3; }",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 40,
+        "column": 97,
+        "evidence": "[[ -x \"$skill_root/scripts/audit-report.sh\" ]] || { echo \"vendored audit scripts missing under $skill_root/scripts\" >&2; exit 3; }",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 49,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/audit-report.sh\" \"$target_skill\" > \"$audit_report\" || echo \"audit exited $?\" >&2",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 53,
+        "column": 32,
+        "evidence": "Score the 10 dimensions using `references/evaluation-matrix.md` (a vendored copy of skill-audit's matrix).",
+        "target_path": "references/evaluation-matrix.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 60,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/draft-rewrite.sh\" -t \"$target_skill\" -a \"$audit_report\" -o \"$draft_out\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 83,
+        "column": 22,
+        "evidence": "2. Read the current `SKILL.md`, then `scripts/`, `references/`, and `assets/` when present.",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 86,
+        "column": 44,
+        "evidence": "- Trigger failures (description missing what/when/keywords).",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 90,
+        "column": 54,
+        "evidence": "5. Produce the rewrite plan from the draft: sections added/moved/removed; scripts or references to create, rename, or delete; content preserved unchanged; items",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 100,
+        "column": 56,
+        "evidence": "- A rewrite plan (four parts, step 5) and a rewritten `SKILL.md` draft, both at `draft_out`.",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 108,
+        "column": 19,
+        "evidence": "- Do not inflate `SKILL.md` beyond ~500 lines; split instead of grow.",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 127,
+        "column": 87,
+        "evidence": "- [ ] No content was added that is not traceable to an audit finding or the original `SKILL.md`.",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 137,
+        "column": 34,
+        "evidence": "- Do not overwrite the original `SKILL.md` without explicit approval.",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 148,
+        "column": 13,
+        "evidence": "skill_root=\"skills/skill-rewrite\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 149,
+        "column": 15,
+        "evidence": "target_skill=\"skills/release-check\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 150,
+        "column": 12,
+        "evidence": "draft_out=\"REWRITE-DRAFT-release-check.md\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 151,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/draft-rewrite.sh\" -t \"$target_skill\" -a ./release-check-audit.md -o \"$draft_out\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 151,
+        "column": 62,
+        "evidence": "\"$skill_root/scripts/draft-rewrite.sh\" -t \"$target_skill\" -a ./release-check-audit.md -o \"$draft_out\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 161,
+        "column": 30,
+        "evidence": "Generated from audit report: ./release-check-audit.md",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      }
+    ],
+    "limitations": [],
+    "findings_before_filtering": 9,
+    "findings_after_filtering": 9
+  }
+}
