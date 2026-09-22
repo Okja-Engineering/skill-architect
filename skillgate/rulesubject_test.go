@@ -55,6 +55,13 @@ var quietTable = []struct {
 			"path syntax fires on ordinary prose. There is no `.` left to make a `..`\n" +
 			"out of.\n",
 	}},
+	// The measurement that made S09 take T019 off the normalised views: a
+	// bare `‥` folds to `..` on the skeleton. It is still two dots and still
+	// names nowhere, so it is quiet on every view now, which is what let the
+	// opt-out be retired rather than worked around.
+	{"SK-T019", "a bare U+2025 TWO DOT LEADER in an ordinary sentence", map[string]string{
+		"SKILL.md": "---\nname: x\ndescription: x\n---\nA sentence with a bare ‥ in it.\n",
+	}},
 }
 
 // stillFiresTable: the subject is present in a form the narrowing could
@@ -96,6 +103,14 @@ var stillFiresTable = []struct {
 	}},
 	{"SK-T019", "backslash-spelled climb is still a climb", map[string]string{
 		"SKILL.md": "---\nname: x\ndescription: x\n---\nRead ..\\..\\etc\\passwd\n",
+	}},
+	// The limit the old raw-only opt-out had to accept, now closed: with a
+	// bare `..` no longer read as a reference, T019 runs on the normalised
+	// views again and the fullwidth spelling folds onto the ASCII one. This
+	// row is the whole justification for retiring that opt-out, so it must
+	// not be deleted without restoring it.
+	{"SK-T019", "fullwidth-spelled climb, caught on the skeleton view", map[string]string{
+		"SKILL.md": "---\nname: x\ndescription: x\n---\nRead ．．／．．／etc／passwd\n",
 	}},
 }
 

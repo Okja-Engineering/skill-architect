@@ -157,7 +157,6 @@ compares the set to this table in both directions.
 | SK-T005 | Its evidence is a synthesised pair of lines (the dump line and the sink line), not a substring of the text it scanned, so a derived hit has no offset to map back to raw. |
 | SK-T006 | Its evidence is masked before it leaves the rule — the gate never republishes a secret — so it is never a substring of the text it scanned. |
 | SK-T009 | Its evidence is a synthesised decode-line / exec-line pair, not a substring of the text it scanned. |
-| SK-T019 | Its subject is path *syntax*, and a normalised view manufactures path syntax out of prose: NFKC maps typographic punctuation onto ASCII, so U+2025 TWO DOT LEADER becomes `..` and a bare `‥` in an ordinary sentence fires this blocker. Erring towards a missed escape rather than a false blocker is the direction SK-G003 already ruled for. |
 
 ### Rules that read executed code only
 
@@ -189,9 +188,17 @@ positively identifying the grammar.
   `eval` — is elided by the code projection if its lines begin with the
   comment marker. Assembling and running text is SK-T009's subject, and the
   code that does the assembling is live text the projection keeps.
-- A fullwidth- or confusable-spelled path escape is **not** caught, because
-  SK-T019 is raw-only above. A fullwidth-spelled network transmission, pipe to
-  a shell, or persistence write **is** caught.
+- SK-T019 is **no longer raw-only**, so a fullwidth- or confusable-spelled
+  path escape *is* caught. The opt-out existed because NFKC folds U+2025 TWO
+  DOT LEADER onto `..` and a bare `‥` in prose fired a blocker; a bare `..`
+  is now read as the single path segment it is and names nowhere, so the
+  fold has nothing left to manufacture.
+- SK-T019 does not model a process's working directory: `cd ..` is a
+  directory change, not a reference, and is not reported. It never was
+  analysed — the old matcher hit it by coincidence of spelling.
+- A reference inside a comment **is** reported by SK-T019. A documented
+  dependency on a file outside the bundle is still a dependency, which is
+  why the code-only narrowing below does not apply to it.
 - The rules whose evidence is synthesised or masked (SK-T005, SK-T006,
   SK-T009) do not gain view coverage. Giving them coverage means giving them
   locatable evidence, which is a change to those rules, not to the engine.

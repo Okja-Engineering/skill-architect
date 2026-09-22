@@ -196,19 +196,74 @@ var tripwireGroups = []tripwireGroup{
 // rePathRef captures a whole path-ish token containing a `..` segment.
 var rePathRef = regexp.MustCompile(`[\w.\-/\\]*\.\.([\\/][\w.\-/\\]*)?`)
 
+// pathRefs returns the references in a view that a `..` segment could carry
+// outside the bundle, each with the offset it was found at.
+//
+// The distinction this draws is the one refgraph already drew and wrote
+// down, in the same words, for the same reason: *a slash-containing token is
+// path-shaped anywhere; a bare token is a concept unless it is an explicit
+// link target* (`refTokens`, "`SKILL.md` in prose is a concept"). T019 never
+// took delivery of it — refgraph hands it the escape question in three
+// separate comments while T019 answers with its own naked regex — so `..`
+// standing alone in a sentence was read as a path to the parent directory.
+//
+// It is one path *segment*, and a sentence that quotes it names nowhere.
+// Measured on this repository: every T019 false positive was a bare `..` in
+// prose, including the spec row S09 wrote to explain why T019 is raw-only,
+// and every true positive carried a separator. The one bare form that really
+// is a reference — a link whose whole target is the parent — is picked up by
+// the explicit leg, which widens the rule rather than narrowing it.
+func pathRefs(text string) []struct {
+	at  int
+	ref string
+} {
+	var out []struct {
+		at  int
+		ref string
+	}
+	add := func(at int, ref string) {
+		out = append(out, struct {
+			at  int
+			ref string
+		}{at, normPathSep(ref)})
+	}
+	for _, m := range rePathRef.FindAllStringIndex(text, -1) {
+		if ref := normPathSep(text[m[0]:m[1]]); strings.Contains(ref, "/") {
+			add(m[0], ref)
+		}
+	}
+	// A markdown link target is a reference by construction, whatever its
+	// shape: `[parent](..)` points out of the bundle and says so.
+	for _, m := range reMdLink.FindAllStringSubmatchIndex(text, -1) {
+		add(m[2], text[m[2]:m[3]])
+	}
+	return out
+}
+
 // ruleT019 — path escape: a `../` reference that *resolves outside* the
 // bundle root, or a symlink whose target leaves it (the ledger records the
 // latter as symlink_escape skips). References that stay inside the bundle —
 // e.g. references/x.md → ../SKILL.md — are legal and must not fire.
+//
+// It reads the whole document, not the executed part: `# see ../other.md`
+// in a comment is still a reference to a file outside the bundle, and the
+// dependency is just as real for being documented. Its subject is what the
+// bundle *points at*, which is why the codeOnly narrowing SK-T010 takes is
+// wrong here.
+//
+// Not raw-only. It was, and the written reason was that NFKC folds U+2025
+// TWO DOT LEADER onto `..` and a bare `‥` in prose fired this blocker on the
+// skeleton view. pathRefs removed the premise — a bare `..` is one path
+// segment and names nowhere — so the fold has nothing to manufacture, and
+// the limit that opt-out had to accept is closed: a fullwidth-spelled climb
+// is caught again. Both directions are pinned in rulesubject_test.go and the
+// whole-repo differential over 330 files moved by zero lines.
+//
+// It does not model a process's working directory and never did: `cd ..` is
+// not a reference and is not reported.
 var ruleT019 = rule{
 	id: "SK-T019", sev: SeverityBlocker, quality: "security", effort: 15,
 	msg: "path escape: reference resolves outside the bundle root",
-	rawOnly: "its subject is path syntax, and a normalised view manufactures path syntax " +
-		"out of prose: NFKC deliberately maps typographic punctuation onto ASCII, so " +
-		"U+2025 TWO DOT LEADER becomes `..`. Measured — a bare `‥` in an ordinary " +
-		"sentence fires this blocker on the Skeleton view. The cost is that a " +
-		"fullwidth-spelled `../` escape is not caught; a false blocker against correct " +
-		"prose is the worse direction, which is the ruling SK-G003 already took",
 	scan: func(v *View) []string {
 		dir := v.Path
 		if i := strings.LastIndex(dir, "/"); i >= 0 {
@@ -218,13 +273,12 @@ var ruleT019 = rule{
 		}
 		var ev []string
 		seen := map[string]bool{}
-		for _, m := range rePathRef.FindAllStringIndex(v.Text, -1) {
-			ref := strings.ReplaceAll(v.Text[m[0]:m[1]], "\\", "/")
-			joined := path.Join(dir, ref)
+		for _, r := range pathRefs(v.Text) {
+			joined := path.Join(dir, r.ref)
 			if joined != ".." && !strings.HasPrefix(joined, "../") {
 				continue // resolves inside the bundle — legal
 			}
-			line := lineAt(v.Text, m[0])
+			line := lineAt(v.Text, r.at)
 			if !seen[line] {
 				seen[line] = true
 				ev = append(ev, line)
