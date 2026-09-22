@@ -12,14 +12,14 @@ import (
 )
 
 const (
-	p9VerticalBlankLines  = 20
-	p9HorizontalRunChars  = 80
-	p9BlockByteBudget     = 2048
-	p9RatioThreshold      = 0.90
-	p9RatioMinFileBytes   = 4096
-	p9RepeatedCharThresh  = 512
-	p9RepeatedLineThresh  = 64
-	p9ReplacementDensity  = 0.30
+	p9VerticalBlankLines = 20
+	p9HorizontalRunChars = 80
+	p9BlockByteBudget    = 2048
+	p9RatioThreshold     = 0.90
+	p9RatioMinFileBytes  = 4096
+	p9RepeatedCharThresh = 512
+	p9RepeatedLineThresh = 64
+	p9ReplacementDensity = 0.30
 	p9ReplacementChar    = '\uFFFD'
 )
 
@@ -84,12 +84,12 @@ func runeOffsetOf(text string, byteOff int) int {
 }
 
 type p9Run struct {
-	kind       string
-	startOff   int // char offset
-	startLine  int
-	length     int
-	endOff     int
-	followed   bool
+	kind      string
+	startOff  int // char offset
+	startLine int
+	length    int
+	endOff    int
+	followed  bool
 }
 
 func p9DetectVertical(content string, lines []string, offsets []int) []p9Run {
@@ -176,7 +176,7 @@ func p9DetectBlockAndRatio(content string) []p9Run {
 		runs = append(runs, p9Run{
 			kind: "block", startOff: bestStart,
 			startLine: strings.Count(string(rs[:bestStart]), "\n") + 1,
-			length: bestEnd - bestStart, endOff: bestEnd,
+			length:    bestEnd - bestStart, endOff: bestEnd,
 		})
 	}
 	fileBytes := len(content)
@@ -211,7 +211,7 @@ func p9DetectRepetition(content string) []p9Run {
 			runs = append(runs, p9Run{
 				kind: "repetition", startOff: idx,
 				startLine: strings.Count(string(rs[:idx]), "\n") + 1,
-				length: end - idx, followed: end < n, endOff: end,
+				length:    end - idx, followed: end < n, endOff: end,
 			})
 		}
 		idx = end
