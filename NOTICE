@@ -13,6 +13,11 @@ Derived material:
 - Detection pattern text and analyzer semantics re-expressed in Go under
   skillgate/difftest/ (SK-P* rules; each records its upstream rule ID in
   Origin).
+- The UTS #39 ASCII confusable skeleton table (upstream
+  unicode_confusables.py, generated from Unicode 17 confusables.txt),
+  ported to Go at skillgate/confusables.go and, for the self-contained
+  differential module, at skillgate/difftest/ae6_skeleton.go. Both copies
+  are pinned to one digest by confusables_test.go in each module.
 - Test fixtures under skillgate/difftest/testdata/upstream/, copied
   verbatim from upstream tests/fixtures/.
 

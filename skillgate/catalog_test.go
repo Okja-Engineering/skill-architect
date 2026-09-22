@@ -126,13 +126,42 @@ func catalogSeverities() map[string]string {
 	return out
 }
 
-// documentedRules parses the rule catalog table out of the published spec.
+// publishedTable describes one two-column claim table in the spec: which
+// section it sits under, what its key column must look like, and how to name
+// it when a row cannot be read.
+//
+// It is a type rather than one function because the spec now publishes more
+// than one such table — the rule catalog here, the view axis in view_test.go —
+// and a second hand-written parser is a second place for the prose side to be
+// read wrongly.
+type publishedTable struct {
+	// heading is the exact heading line the table sits under.
+	heading string
+	// shape is the column layout, quoted back in a malformed-row error.
+	shape string
+	// headerKey is the first cell of the header row.
+	headerKey string
+	// keyNoun names what the first column holds, e.g. "rule id".
+	keyNoun string
+	// validKey reports whether a first cell is a well-formed key.
+	validKey func(string) bool
+}
+
+var specCatalogTable = publishedTable{
+	heading:   specCatalogHeading,
+	shape:     "Rule | Sev | What it catches",
+	headerKey: "Rule",
+	keyNoun:   "rule id",
+	validKey:  reRuleID.MatchString,
+}
+
+// parse reads the first table under the section into key → second column.
 //
 // The prose side, and it is read as prose: the section heading is located, the
-// first table under it is the catalog, and every row of it must be a rule row.
+// first table under it is the one meant, and every row of it must be readable.
 // A row this parser cannot read is an error rather than a skip — a silently
 // dropped row is a row the comparison never sees.
-func documentedRules(t *testing.T) map[string]string {
+func (pt publishedTable) parse(t *testing.T) map[string]string {
 	t.Helper()
 	data, err := os.ReadFile(specPath)
 	if err != nil {
@@ -142,13 +171,13 @@ func documentedRules(t *testing.T) map[string]string {
 
 	start := -1
 	for i, line := range lines {
-		if strings.TrimSpace(line) == specCatalogHeading {
+		if strings.TrimSpace(line) == pt.heading {
 			start = i + 1
 			break
 		}
 	}
 	if start < 0 {
-		t.Fatalf("%s has no %q section: the rule catalog is the subject of this file", specPath, specCatalogHeading)
+		t.Fatalf("%s has no %q section: without it the comparison below holds over nothing", specPath, pt.heading)
 	}
 
 	out := map[string]string{}
@@ -156,7 +185,7 @@ func documentedRules(t *testing.T) map[string]string {
 	for i := start; i < len(lines); i++ {
 		line := strings.TrimSpace(lines[i])
 		if strings.HasPrefix(line, "## ") {
-			break // the next section: the catalog table was the one above
+			break // the next section: the table was the one above
 		}
 		if !strings.HasPrefix(line, "|") {
 			if inTable {
@@ -167,30 +196,36 @@ func documentedRules(t *testing.T) map[string]string {
 		inTable = true
 		cells := tableCells(line)
 		if len(cells) < 2 {
-			t.Errorf("%s:%d is a table row with %d cells: the catalog table is Rule | Sev | What it catches",
-				specPath, i+1, len(cells))
+			t.Errorf("%s:%d is a table row with %d cells: the %q table is %s",
+				specPath, i+1, len(cells), pt.heading, pt.shape)
 			continue
 		}
-		if cells[0] == "Rule" || isRuleSeparator(cells[0]) {
+		if cells[0] == pt.headerKey || isRuleSeparator(cells[0]) {
 			continue // header, or the |---|---| rule under it
 		}
-		id := cells[0]
-		if !reRuleID.MatchString(id) {
-			t.Errorf("%s:%d: %q is in the catalog table's Rule column and is not a rule id — a row this "+
-				"parser cannot read is a row the check never compares", specPath, i+1, id)
+		key := cells[0]
+		if !pt.validKey(key) {
+			t.Errorf("%s:%d: %q is in the %q column of the %q table and is not a %s — a row this "+
+				"parser cannot read is a row the check never compares",
+				specPath, i+1, key, pt.headerKey, pt.heading, pt.keyNoun)
 			continue
 		}
-		if prev, dup := out[id]; dup {
-			t.Errorf("%s: the catalog table has two rows for %s (severity %q and %q)", specPath, id, prev, cells[1])
+		if prev, dup := out[key]; dup {
+			t.Errorf("%s: the %q table has two rows for %s (%q and %q)", specPath, pt.heading, key, prev, cells[1])
 			continue
 		}
-		out[id] = cells[1]
+		out[key] = cells[1]
 	}
 	if len(out) == 0 {
-		t.Fatalf("%s §Rule catalog yielded no rows: every comparison below would hold over an empty table",
-			specPath)
+		t.Fatalf("%s %s yielded no rows: every comparison over it would hold vacuously", specPath, pt.heading)
 	}
 	return out
+}
+
+// documentedRules parses the rule catalog table out of the published spec.
+func documentedRules(t *testing.T) map[string]string {
+	t.Helper()
+	return specCatalogTable.parse(t)
 }
 
 // tableCells splits a Markdown table row into its trimmed cells.

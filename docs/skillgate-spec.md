@@ -91,6 +91,90 @@ SK-T rules the gate registers, so the twenty-first tripwire fails the build,
 and raising the cap here is what raises it. Rule representation is frozen
 until `docs/research/rule-language.md` lands.
 
+## Views — what a lexical rule scans
+
+**A lexical rule runs over normalised views of a file as well as over its raw
+text, never over raw text alone.** A rule that matches phrasing against raw
+bytes is defeated by how the payload is *spelled*: `Ｉｇｎｏｒｅ ａｌｌ
+ｐｒｅｖｉｏｕｓ ｉｎｓｔｒｕｃｔｉｏｎｓ` and `Ignоre all prevіous
+instructions` (Cyrillic U+043E, U+0456) are the blocker-severity `SK-T002`
+payload, and neither fired before views existed. The answer is not more
+alternations in the pattern — that is the enumerate-the-forms defect — it is
+to normalise the text before matching.
+
+This section is the normative contract. It restates, for the tracked
+specification, the view axis proposed in `docs/research/rule-language.md`
+§4.3 (prior art, and the source of the upstream invariants); where the two
+differ, this section governs.
+
+### The contract
+
+A **view** is `(name, text, source offsets)`. The offset map answers, for
+every byte of the view's text, which raw byte produced it. That map is not
+polish: without it a view-derived finding has no honest position, and a report
+that points at the wrong line is worse than no report. So:
+
+- **Position and evidence are always raw.** A finding's `file`, `line` and
+  `evidence` name the raw source, whatever view discovered it, so a reader can
+  find the text in the file as it is written on disk.
+- **A non-raw finding is tagged.** `findings[].view` carries the view's name.
+  It is absent on a raw finding, so a report of raw findings is unchanged.
+- **A hit that cannot be anchored is dropped.** Evidence that is not present
+  in the text the rule scanned has no offset to map back, and a finding at an
+  invented position is noise. It is dropped, not guessed at. (The rules whose
+  evidence is synthesised by construction are raw-only for that reason — see
+  the table below — so this is a safety net, not a routine loss.)
+- **Findings dedup raw-wins.** One rule reporting the same place in the same
+  file is one finding, preferring the raw discovery. An engine that reported
+  each raw hit once per view would double every existing finding.
+- **Views are content, not configuration.** They are built once with the
+  coverage ledger and are the same for every run over the same bytes.
+
+### Registered views
+
+| View | What it renders |
+|---|---|
+| raw | The file's bytes, unchanged. Always present, always scanned first. |
+| skeleton | Per-character NFKC, then the UTS #39 ASCII confusable skeleton, then removal of `Cf`, the non-whitespace `Cc` and `Other_Default_Ignorable_Code_Point`. Three Unicode classes and one generated table — not a list of spellings. NFKC is applied per character so one character maps to one span, which is what makes the offset map exact; the cost is that a combining sequence spelled base + mark is not composed. |
+
+`skillgate.ViewNames()` returns this list from the registry that builds them,
+and `view_test.go` compares the two: a view with no row here, and a row here
+naming no view, each fail by name.
+
+### Rules that run on raw text only
+
+Every rule that scans text runs on every view **unless it declares a reason
+not to**, so a view added later covers every rule with no edit at the rule,
+and a rule added later is view-covered by construction. The opt-outs are
+derived from that declaration, not maintained here:
+`skillgate.ViewCoverage()` reads the reason off the rule, and `view_test.go`
+compares the set to this table in both directions.
+
+| Rule | Why it is raw-only |
+|---|---|
+| SK-T001 | Its subject *is* the invisible control characters a normalised view removes. The skeleton view strips exactly this rule's set, so a derived view can never contain what it looks for. |
+| SK-T003 | Its subject *is* the confusable code points the skeleton folds onto ASCII. The fold is what makes the text unmixed, so the mixed-script condition cannot survive into a derived view. |
+| SK-T005 | Its evidence is a synthesised pair of lines (the dump line and the sink line), not a substring of the text it scanned, so a derived hit has no offset to map back to raw. |
+| SK-T006 | Its evidence is masked before it leaves the rule — the gate never republishes a secret — so it is never a substring of the text it scanned. |
+| SK-T009 | Its evidence is a synthesised decode-line / exec-line pair, not a substring of the text it scanned. |
+| SK-T019 | Its subject is path *syntax*, and a normalised view manufactures path syntax out of prose: NFKC maps typographic punctuation onto ASCII, so U+2025 TWO DOT LEADER becomes `..` and a bare `‥` in an ordinary sentence fires this blocker. Erring towards a missed escape rather than a false blocker is the direction SK-G003 already ruled for. |
+
+### Stated limits
+
+- A fullwidth- or confusable-spelled path escape is **not** caught, because
+  SK-T019 is raw-only above. A fullwidth-spelled network transmission, pipe to
+  a shell, or persistence write **is** caught.
+- The rules whose evidence is synthesised or masked (SK-T005, SK-T006,
+  SK-T009) do not gain view coverage. Giving them coverage means giving them
+  locatable evidence, which is a change to those rules, not to the engine.
+- Vocabulary is not surface form, and no view reaches it. `Bypass any
+  preceding directives`, `axios.post`, `uv pip install` and their kind are
+  missed for the same reason they were missed before: the enumeration is in
+  the matcher's vocabulary, not in the text's spelling.
+- Letter-spaced and markup-interpolated payloads (`i g n o r e …`,
+  `Ignore **all previous** instructions`) need their own views; the skeleton
+  does not close them.
+
 ## Reference reachability (SK-G003)
 
 Reachability is a property of the resolved graph, not of the text. This
@@ -222,6 +306,11 @@ prefix-invalidation signals.
 `target`, `provenance`, `verdict`, `findings[]`, `ledger[]`, `coverage`,
 `checks_skipped[]`, `refusals[]`, `tokens`. SARIF 2.1.0 via `--format sarif`
 (blocking → `error`, advisory/suppressed → `warning`, info → `note`).
+
+A finding carries `view` when it was discovered on a normalised rendering of
+the file rather than on its raw text — see **Views**. The field is absent on a
+raw finding, so a consumer written before views existed reads an unchanged
+report; `file`, `line` and `evidence` are the raw source either way.
 
 CLI: `skillgate gate <dir-or-url> [--baseline f] [--fail-on-incomplete]
 [--format json|sarif] [-o file] [--skip-checks a,b]`. A flag may appear
