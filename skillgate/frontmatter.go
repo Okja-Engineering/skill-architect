@@ -6,12 +6,22 @@ import (
 	"strings"
 )
 
-// Frontmatter is a minimal YAML-frontmatter view: top-level keys to their
-// raw values, plus list items for keys declared as lists. It is deliberately
-// not a YAML parser — the gate needs `name`, `description`, `allowed-tools`,
-// `disable-model-invocation`, `context`, `compatibility` and nothing else.
+// Frontmatter is the parsed `---` block of a SKILL.md. Root is the document
+// as the reader in yaml.go read it; Keys and Lists are a flat projection of
+// its top-level entries, kept because every rule reads through them.
+//
+// The projection is lossy by construction and in exactly one way: Keys is a
+// map[string]string, so it has no spelling for a key that is present and
+// unreadable, and such a key is missing from it. Root and Unreadable are
+// where that distinction lives — see Lookup.
 type Frontmatter struct {
-	Keys  map[string]string
+	// Keys holds each top-level entry whose value is a scalar, under that
+	// value; each entry whose value is a collection is here too, under the
+	// text that stood on the key's own line — empty for a block collection,
+	// the bracket text for a flow one.
+	Keys map[string]string
+	// Lists holds each top-level entry whose value is a sequence of
+	// scalars, flow or block alike.
 	Lists map[string][]string
 	Raw   string
 
@@ -56,45 +66,41 @@ func ParseFrontmatter(text string) *Frontmatter {
 	if end < 0 {
 		return fm
 	}
+	// The block begins on line 2 of the file, past the opening delimiter.
 	fm.Raw = text[4 : 3+end]
-	var lastKey string
-	for _, line := range strings.Split(fm.Raw, "\n") {
-		trim := strings.TrimSpace(line)
-		if trim == "" || strings.HasPrefix(trim, "#") {
-			continue
-		}
-		// List items belong to the most recent key.
-		if strings.HasPrefix(trim, "- ") && lastKey != "" {
-			fm.Lists[lastKey] = append(fm.Lists[lastKey], unquote(trim[2:]))
-			continue
-		}
-		// Nested keys (indented, e.g. "metadata:" → "version:") are skipped;
-		// only top-level keys are tracked.
-		if line != trim && lastKey != "" && !strings.Contains(trim, ":") {
-			continue
-		}
-		idx := strings.Index(line, ":")
-		if idx < 0 || (len(line) > 0 && (line[0] == ' ' || line[0] == '\t')) {
-			continue
-		}
-		key := strings.TrimSpace(line[:idx])
-		val := unquote(strings.TrimSpace(line[idx+1:]))
-		fm.Keys[key] = val
-		lastKey = key
-		if val == "" {
-			lastKey = key // may hold a block list below
-		}
-		// Inline lists: key: [a, b]
-		if strings.HasPrefix(val, "[") && strings.HasSuffix(val, "]") {
-			inner := val[1 : len(val)-1]
-			for _, item := range strings.Split(inner, ",") {
-				if s := unquote(strings.TrimSpace(item)); s != "" {
-					fm.Lists[key] = append(fm.Lists[key], s)
+	fm.Root, fm.Unreadable = parseYAMLSubset(fm.Raw, 2)
+	fm.project()
+	return fm
+}
+
+// project flattens the document's top-level entries into Keys and Lists. A
+// refused document projects to nothing: a reader that lost the boundaries
+// has no honest partial answer to give.
+func (fm *Frontmatter) project() {
+	if fm.Root.Kind() != KindMapping {
+		return
+	}
+	for _, k := range fm.Root.Keys() {
+		n := fm.Root.Get(k)
+		switch n.Kind() {
+		case KindScalar:
+			v, _ := n.Scalar()
+			fm.Keys[k] = v
+		case KindMapping:
+			fm.Keys[k] = n.src
+		case KindSequence:
+			fm.Keys[k] = n.src
+			var items []string
+			for _, it := range n.Items() {
+				if v, ok := it.Scalar(); ok && v != "" {
+					items = append(items, v)
 				}
+			}
+			if len(items) > 0 {
+				fm.Lists[k] = items
 			}
 		}
 	}
-	return fm
 }
 
 // Body returns the text after the frontmatter block.
@@ -107,13 +113,6 @@ func Body(text string) string {
 		return text
 	}
 	return text[3+end:]
-}
-
-func unquote(s string) string {
-	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {
-		return s[1 : len(s)-1]
-	}
-	return s
 }
 
 // skillFiles returns the inspected files that carry skill frontmatter:
