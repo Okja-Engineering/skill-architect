@@ -48,6 +48,7 @@ const (
 	viewRaw           = "raw"
 	viewSkeleton      = "skeleton"
 	viewCompactLetter = "compactLetter"
+	viewMarkup        = "markup"
 )
 
 // View is one rendering of a file's text together with the map back to the
@@ -198,6 +199,7 @@ func (b viewBuilder) build(raw string) (string, []viewSeg) {
 var viewBuilders = []viewBuilder{
 	{name: viewSkeleton, stages: []viewStage{foldSkeleton}},
 	{name: viewCompactLetter, stages: []viewStage{foldSkeleton, compactLetterSpacing}},
+	{name: viewMarkup, stages: []viewStage{foldSkeleton, stripInlineMarkup}},
 }
 
 // composeSegs composes two offset maps: outer maps a stage's own offsets onto

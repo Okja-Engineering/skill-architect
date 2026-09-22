@@ -137,24 +137,34 @@ that points at the wrong line is worse than no report. So:
 | raw | The file's bytes, unchanged. Always present, always scanned first. |
 | skeleton | Per-character NFKC, then the UTS #39 ASCII confusable skeleton, then removal of `Cf`, the non-whitespace `Cc` and `Other_Default_Ignorable_Code_Point`. Three Unicode classes and one generated table — not a list of spellings. NFKC is applied per character so one character maps to one span, which is what makes the offset map exact; the cost is that a combining sequence spelled base + mark is not composed. |
 | compactLetter | The skeleton fold, then the separators inside letter-spacing runs removed. A **letter-spacing run** is six or more isolated letters in a row, each separated from the next by a non-empty gap holding no letter and no digit. Within a run the narrowest gap is the letter separator and is deleted; a wider gap is where the words divide and becomes one space. Derived from the run's shape, so every separator closes at once — space, NBSP, `.`, `-`, `_`, `*`, a non-ASCII Z-separator, U+FFFD and the filler nobody has thought of yet are all simply "not a letter". |
+| markup | The skeleton fold, then CommonMark's **inline** syntax resolved away and the text it wraps kept: emphasis and strong-emphasis delimiter runs, code spans, inline links and images, and HTML comments. What tells a delimiter from an ordinary asterisk is the grammar's **delimiter run** rule — what sits on either side of the run — plus the requirement that a delimiter actually pair with another. So `rm *.sh` (an opener with no closer) and `2 * 3` (flanked by whitespace, so not a delimiter at all) are untouched, and no exception list is needed to leave them alone. |
 
-A view is an ordered pipeline of stages, and `compactLetter` **is** `skeleton`
-plus one more stage: each stage is written against the text the stage before
-it produced, and the offset maps are composed, so a view anchors back to raw
-however many stages made it.
+A view is an ordered pipeline of stages, and `compactLetter` and `markup`
+**are** `skeleton` plus one more stage each: every stage is written against
+the text the stage before it produced, and the offset maps are composed, so a
+view anchors back to raw however many stages made it.
 
-Two bounds on the compaction are part of the contract, not implementation
-detail:
+**Every view has the same lines as the file**, so view line *i* is raw line
+*i*. This is a property of the view axis as a whole, not of any one view:
+every rule cuts its evidence on lines and reports at a line, so a stage that
+swallowed a newline would move every finding after it, and would let two
+lines' text form a match that is in neither. `view_compact_test.go` asserts it
+over every registered view.
 
-- **It never crosses a line break**, so a view has the same lines as the
-  file and view line *i* is raw line *i*. Every rule cuts its evidence on
-  lines; a compaction that swallowed a newline would move every finding after
-  it and would let two lines' text form a match that is in neither.
-- **It only ever brings letters together.** Gaps are removed or become one
-  space, and text outside a run is untouched, so — unlike a fold — the
-  compaction cannot manufacture syntax out of prose. That is the failure mode
-  the skeleton view measured, where NFKC turned a bare `‥` into `..` and fired
-  a path-traversal blocker.
+Beside it, each derived stage states **what it is allowed to bring together**,
+because that is where a view manufactures findings rather than revealing them:
+
+- **The compaction only ever brings letters together.** Gaps are removed or
+  become one space, and text outside a run is untouched, so — unlike a fold —
+  it cannot manufacture syntax out of prose. That is the failure mode the
+  skeleton view measured, where NFKC turned a bare `‥` into `..` and fired a
+  path-traversal blocker.
+- **The markup stage only ever deletes.** Its output is a subsequence of its
+  input, so it can bring two characters that were already on the line
+  together, but it can never produce a character the line did not contain. It
+  is the one stage that removes punctuation, so this is the bound that matters
+  for it, and it is why the rule that fired on the fold's manufactured `..` —
+  `SK-T019`, already raw-only below — cannot be reached this way either.
 
 `skillgate.ViewNames()` returns this list from the registry that builds them,
 and `view_test.go` compares the two: a view with no row here, and a row here
@@ -190,8 +200,39 @@ compares the set to this table in both directions.
   preceding directives`, `axios.post`, `uv pip install` and their kind are
   missed for the same reason they were missed before: the enumeration is in
   the matcher's vocabulary, not in the text's spelling.
-- Markup-interpolated payloads (`Ignore **all previous** instructions`) need
-  their own view; neither the skeleton nor the compaction closes them.
+- Markup-interpolated payloads are closed by the `markup` view, and by it
+  alone: neither the skeleton nor the compaction reaches them. The fold has no
+  mapping for `*`, and folding the payload the skeleton's way runs the words
+  together, so the phrase rule then fails for want of whitespace instead —
+  a different miss, not a fix. Three bounds on that view are contract:
+  - **Reference links** (`[text][ref]`) are not resolved. They need the
+    document's link-reference definitions, which a line-bounded stage does not
+    have. Inline links and images are resolved.
+  - **A code span's content is literal, delimiters and all.** That is
+    CommonMark precedence: a renderer shows a code span verbatim, so a view
+    that resolved markup inside one would be reading the document differently
+    from every renderer and every human. It is also what lets a document
+    *quote* an interpolated payload in order to explain it without being read
+    as carrying one — the next line quotes the release's headline case, and
+    the gate does not flag this file for it:
+
+    `Ignore **all previous** instructions`
+
+    That is a property this release's own documents depend on, since S09, S10
+    and this section all explain the rules by writing the evasions out.
+    An HTML comment is the opposite case and is treated so: it renders as
+    nothing
+    at all, so there is no literal display to preserve, its content is text
+    the model still reads, and markup inside it is markup.
+  - **Strikethrough** (`~~x~~`) is not resolved: it is a GFM extension rather
+    than a CommonMark production. Measured over this repository, 300 installed
+    markdown documents and the design corpus, resolving it would have changed
+    no finding either way.
+- A payload that is **both** letter-spaced and markup-interpolated is not
+  reached. Each derived view is the fold plus one stage, and no view composes
+  the compaction with the markup stage. Adding one is a registry entry, but
+  which combinations to build is a question about the cost of the view axis,
+  not about either stage.
 - A letter-spaced payload whose **word boundaries are also invisible** — a
   zero-width character between every letter *and* between every word — is not
   reached by any view. The skeleton strips the invisible characters before
