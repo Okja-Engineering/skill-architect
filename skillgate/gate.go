@@ -8,14 +8,6 @@ import (
 // Version is the gate's semver, stamped into every report.
 const Version = "0.1.0"
 
-// Check is a named, registered stage of the gate. A check that is not
-// registered — or that declines to run — must appear in checks_skipped, so
-// the verdict can never claim coverage it did not get (F13).
-type Check struct {
-	Name string
-	Run  func(l *Ledger, t *Target) []Finding
-}
-
 // Target describes the bundle under gate: its ledger plus context derived
 // from the frontmatter and config files (populated lazily by helpers).
 type Target struct {
@@ -29,6 +21,7 @@ type Options struct {
 	BaselinePath     string
 	FailOnIncomplete bool
 	SkipChecks       []string // check names to force-skip (testing, degraded envs)
+	OnlyChecks       []string // when non-empty, the only checks to run; every other registered check is a named skip
 }
 
 // Engine is the gate pipeline: G1 ledger → registered checks → G7 verdict.
@@ -38,15 +31,21 @@ type Engine struct {
 
 // NewEngine returns an engine with every built-in check registered.
 func NewEngine() *Engine {
-	e := &Engine{}
-	e.checks = append(e.checks, tripwireChecks()...)
-	e.checks = append(e.checks, Check{Name: CheckHarnessFrontmatter, Run: harnessFrontmatterCheck})
-	return e
+	return &Engine{checks: builtinChecks()}
 }
 
 // Gate runs the pipeline over an already-local target directory. Fetching a
 // remote target into quarantine (G0) happens before this call.
 func (e *Engine) Gate(dir string, opts Options) (*Report, error) {
+	// Which checks run, and the reason for each that does not, come from one
+	// walk of one registry — so the run set and checks_skipped partition the
+	// same list and a narrowed run cannot claim coverage it did not get (F13).
+	// Refusing an unknown check name before the ledger is built keeps a
+	// mistyped --only from costing a full scan.
+	sel, err := selectChecks(e.checks, opts)
+	if err != nil {
+		return nil, err
+	}
 	ledger, err := BuildLedger(dir)
 	if err != nil {
 		return nil, err
@@ -61,54 +60,20 @@ func (e *Engine) Gate(dir string, opts Options) (*Report, error) {
 		},
 	}
 
-	skip := map[string]bool{}
-	for _, s := range opts.SkipChecks {
-		skip[s] = true
-	}
+	results, budget := e.runChecks(sel, checkInput{Ledger: ledger, Target: t})
 
+	// Collected in registry order, never in completion order: this is what
+	// makes a concurrent run emit the same report a serial one did.
 	var findings []Finding
 	var skipped []SkippedCheck
-	for _, c := range e.checks {
-		if skip[c.Name] {
-			skipped = append(skipped, SkippedCheck{Check: c.Name, Reason: "skipped by option"})
+	for i, c := range e.checks {
+		if !sel[i].Run {
+			skipped = append(skipped, SkippedCheck{Check: c.Name, Reason: sel[i].Reason})
 			continue
 		}
-		findings = append(findings, c.Run(ledger, t)...)
+		findings = append(findings, results[i].Findings...)
+		skipped = append(skipped, results[i].Skipped...)
 	}
-	extFindings, extSkipped, budget := externalChecks(ledger, t, skip)
-	findings = append(findings, extFindings...)
-	skipped = append(skipped, extSkipped...)
-
-	// Pack E per-item leg: char-exact, computed in-process so it never
-	// depends on an external binary being present.
-	if items := budgetItems(ledger); len(items) > 0 {
-		if budget == nil {
-			budget = &TokenBudget{Counter: "skillgate/exact-chars", Basis: "measured"}
-		}
-		budget.Items = items
-	}
-
-	// ICM statics run after externals so the measured token budget feeds
-	// SK-I005; a missing counter is a named skip, never silence (F13).
-	if !skip[CheckICM] {
-		icmF, icmS := icmCheck(ledger, budget)
-		findings = append(findings, icmF...)
-		skipped = append(skipped, icmS...)
-	} else {
-		skipped = append(skipped, SkippedCheck{Check: CheckICM, Reason: "skipped by option"})
-	}
-
-	// F14 — the standing boundary skip. A gate audits the bundle before
-	// load; its verdict covers the install decision and the read path only.
-	// The bash leg (e.g. `bash cat SKILL.md`) is open on every harness
-	// examined — pi's own docs instruct bash when read is unavailable — so
-	// "no un-pinned SKILL.md enters context by any tool" is not achievable
-	// today. It is named here, never claimed closed, and caps every verdict
-	// at CAUTION: APPROVE is unreachable until a harness closes that leg.
-	skipped = append(skipped, SkippedCheck{
-		Check:  CheckPreactivationBashLeg,
-		Reason: "pre-activation claims cover the read path and the moment before load only; the bash leg is open on every harness (F14)",
-	})
 
 	// Deterministic emission order, always: a finding's report position and
 	// its fingerprint are computed after this sort, so no check's internal
@@ -187,39 +152,4 @@ func ExitCode(rep *Report, opts Options) int {
 		}
 	}
 	return ExitPass
-}
-
-// externalChecks runs the opt-in external scanners (G3/G4 + Pack E). Absent
-// binaries are named skips, never failures — and their absence caps the
-// verdict at CAUTION via F13.
-func externalChecks(l *Ledger, t *Target, skip map[string]bool) ([]Finding, []SkippedCheck, *TokenBudget) {
-	var findings []Finding
-	var skipped []SkippedCheck
-	var budget *TokenBudget
-
-	run := func(name string, fn func() ([]Finding, *SkippedCheck)) {
-		if skip[name] {
-			skipped = append(skipped, SkippedCheck{Check: name, Reason: "skipped by option"})
-			return
-		}
-		f, s := fn()
-		findings = append(findings, f...)
-		if s != nil {
-			skipped = append(skipped, *s)
-		}
-	}
-	run("skillspector", func() ([]Finding, *SkippedCheck) { return runSkillSpector(l, t) })
-	run("agnix", func() ([]Finding, *SkippedCheck) { return runAgnix(l, t) })
-
-	if skip["skill-validator"] {
-		skipped = append(skipped, SkippedCheck{Check: "skill-validator", Reason: "skipped by option"})
-	} else {
-		f, b, s := runSkillValidator(l, t)
-		findings = append(findings, f...)
-		budget = b
-		if s != nil {
-			skipped = append(skipped, *s)
-		}
-	}
-	return findings, skipped, budget
 }

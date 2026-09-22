@@ -157,7 +157,7 @@ func icmCheck(l *Ledger, budget *TokenBudget) ([]Finding, []SkippedCheck) {
 	// still "unmeasured" and must name the skip (F13).
 	if budget == nil || len(budget.Files) == 0 {
 		skipped = append(skipped, SkippedCheck{
-			Check:  "icm-token-budget",
+			Check:  CheckICMTokenBudget,
 			Reason: "no token counter ran (skill-validator absent or failed) — body token cost unmeasured",
 		})
 	} else {
