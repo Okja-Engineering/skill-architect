@@ -526,12 +526,19 @@ behaving differently from its docs:
   them. The 21 event names this registers are exactly the documented set, with
   no twenty-second. And the top-level `"version"` the reference marks required
   is written on install.
-- **Corrected.** `cwd` is **not** a field every payload carries: the reference
-  puts it on `preToolUse`, `postToolUse` and `beforeShellExecution`, and the
-  field carried on all of them for workspace location is `workspace_roots`,
-  which this build does not promote. So `cwd` is promoted **when present** and
-  is blank otherwise, which is the right behaviour and not a sign anything went
-  wrong. `raw` keeps whatever arrived either way.
+- **Corrected.** `cwd` is **not** a field every payload carries. The reference's
+  "Input (all hooks)" block lists `conversation_id`, `generation_id`, `model`,
+  `model_id`, `model_params`, `hook_event_name`, `cursor_version`,
+  `workspace_roots`, `user_email` and `transcript_path` — no `cwd`. It appears in
+  **four** per-event payloads: `preToolUse`, `postToolUse`,
+  `postToolUseFailure` and `beforeShellExecution`, three of which this build
+  registers. The field carried on every payload for workspace location is
+  `workspace_roots`, which this build does not promote. So `cwd` is promoted
+  **when present**, and when it is absent the spooled line has **no `cwd` key at
+  all** — not an empty one — so you can tell "the payload carried none" from
+  "the payload carried an empty string". A payload that really does send
+  `"cwd": ""` spools the same way, since the field is `omitempty`. `raw` keeps
+  whatever arrived either way.
 - **Still documentary.** That a hook is invoked with one JSON document on stdin,
   and every payload shape for the tool-call events: `preToolUse` and
   `postToolUse` were registered on a live hook emitter here and never fired.
@@ -557,8 +564,12 @@ driven by a real hook emitter that was not Cursor:
 - **`hooks install` is idempotent and additive.** Running it twice leaves one
   entry and rewrites nothing. Hooks you or another tool registered survive, so
   do events we do not register and top-level fields we have never heard of. The
-  file is backed up before any write — install *and* uninstall — and one this
-  build cannot parse is refused with its path named rather than replaced. The
+  file is backed up before it is **overwritten** — on install and on uninstall
+  alike — and one this build cannot parse is refused with its path named rather
+  than replaced. Read that as written rather than as "backed up before any
+  write": the **first** install on a machine with no `hooks.json` writes one and
+  takes no backup, because there was no file to preserve. A plain re-run writes
+  nothing and so backs up nothing either. The
   backup suffix is second-resolution, so an install and an uninstall inside one
   second leave a single backup holding the post-install state rather than the
   file you started with.

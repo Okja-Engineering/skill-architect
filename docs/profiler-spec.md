@@ -515,16 +515,22 @@ hooks documentation, and that documentation has been re-read against this code
 field by field — which closes the docs-versus-code gap and not the
 docs-versus-running-Cursor one. Specifically, these remain unverified:
 
-- that its `hooks` member is keyed by event name, and that an entry is an object
-  with a `command` string;
 - that a hook is invoked with one JSON document on stdin;
-- that the document carries `hook_event_name`, `cursor_version` and
-  `conversation_id`;
 - every payload shape for the tool-call events (`preToolUse`, `postToolUse`),
   which were registered on a live hook emitter here and never fired.
 
-Two assumptions this section used to list have since been settled against
-Cursor's published reference, and they went in opposite directions:
+Two items this list used to carry have been removed from it, because the
+reference documents both and the list is for assumptions the reference does not
+cover. Its `hooks` member **is** keyed by event name with each entry an object
+carrying a `command` string — that is the shape of every configuration example
+in the reference, including its quickstart — and `hook_event_name`,
+`cursor_version` and `conversation_id` are all three in the reference's
+"Input (all hooks)" block. `README.md`'s parallel "Still documentary" list had
+already been narrowed to the two bullets above, and this section was the one
+left behind; they now agree.
+
+Two further assumptions this section used to list have since been settled
+against Cursor's published reference, and they went in opposite directions:
 
 - **Confirmed.** `~/.cursor/hooks.json` is the reference's User-scope location
   (Enterprise, Team and Project scopes sit above it and this tool writes none of
@@ -535,13 +541,20 @@ Cursor's published reference, and they went in opposite directions:
   statement than the old "unverified" note: without it the file most likely
   fails Cursor's schema validation and is ignored whole, while `doctor` reads
   the same file back and reports all 21 events registered.
-- **Contradicted.** `cwd` is **not** a field every payload carries. The
-  reference documents it on `preToolUse`, `postToolUse` and
-  `beforeShellExecution`, and the field carried on every payload for workspace
-  location is `workspace_roots`, which this build does not promote. So `cwd` is
-  promoted when present, and blank otherwise — which is the "treated as absent
-  rather than rendered" rule working, not a symptom of anything. Promoting
-  `workspace_roots` is a candidate for a later release; `raw` carries it today.
+- **Contradicted.** `cwd` is **not** a field every payload carries. It is absent
+  from the reference's "Input (all hooks)" block, and appears in **four**
+  per-event payloads: `preToolUse`, `postToolUse`, `postToolUseFailure` and
+  `beforeShellExecution` — three of them events `InstallHooks` registers. (An
+  earlier version of this bullet named the first two and `beforeShellExecution`
+  "only", omitting `postToolUseFailure`; it has been re-read against the live
+  reference.) The field carried on every payload for workspace location is
+  `workspace_roots`, which this build does not promote. So `cwd` is promoted
+  when present, and when it is absent `SpoolEvent.Cwd` is the zero value under
+  `json:"cwd,omitempty"`, so the line carries **no `cwd` member** — not an empty
+  one. That is the "treated as absent rather than rendered" rule working, and it
+  is the reason a reader can distinguish a payload that sent nothing from one
+  that sent `""`, which marshals identically. Promoting `workspace_roots` is a
+  candidate for a later release; `raw` carries it today.
 
 If any of the remaining assumptions is wrong, `hooks install` writes a file
 Cursor ignores and the spool stays empty, or lines arrive whose promoted
