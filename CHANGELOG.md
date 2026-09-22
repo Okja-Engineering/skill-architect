@@ -412,10 +412,16 @@ infrastructure rather than as an adapter, and the harness row draws that distinc
   before the next begins with the version is not a finding.
 
   **The controls, because the previous ones could not reach this.** All 18 cases ran one
-  line in a file of one line. There are **35** single-line cases now — 24 refusals covering
-  each member of the case class and each of the five shapes capitalised, and 11 acceptances
-  holding the other side of the fold, including a version surface in ALL CAPS staying
-  exempt. On top of them the class is driven over a **real multi-line document** with the
+  line in a file of one line. There are **42** single-line cases now — 30 refusals covering
+  each member of the case class, each of the five shapes capitalised, and the version word
+  on the record but away from the `is`; and 12 acceptances holding the other side of the
+  fold, each of which fails against a reader with no exemption at all. **That last property
+  is not decoration.** The acceptance that stood for this boundary before did not have it:
+  it ran on past the version into words the shape does not admit, so it never reached the
+  exemption and passed identically whether the exemption was correct, widened or deleted —
+  which is how the widening below shipped under a green suite. An acceptance nothing can
+  make fail is not a control. On top of them the class is driven over a **real multi-line
+  document** with the
   texture the reader actually meets: headings, bulleted lists with bolded lead-ins, wrapped
   paragraphs, an indented line and a fenced block, five promises planted in it and eight
   innocent lines naming the version planted beside them. The assertion is on the **set of
@@ -429,8 +435,9 @@ infrastructure rather than as an adapter, and the harness row draws that distinc
 
   **What it still does not do, stated rather than left to be found.** The window is two
   records, so a promise spread over three lines with neither the verb nor the version
-  adjacent to the join is not seen. And a line naming a version
-  surface is exempt from the bare `is <version>` shape. `CHANGELOG.md` and
+  adjacent to the join is not seen. And a version
+  surface standing beside the `is` exempts that occurrence of the bare `is <version>`
+  shape. `CHANGELOG.md` and
   `RELEASE_NOTES.md` are
   scoped to the section for the release being cut, because 0.4.3's section saying what 0.4.3
   deferred is history and stays byte-identical. **Its own counts have other sides, and no
@@ -447,9 +454,21 @@ infrastructure rather than as an adapter, and the harness row draws that distinc
   and `--otel-file` is still the only input; and schema v1 still has no field in which a
   `present` result can say what it did not count. The marker that *closed* is skill
   activation, which this release reads. The version-surface exemption named above is there
-  because `AdapterVersion is 0.5.0` and "building it is" the same version are the same three
-  words doing opposite jobs, so a forward promise written into a line that also mentions a
-  version surface gets past this check.
+  because `AdapterVersion is` and "building it is" the same version are the same three
+  words doing opposite jobs, and what it asks is a **relation, not a word count**: the
+  subject standing beside *that* `is`, through any markup, has to be the surface, and each
+  occurrence on the record is asked separately — so a record carrying an exempt clause and
+  an assignment at once is still refused. It was a substring over the whole record until
+  this round, and that was two holes rather than one: one exempt word anywhere excused every
+  occurrence of the shape on that record, and the discrimination that remained was carried
+  entirely by capitalisation, so **case-folding the record for the shape tests folded the
+  exemption with it** and five assignments this reader had been refusing stopped being
+  refused — caught here by a driven comparison against the previous head, not by the suite,
+  because the accept case standing for that boundary turned out to pass against a reader
+  with the exemption deleted outright. It is now six refusals and two acceptances, each of
+  which fails against a reader with no exemption. What still gets past is a subject that
+  genuinely is a version surface in a sentence that is nonetheless assigning work, which
+  needs the sentence parsed.
 - **The two release documents are now a guarded version surface.** Deleting the entire
   0.5.0 section from both of them used to leave every shell assertion green and
   byte-identical, and nothing in `tests/` mentioned either file — the lesson

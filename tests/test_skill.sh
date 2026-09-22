@@ -789,10 +789,29 @@ fi
 # belongs here instead, where a fixture is the point: capitalised, ALL CAPS,
 # mixed, leading `**`, leading `*`, a list marker, leading whitespace,
 # mid-sentence, after a colon, after an em dash, a capital `V` before the
-# version, and each of the four non-deferral shapes capitalised. Two accepts
-# hold the other side of the fold — an ALL CAPS version surface stays exempt,
-# and sentence-ending punctuation between the verb and the version still
-# blocks the match — so the fold cannot have been bought with false positives.
+# version, and each of the four non-deferral shapes capitalised. Accepts hold
+# the other side of the fold — a version surface stays exempt in any case, and
+# sentence-ending punctuation between the verb and the version still blocks the
+# match — so the fold cannot have been bought with false positives.
+#
+# **An accept case earns its place only if something can make it fail.** The
+# ALL CAPS version surface here used to read `ADAPTERVERSION IS @V AND IS NOT
+# HELD EQUAL`, and the words after the version put an `and` where the shape
+# requires end-of-record, ` work`, `.` or `,`. So the record never reached the
+# exemption at all: driven against a reader with the exemption **deleted
+# outright**, that line was still accepted. It could not tell a working
+# exemption from a missing one, let alone a widened one — and while it sat
+# there looking like the control for this boundary, the exemption was folded
+# along with the record and five assignments this reader had been refusing
+# stopped being refused. The case is now cut back to the clause that actually
+# meets the shape, and it fails against a reader with no exemption.
+#
+# The refuses below it are the other half of that boundary: the version word is
+# on the line, in each of the spellings the fold made equal, but it is nowhere
+# near the `is` — so what is being asked is whether the subject beside that
+# `is` names a version surface, not whether the word occurs. The last of them
+# carries both on one record, an exempt clause and an assignment, because a
+# per-record exemption cannot tell them apart and a per-occurrence one must.
 promise_scan_rejects() {
   local fixture="$1"
   if "$FORWARD_PROMISE_SCAN" --over "$fixture" "$skill_release_version" >/dev/null 2>&1; then
@@ -846,7 +865,14 @@ refuse|Making it branchable Is @V work
 refuse|Names it as the source it Will read in @V
 refuse|Needs a receiver subcommand in @V
 refuse|Giving probe an exit contract is New surface for @V
-accept|ADAPTERVERSION IS @V AND IS NOT HELD EQUAL
+refuse|# VERSION MATRIX: building the capability is @V
+refuse|# VERSION: making it branchable is @V work
+refuse|# THE VERSION TABLE says building the receiver is @V
+refuse|# VeRsIoN note: building the capability is @V
+refuse|the version matrix says building the capability is @V
+refuse|# RELEASE IS @V and building the receiver is @V
+accept|ADAPTERVERSION IS @V
+accept|this release is @V
 accept|Two adapters were deferred. To @V we added a receiver instead
 accept|// making it branchable is new surface, which @V did not add
 accept|// Until @V the only list of them was a switch in the CLI
@@ -860,7 +886,7 @@ accept|a stored 0.4.x profile against a fresh @V one differs by four keys
 PROMISE_CASES
 
 echo "  forward-promise cases driven: $promise_n"
-PROMISE_CASES_EXPECTED=35
+PROMISE_CASES_EXPECTED=42
 assert "every one of the $PROMISE_CASES_EXPECTED forward-promise cases was driven, not a prefix of them" \
   test "$promise_n" -eq "$PROMISE_CASES_EXPECTED"
 

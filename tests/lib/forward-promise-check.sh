@@ -114,13 +114,27 @@
 #
 # # The boundary, stated rather than implied
 #
-# A line naming a version surface is exempt from the bare `is <version>` shape,
-# because "AdapterVersion is 0.5.0" and "building the capability is 0.5.0" are
-# the same three words doing opposite jobs. A forward promise written into a
-# line that also mentions a version would get past this. Closing that needs the
-# sentence parsed, which is not what this does; what it does close is the
-# vocabulary that was live five times — now in any case, in any position in the
-# record, and with the verb and the version either side of a line wrap.
+# A version surface is exempt from the bare `is <version>` shape, because
+# "AdapterVersion is" and "building the capability is" the same version are the
+# same three words doing opposite jobs. What the exemption asks is a relation
+# and not a word count: the subject standing beside *that* `is` — through any
+# markup — has to be the version surface, and every occurrence on the record is
+# asked separately, so a record can carry an exempt clause and an assignment at
+# once and still be refused.
+#
+# It was a substring over the whole record until this round, which is two holes
+# rather than one. A record naming a version surface anywhere was exempt from
+# every occurrence of the shape on it, however far away; and the discrimination
+# that remained was carried entirely by capitalisation, so the moment the
+# record was folded for the shape tests the exemption folded with it and five
+# assignments this reader had been refusing stopped being refused. A substring
+# was standing in for a relation, and the fold only made that louder. The
+# controls for both halves are in tests/test_skill.sh, where the literals
+# belong.
+#
+# What still gets past: a subject that genuinely is a version surface, in a
+# sentence that is nonetheless assigning work. Separating those needs the
+# sentence parsed, which is not what this does.
 #
 # Two things this still does not do, stated so the next round does not have to
 # find them. The window is two records, so a promise spread over three lines
@@ -234,10 +248,41 @@ scan() {
     # indentation, a colon or an em dash in front of the verb are *positions*,
     # and a position is not a shape. `- **Deferred to <version>**:` needs no
     # rule of its own once the verb is found wherever it sits in the record.
+    # The bare `is <version>` shape, asked once per occurrence rather than once
+    # per record.
+    #
+    # `AdapterVersion is <version>` and "building the capability is" the same
+    # version are the same three words doing opposite jobs, so this shape needs
+    # an exemption. What makes the first one a version surface is the *subject*
+    # standing beside that `is` — a position, like the lead-in markers above —
+    # and not the word appearing somewhere in the record. Asking the record
+    # carried two faults at once: a record naming a version surface anywhere
+    # was exempt from every occurrence of the shape it carried, however far
+    # away; and folding the record for the shape tests folded the record the
+    # exemption read too, so the hole grew by every spelling of the word in one
+    # stroke and five assignments this reader used to refuse stopped being
+    # refused. A substring was standing in for a relation.
+    #
+    # So the occurrences are walked, each is asked about its own subject, and a
+    # record may hold one of each — a version surface beside one `is` no longer
+    # speaks for the next `is` down the line. The subject test folds with the
+    # record like everything else here, so it stays a set of subjects rather
+    # than becoming a set of spellings.
+    function is_assignment(rec,   tail, subject) {
+      tail = rec
+      while (match(tail, "is +`?v?" v "`?( work|\\.|,|$)")) {
+        subject = substr(tail, 1, RSTART - 1)
+        if (subject !~ /(version|release)[^a-z0-9]* $/)
+          return 1
+        tail = substr(tail, RSTART + RLENGTH)
+      }
+      return 0
+    }
+
     function shape_of(rec) {
       if (rec ~ ("(tracked|deferred|carried|reserved|scheduled|planned|postponed)[ a-z]* (for|to|until|with it for) v?" v))
         return "deferral verb"
-      if (rec ~ ("is +`?v?" v "`?( work|\\.|,|$)") && rec !~ /version|release \*?is\*?/)
+      if (is_assignment(rec))
         return "is <version>"
       if (rec ~ ("will [a-z]+ [a-z ]*in v?" v))
         return "will ... in <version>"
