@@ -4,6 +4,158 @@ All notable changes to `skill-architect`.
 
 ## Unreleased
 
+## 0.6.0 — 2026-09-22
+
+**skill-gate v1.** Most of the gate's feature list already existed; roughly seven parts in
+ten of what the plan called "ships" was code in the tree before this release opened. What
+this release did is close a **defect class**, and the class is the one that ran through all
+of 0.5.0: **a matcher enumerating forms where the vocabulary is grammar.** Five separate
+repairs that look like five features are one repair, and the entry below is organised that
+way rather than by slice.
+
+### The defect class, and the five places it had taken
+
+Each of these was measured before it was fixed, and each is now held by something that
+fails rather than by prose that describes.
+
+- **`SK-T002` is blocker severity and was defeated by markdown bold.** Its ten
+  instruction-override regexes ran over raw text, and the first alternation needs `\s+`
+  where `Ignore **all previous** instructions` puts `**`. Ordinary emphasis — not an
+  evasion anyone had to invent — turned the gate's highest-severity rule off. The same
+  shape defeated it with letter-spacing, fullwidth forms and Cyrillic confusables.
+- **Five patterns matched inside ordinary words.** `nc` inside `func`, `| sh` inside
+  `|| showhelp`, `install` inside `uninstall`. On a file of unremarkable Python the gate
+  returned a **blocker**. A rule that fires on `func` is not a strict rule; it is a rule
+  that gets switched off.
+- **A check registry published 8 of 13.** `--list-checks` walking `e.checks` would have
+  printed eight names, because five checks ran outside that slice and a sixth thing that
+  was reported was not a check at all and was nameable nowhere.
+- **The rule catalog was typed out by hand**, in a table beside the code rather than
+  derived from it.
+- **Six rules had no declaration at all** — they emitted findings under IDs that appeared
+  in no registry.
+
+### What closed it
+
+- **The lexical rules run over normalised views as well as raw, never raw alone.** Four
+  views are registered — `skeleton` (NFKC, confusable-folded), `compactLetter`,
+  `markup`, `markupCompact` — and every finding made on one carries its name, is
+  positioned on the raw line, and loses to a raw finding at the same place. A hit whose
+  source offset cannot be anchored back is dropped rather than reported at a position it
+  does not have. `Ignore **all previous** instructions` now fires, tagged `markup`.
+  A payload that is letter-spaced *and* markup-interpolated fires, tagged `markupCompact`;
+  that stage order is a decision and the test that pins it says why.
+- **Word boundaries, derived rather than listed.** The five over-firing patterns are
+  anchored, three trailing legs were measured and deliberately left loose, and the
+  reasoning for each is recorded beside it rather than in a commit message.
+- **The rule catalog is derived from the registry**, and a catalog row with no rule and a
+  rule with no row each fail by name and line.
+- **The check registry is the single list** that the engine dispatches, `--list-checks`
+  prints, `--skip-checks` and `--only` match, and `checks_skipped` accounts for. A name
+  matching no registered check is **refused** rather than silently ignored, because a typo
+  in `--only` that quietly runs a different set is the gate misreporting its own coverage.
+  A standing gap lives *inside* the enumeration — `preactivation-bash-leg` is a registry
+  member that never runs, published like every other check — so it cannot fall out of it.
+- **Every limit the gate states is driven.** The sections telling a reader what the gate
+  does *not* do were the one place nothing could falsify, and every entry in them is now
+  joined to executable code in both directions: a limit stated with nothing behind it
+  fails quoting its own sentence and line number, and a limit that has stopped being true
+  fails at its driver.
+
+### Also in this release
+
+- **The documented CLI invocation works.** `skillgate gate <dir> -o f` exited 2 — flags had
+  to precede the positional — and the normative spec, the binary's own doc comment and
+  `skills/skill-gate/SKILL.md` all documented the failing form.
+- **`--list-checks`, `--only`, and native checks that run in parallel.** Report emission is
+  deterministic under concurrency, including `checks_skipped`, which the plan wrongly
+  believed was covered by an existing sort and which is the field concurrency moves.
+- **`SK-G003`** — reference-graph reachability. It stays `low`/`maintainability` and
+  accepts a blind spot rather than a false accusation: following a bare directory
+  reference blinds it to orphans beneath that directory, and the refinement that would
+  restore firing guesses at author intent.
+- **The frontmatter reader is a grammar**, with nested maps, flow collections, and block
+  and folded scalars. A document it cannot parse is **refused whole and named**, rather
+  than silently parsed in part — an absent key and an unreadable one are different facts
+  and the reader no longer collapses them.
+- **A finding names what is actually wrong.** `SK-T010` and `SK-T019` were flagging the
+  code that *protects* the directories they are about, and an unparseable frontmatter was
+  reported as "missing required keys", sending a reader to add keys that were already
+  there.
+- **`skillgate/difftest` is its own module**, and the production module's dependency
+  surface is stated and asserted: one direct requirement, `golang.org/x/text`, taken
+  deliberately because hand-rolling NFKC means hand-maintaining Unicode tables — which is
+  the enumerate-the-forms defect this release exists to fix, at Unicode scale.
+- **`tests/test_gate.sh`**, and CI that runs on both platforms over every module the
+  workspace declares. The macOS job is load-bearing rather than a courtesy: the
+  containment barriers compare filesystem identity, and `ubuntu-latest` is case-sensitive.
+- **A skill may carry its mechanical work in an installed binary.** The shipped-skill
+  contract required bundled executable scripts; it now takes a declared *carrier* —
+  `bundled-scripts` or `installed-binary` — and witnesses each kind against its own claim,
+  rather than granting `skill-gate` an exemption.
+
+### What this release does not do, stated plainly
+
+- **The vocabulary gaps are not closed and nothing here closes them.** `httpie`,
+  `axios.post`, `curl -o f; bash f`, `uv pip install`, `pnpm add` are missed, and they are
+  missed for a reason no view addresses: **they are vocabulary, not surface form.** A view
+  normalises how a payload is *spelled*; these are different tools doing the same thing
+  under different names, and reaching them means knowing the name. Every one is driven as
+  an expected miss with a neighbouring spelling that fires, so the day one of them starts
+  firing the claim goes red instead of quietly stale.
+- Three renderings described in the prior-art view contract are **not built** —
+  `obfuscatedInstruction` and `declaredMarker` are gaps, and `continuity` does not arise
+  because the gate has no scanning window to bridge. A test asserts all three absent from
+  the registry, so building one fails and the sentence has to go.
+- The gate is not a sandbox, a runtime monitor, or a proof of safety. It reads files.
+
+### Dogfooding, which `AGENTS.md:28` makes a release gate
+
+Run against four estates, three of which this project did not write: its own three shipped
+skills, the 29 skills installed under `~/.claude/skills/`, 31 third-party marketplace skill
+bundles, and a 300-document / 2,299,364-byte markdown corpus. Coverage was complete on every
+one of the 63 bundles and every skipped check was named with a reason.
+
+- **Its own three skills: CAUTION · 2, CAUTION · 1, and `skill-rewrite` at REJECT · 10**,
+  whose two blockers are `SK-T019` on a genuine reach outside its own directory — true of
+  the sub-unit the gate was pointed at, accepted with written reasons in a baseline, and
+  CAUTION · 8 behind it. The skill's own `SKILL.md` says it is not self-contained.
+- **The dogfood found the gate wrong in eight places, and they are reported rather than
+  fixed**, because rule correctness is one writer's lane and this release already spent
+  three passes there. The full triage is in the release record. The one worth naming here:
+  **`skill-validator` exits non-zero on any skill that is not perfectly clean, and the gate
+  discards its entire report when it does** — so `SV-CONFORM`, a published finding for
+  "skill-validator reports spec conformance errors", cannot fire, because the tool reports
+  conformance errors *by exiting 1*. It happened on 10 of 29 installed skills and 29 of 31
+  third-party bundles, and on **none** of this repository's own three, which exit 0. The
+  defect was invisible to self-dogfooding by construction. That is the argument for this
+  gate existing, measured rather than asserted.
+
+### Versions
+
+- **The five plugin manifests move to `0.6.0`** — the four `plugin.json` files and
+  `.claude-plugin/marketplace.json`.
+- **`skillgate`'s own `Version` moves from `0.1.0` to `0.6.0`.** It is stamped into
+  `tool.version` on every report. The suite already held it against what the binary prints
+  and what the report carries, so all three agreed with each other and none of them knew
+  what release it was; it is held to the release now.
+- **`profiler`'s `AdapterVersion` stays at `0.5.0`, deliberately.** It is bumped when the
+  adapter changes what a profile contains for the same input, and this release changes
+  nothing the profiler reads or writes — `git diff v0.5.0..HEAD -- profiler/` is empty. A
+  profile produced by this release is the profile 0.5.0 produced, and `0.6.0` would tell a
+  reader comparing two profiles that something about them had changed. The assertion is
+  pinned against moving, so bumping it reflexively goes red rather than through.
+- **The three skill `metadata.version` fields are unchanged and whether they move is an
+  open decision, not something to do quietly.** `skill-audit` declares `0.2.0`,
+  `skill-rewrite` `0.1.0`, `skill-gate` `0.1.0`. **All three are independent of the plugin
+  version by design and nothing asserts a relationship between them.** It is sharper than
+  it was at 0.5.0, where the same disclosure covered two skills: a third has arrived,
+  declaring `0.1.0` in the release that ships it. Named here rather than moved.
+- **`tests/test_skill.sh` carried the release literal four times** and now declares it
+  once, with every surface held against that one declaration. That is why `skillgate`'s
+  `Version` sat at `0.1.0` through five releases: no literal there named it, so nothing
+  checked it.
+
 ## 0.5.0 — 2026-09-21
 
 Six new profiler subcommands, a contract that fails the build when one of them claims more

@@ -176,10 +176,13 @@ so `markupCompact`'s order is a measured decision: the markup stage runs
 first. The compaction normalises every gap inside a run to nothing or to one
 space, so a delimiter that sits in a run is consumed as gap material and can
 never pair afterwards; the markup stage run first still sees delimiters as
-delimiters. Measured over 18,480 spellings of the `SK-T002` payload — every
-combination of unit separator, word gap and interpolated construct —
-markup-then-compaction reached 10,968 that no existing view reached, and
-compaction-then-markup reached none that markup-then-compaction did not.
+delimiters. `TestComposedStageOrderIsMarkupThenCompaction` holds it: over every
+letter-spacing separator crossed with every inline-markup construct the markup
+tests enumerate, markup-then-compaction reaches the payload and
+compaction-then-markup does not. The one-off sweep the order was originally
+chosen against is recorded at that test, dated, and is not restated here —
+nothing in the tree re-derives it, and this document does not carry a number a
+reader cannot check.
 
 **Every view has the same lines as the file**, so view line *i* is raw line
 *i*. This is a property of the view axis as a whole, not of any one view:
@@ -402,9 +405,12 @@ nobody can falsify decays. **Do not reword a limit to keep a driver green.**
     at all, so there is no literal display to preserve, its content is text
     the model still reads, and markup inside it is markup.
   - **Strikethrough** (`~~x~~`) is not resolved: it is a GFM extension rather
-    than a CommonMark production. Measured over this repository, 300 installed
-    markdown documents and the design corpus, resolving it would have changed
-    no finding either way.
+    than a CommonMark production. The decision was taken against a measurement
+    over this repository, an installed-markdown corpus and the design corpus,
+    in which resolving it would have changed no finding either way — measured
+    at `5725c7c`, and dated because two of those three corpora are outside the
+    repository and nothing in the tree re-derives it. The limit itself is
+    driven; the evidence for choosing it is historical.
 - A payload that is **both** letter-spaced and markup-interpolated is closed
   by `markupCompact`, with one bound: if the letter-spacing separator is
   *itself* an inline-markup delimiter (`*` or `_`), the markup stage reads the
