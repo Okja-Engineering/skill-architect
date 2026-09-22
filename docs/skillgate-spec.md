@@ -82,6 +82,7 @@ severity are. Edit a row and run `go test ./skillgate`.
 | SK-I003 | medium | `description` > 1024 chars |
 | SK-I004 | medium | Body > 500 lines |
 | SK-I005 | medium | Body over token budget — requires a measured counter, else `icm-token-budget` skip |
+| SK-I006 | medium | Frontmatter the reader refused, reported at the line and with the reason it recorded. *Missing* and *unparseable* are different findings: a document that was never read has no missing keys, and SK-I001 does not claim it does |
 | SK-H002 | info | Per-harness frontmatter: keys valid for Claude Code, silently ignored by Cursor (`allowed-tools`, `disable-model-invocation`, `context`, `when_to_use`) |
 
 Rule count is capped at 20 tripwires; extensions fold into existing legs
@@ -176,13 +177,48 @@ compares the set to this table in both directions.
 | SK-T005 | Its evidence is a synthesised pair of lines (the dump line and the sink line), not a substring of the text it scanned, so a derived hit has no offset to map back to raw. |
 | SK-T006 | Its evidence is masked before it leaves the rule — the gate never republishes a secret — so it is never a substring of the text it scanned. |
 | SK-T009 | Its evidence is a synthesised decode-line / exec-line pair, not a substring of the text it scanned. |
-| SK-T019 | Its subject is path *syntax*, and a normalised view manufactures path syntax out of prose: NFKC maps typographic punctuation onto ASCII, so U+2025 TWO DOT LEADER becomes `..` and a bare `‥` in an ordinary sentence fires this blocker. Erring towards a missed escape rather than a false blocker is the direction SK-G003 already ruled for. |
+
+### Rules that read executed code only
+
+A view answers *in what spelling*; a region answers *in what part*. Every rule
+that scans text reads the whole document **unless it declares a reason not
+to**, exactly as with the view axis, and the opt-outs are derived from that
+declaration rather than maintained here: `skillgate.ViewCoverage()` reads the
+reason off the rule and `view_test.go` compares the set to this table in both
+directions.
+
+A code-only rule scans the file with its **whole-line commentary blanked** —
+blanked to spaces, not removed, so every byte offset still means what it meant
+and a finding still reports the raw line it came from. Which bytes are
+commentary is decided by the file's own language (`scriptLangs`), never by a
+list of phrasings: an author cannot spell a line as a comment and have the
+interpreter run it. A file whose language the gate does not know has no
+commentary and the rule keeps its full reach, so losing reach requires
+positively identifying the grammar.
+
+| Rule | Why it is code-only |
+|---|---|
+| SK-T010 | Its verb is *touches* — the finding claims the script reaches into another harness's config directory, and a comment reaches into nothing. Measured: it flagged `skills/skill-rewrite/scripts/draft-rewrite.sh` six times, on six comments describing the containment bound that script enforces, and never on the live line naming all five protected directories. |
+| SK-T011 | Its verb is *reads*, and a comment reads nothing. Same subject and same reasoning as SK-T010: a skill that documents the Cursor paths it stays out of is describing the boundary, not crossing it. |
 
 ### Stated limits
 
-- A fullwidth- or confusable-spelled path escape is **not** caught, because
-  SK-T019 is raw-only above. A fullwidth-spelled network transmission, pipe to
-  a shell, or persistence write **is** caught.
+- A payload a program carries as **data** and later executes — a Python
+  triple-quoted block passed to `exec`, a JS template literal passed to
+  `eval` — is elided by the code projection if its lines begin with the
+  comment marker. Assembling and running text is SK-T009's subject, and the
+  code that does the assembling is live text the projection keeps.
+- SK-T019 is **no longer raw-only**, so a fullwidth- or confusable-spelled
+  path escape *is* caught. The opt-out existed because NFKC folds U+2025 TWO
+  DOT LEADER onto `..` and a bare `‥` in prose fired a blocker; a bare `..`
+  is now read as the single path segment it is and names nowhere, so the
+  fold has nothing left to manufacture.
+- SK-T019 does not model a process's working directory: `cd ..` is a
+  directory change, not a reference, and is not reported. It never was
+  analysed — the old matcher hit it by coincidence of spelling.
+- A reference inside a comment **is** reported by SK-T019. A documented
+  dependency on a file outside the bundle is still a dependency, which is
+  why the code-only narrowing below does not apply to it.
 - The rules whose evidence is synthesised or masked (SK-T005, SK-T006,
   SK-T009) do not gain view coverage. Giving them coverage means giving them
   locatable evidence, which is a change to those rules, not to the engine.

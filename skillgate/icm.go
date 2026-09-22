@@ -31,12 +31,20 @@ var (
 	ruleI004 = CatalogRule{ID: "SK-I004", Severity: SeverityMedium, Quality: "maintainability", Check: CheckICM}
 	// ruleI005 — body token budget; needs a measured counter, else a named skip.
 	ruleI005 = CatalogRule{ID: "SK-I005", Severity: SeverityMedium, Quality: "maintainability", Check: CheckICM}
+	// ruleI006 — frontmatter the reader refused, reported as itself.
+	//
+	// Severity is medium, deliberately, and the same as SK-I001's: an
+	// unparseable frontmatter is a document the gate could not see, and F13
+	// already says that not being able to see something caps the verdict at
+	// CAUTION rather than forcing REJECT. A YAML typo is not malice, and a
+	// blocker here would reject a bundle for a tab character.
+	ruleI006 = CatalogRule{ID: "SK-I006", Severity: SeverityMedium, Quality: "maintainability", Check: CheckICM}
 )
 
 // icmRules is the pack, as RuleCatalog reads it. A rule declared above and
 // missing here is registered nowhere and reaches no catalog; catalog_test.go
 // fails on it by name.
-var icmRules = []CatalogRule{ruleI001, ruleI002, ruleI003, ruleI004, ruleI005}
+var icmRules = []CatalogRule{ruleI001, ruleI002, ruleI003, ruleI004, ruleI005, ruleI006}
 
 const icmDescriptionLimit = 1024
 const icmBodyLineLimit = 500
@@ -57,10 +65,31 @@ func icmCheck(l *Ledger, budget *TokenBudget) ([]Finding, []SkippedCheck) {
 			base = path.Base(d)
 		}
 
-		// SK-I001
+		// SK-I006 — the reader refused part or all of this document, so
+		// every rule below is blind to whatever it refused. Saying that is
+		// the finding: it is reported at the line and with the reason the
+		// reader recorded, so the author is sent to the construct that
+		// stopped the parse rather than to keys that are already there.
+		for _, ref := range fm.Unreadable {
+			where := "frontmatter"
+			if len(ref.Path) > 0 {
+				where = strings.Join(ref.Path, ".")
+			}
+			findings = append(findings, Finding{
+				RuleID: ruleI006.ID, Severity: ruleI006.Severity, Quality: ruleI006.Quality,
+				Message: "frontmatter could not be parsed at " + where + ": " + ref.Reason,
+				File:    sf.Entry.Path, Line: ref.Line, Evidence: where + ": " + ref.Reason,
+				EffortMinutes: 10, Source: "skillgate",
+			})
+		}
+
+		// SK-I001 — *missing*, which is a claim about a document that was
+		// read. fm.Absent is where that distinction lives; reading Keys
+		// directly is what made this rule report a refused document as one
+		// with no keys in it.
 		var missing []string
 		for _, k := range []string{"name", "description"} {
-			if strings.TrimSpace(fm.Keys[k]) == "" {
+			if fm.Absent(k) {
 				missing = append(missing, k)
 			}
 		}
