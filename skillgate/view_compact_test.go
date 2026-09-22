@@ -82,6 +82,11 @@ func TestCompactLetterViewFiresBlockerOnLetterSpacedPayloads(t *testing.T) {
 		{name: "underscore", sep: "_"},
 		{name: "nbsp", sep: " "},
 		{name: "asterisk", sep: "*"},
+		// The unit separator is *taken from the run*, not fixed at one
+		// character: a payload spaced two-and-four compacts as correctly as
+		// one spaced one-and-two, and no constant needs tuning.
+		{name: "wide-unit", sep: "  "},
+		{name: "wide-unit-dotted", sep: ".."},
 		// The fold shrinks the text before the payload...
 		{name: "shrinking-prefix", sep: " ", pad: []string{padFullwidth(60), padFullwidth(60)}},
 		// ...here it grows it...
