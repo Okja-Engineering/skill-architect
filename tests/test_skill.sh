@@ -17,23 +17,13 @@ mask_root="$harness_scratch/mask"
 mkdir -p "$mask_root"
 source tests/lib/masked-path.sh
 
-# The shipped skills, derived from the tree rather than written down.
-#
-# This is the denominator every claim below is walked over, and it is the reason
-# the walk exists: a compatibility line and a claim-shape refusal were both
-# built for one of the two shipped skills and pinned to that skill's own
-# SKILL.md, so the identical sentence next door was un-held and went on being
-# false. A written-down pair reproduces that the day a third skill lands.
-shipped_skills() {
-  local d
-  for d in skills/*/; do
-    d="${d%/}"
-    [ -f "$d/SKILL.md" ] || continue
-    printf '%s\n' "${d##*/}"
-  done
-}
+# The shipped-skill census and the frontmatter metadata reader. Shared with
+# tests/test_gate.sh, which builds the carrier skill-gate declares here and runs
+# it: two suites reading the same declarations out of the same files with two
+# copies of the reader is the drift the shared harness exists to end.
+source tests/lib/skills.sh
+
 shipped_skill_count="$({ shipped_skills | grep -c . || true; } | tr -d '[:space:]')"
-skill_md_of() { printf 'skills/%s/SKILL.md' "$1"; }
 
 manifest_is_valid() {
   python3 - "$1" <<'PY'
@@ -524,33 +514,10 @@ uses_only_bash_32() {
 # S05's subject, and this suite reads the file itself.
 carrier_kinds="bundled-scripts installed-binary"
 
-# metadata_value <skill> <key> -- a key nested one level under `metadata:` in
-# the skill's frontmatter. Nothing, rather than an error, when it is absent: an
-# absent declaration is a verdict this file reports, not a reason to abort.
-metadata_value() {
-  awk -v want="$2" '
-    NR == 1 && $0 == "---" { fm = 1; next }
-    fm && $0 == "---" { exit }
-    fm && /^metadata:[[:space:]]*$/ { in_md = 1; next }
-    in_md && /^[^[:space:]]/ { in_md = 0 }
-    in_md {
-      line = $0
-      sub(/^[[:space:]]+/, "", line)
-      key = line
-      sub(/:.*$/, "", key)
-      if (key == want) {
-        val = line
-        sub(/^[^:]*:[[:space:]]*/, "", val)
-        gsub(/^"|"$/, "", val)
-        print val
-        exit
-      }
-    }
-  ' "$(skill_md_of "$1")"
-}
-
-carrier_of() { metadata_value "$1" carrier; }
-
+# `metadata_value` and `carrier_of` read the declaration; they live in
+# tests/lib/skills.sh, sourced above, because tests/test_gate.sh reads the same
+# keys out of the same file. Which kinds *this* suite witnesses is this suite's
+# own claim and stays here.
 carrier_is_known() {
   case " $carrier_kinds " in *" $(carrier_of "$1") "*) return 0 ;; esac
   return 1
@@ -700,14 +667,65 @@ assert "the compatibility-line reader finds every interpreter family such a line
   test "$(claimed_interpreters_in 'compatibility: POSIX shell (bash 3.2+ or zsh), git.')" = "$(printf 'bash\nsh\nzsh')"
 # The control for the witness, which every check above rests on: a skill run
 # under an interpreter that cannot reach its verdict must fail, or "it works
-# under what it claims" is true of anything. zsh is the case in hand -- the
-# audit scripts resolve their own directory from `BASH_SOURCE[0]`, which zsh
-# leaves unset, so `script_dir` collapses and the shared guard is not found.
-witness_refuses_zsh() { ! skill_witness skill-audit zsh control-zsh; }
-if command -v zsh >/dev/null 2>&1; then
-  assert "the witness refuses skill-audit under zsh, the interpreter its line used to claim" \
-    witness_refuses_zsh
-fi
+# under what it claims" is true of anything.
+#
+# The interpreter is *constructed* rather than borrowed, and that is the repair.
+#
+# This control read `! skill_witness skill-audit zsh control-zsh`, wrapped in
+# `if command -v zsh`. zsh is a real instance of the failure: these scripts
+# resolve their own directory from `BASH_SOURCE[0]`, which zsh leaves unset, so
+# `script_dir` collapses, the shared verdict guard is never found, and the
+# script exits 3 having reached no verdict. But borrowing an interpreter that
+# happens to be installed made the control itself conditional on the machine.
+# ubuntu-latest has no zsh and was the only platform CI had, so the one
+# assertion in this file able to disprove the witness had **never run in CI**;
+# the second runner S07 added reported 158 assertions on Linux against 159 on
+# macOS, both green, and the difference was exactly this line. A control that
+# silently skips when a tool is absent says nothing and reads as if it said
+# something.
+#
+# Nothing about the property under test is about zsh. What it needs is an
+# interpreter that runs the script and cannot reach the script's verdict, and
+# bash reading a script on *stdin* leaves `BASH_SOURCE` unset exactly as zsh
+# does — same unbound parameter, same collapsed `script_dir`, same exit 3 with
+# no verdict, verified against zsh side by side on both scripts. So the control
+# is built from the one interpreter every suite in this tree already requires,
+# it is unconditional, and it is the same assertion on every machine.
+#
+# It is walked over the scripts-kind skills rather than pinned to skill-audit,
+# because the witness has an arm per skill and a control over one of them is a
+# control over one of them. The denominator is asserted first: a loop over an
+# empty set is the vacuity this file refuses everywhere else.
+no_verdict_interpreter="$harness_scratch/interpreter-reaching-no-verdict"
+cat > "$no_verdict_interpreter" <<'SHIM'
+#!/usr/bin/env bash
+# <script> [args...] -- run the script the way an interpreter that leaves
+# BASH_SOURCE unset runs it. Not a stub: the script's own text executes, under
+# bash, with its own arguments. Only its ability to find itself is gone.
+script="$1"
+shift
+exec bash -s -- "$@" < "$script"
+SHIM
+chmod +x "$no_verdict_interpreter"
+
+scripts_kind_skills() {
+  local s
+  for s in $(shipped_skills); do
+    [ "$(carrier_of "$s")" = bundled-scripts ] || continue
+    printf '%s\n' "$s"
+  done
+}
+
+witness_refuses_no_verdict_interpreter() {
+  ! skill_witness "$1" "$no_verdict_interpreter" control-no-verdict
+}
+
+assert "some shipped skill carries its work in bundled scripts, so the witness control has a subject" \
+  test -n "$(scripts_kind_skills)"
+for skill in $(scripts_kind_skills); do
+  assert "the witness refuses $skill under an interpreter that runs its script and reaches no verdict" \
+    witness_refuses_no_verdict_interpreter "$skill"
+done
 
 # --- a claim about the rest of the repository, in either document --------------
 #
