@@ -82,6 +82,7 @@ severity are. Edit a row and run `go test ./skillgate`.
 | SK-I003 | medium | `description` > 1024 chars |
 | SK-I004 | medium | Body > 500 lines |
 | SK-I005 | medium | Body over token budget — requires a measured counter, else `icm-token-budget` skip |
+| SK-I006 | medium | Frontmatter the reader refused, reported at the line and with the reason it recorded. *Missing* and *unparseable* are different findings: a document that was never read has no missing keys, and SK-I001 does not claim it does |
 | SK-H002 | info | Per-harness frontmatter: keys valid for Claude Code, silently ignored by Cursor (`allowed-tools`, `disable-model-invocation`, `context`, `when_to_use`) |
 
 Rule count is capped at 20 tripwires; extensions fold into existing legs

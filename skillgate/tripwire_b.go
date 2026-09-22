@@ -163,22 +163,24 @@ var ruleT013 = rule{
 		}
 		for _, sf := range skillFiles(l) {
 			fm := ParseFrontmatter(sf.Text)
-			at, ok := fm.Keys["allowed-tools"]
-			if ok {
-				for _, item := range fm.Lists["allowed-tools"] {
-					if isWildcardGrant(item) {
-						out = append(out, Finding{RuleID: "SK-T013", Severity: SeverityBlocker,
-							Quality: "security", Message: "allowed-tools wildcard grant",
-							File: sf.Entry.Path, Evidence: "allowed-tools: " + item,
-							EffortMinutes: 10, Source: "skillgate"})
-					}
-				}
-				if isWildcardGrant(at) {
+			// The wildcard leg reads what the document *says*, so it runs on
+			// whatever the reader delivered: a grant it could read is a
+			// grant however the rest of the document fared.
+			for _, item := range append(fm.Lists["allowed-tools"], fm.Keys["allowed-tools"]) {
+				if isWildcardGrant(item) {
 					out = append(out, Finding{RuleID: "SK-T013", Severity: SeverityBlocker,
 						Quality: "security", Message: "allowed-tools wildcard grant",
-						File: sf.Entry.Path, Evidence: "allowed-tools: " + at,
+						File: sf.Entry.Path, Evidence: "allowed-tools: " + item,
 						EffortMinutes: 10, Source: "skillgate"})
 				}
+			}
+			// The no-boundary leg is the opposite kind of claim: that the
+			// skill *declares* nothing. On a document the reader refused
+			// that is not something the gate knows, and asserting it at
+			// blocker severity rejects a bundle for a cause that is not the
+			// bundle's. fm.Absent is where the two are told apart, and
+			// SK-I006 reports the parse refusal as itself.
+			if !fm.Absent("allowed-tools") {
 				continue
 			}
 			// Executable scope is the skill's own directory tree, not the

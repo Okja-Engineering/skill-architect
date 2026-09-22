@@ -58,6 +58,48 @@ func (fm *Frontmatter) Lookup(path ...string) *Node {
 	return n
 }
 
+// Absent reports whether key k is genuinely not in the document — as
+// opposed to unreadable, which is a different answer and must not become the
+// same finding.
+//
+// Keys is a flat projection and `map[string]string` has no spelling for
+// "unknown", so every rule that reached for a missing key got "" from a
+// document the reader had refused whole and concluded the key was missing.
+// A user told their keys are missing goes and adds keys that are already
+// there; this project has shipped that defect twice and paid to fix it both
+// times. Root can say what Keys cannot, so the question is asked here, once,
+// and answered off Root:
+//
+//   - no frontmatter block at all (KindAbsent) — the keys really are not
+//     there, and SK-I001 must still say so;
+//   - a document the reader refused (KindUnreadable) — nothing is known
+//     about any key, so nothing is absent, and SK-I006 reports the refusal
+//     itself;
+//   - a document that was read — ask it, and a key whose own value the
+//     reader refused is present-but-unreadable, never missing.
+//
+// A key read as a blank scalar still counts as missing: "declared and left
+// empty" is the same defect as "not declared", and that is the behaviour
+// SK-I001 already had.
+func (fm *Frontmatter) Absent(k string) bool {
+	switch fm.Root.Kind() {
+	case KindAbsent:
+		return true
+	case KindMapping:
+		if fm.Root.Get(k).Kind() == KindUnreadable {
+			return false
+		}
+		return strings.TrimSpace(fm.Keys[k]) == ""
+	default:
+		return false
+	}
+}
+
+// Readable reports whether the reader read the whole document. False is what
+// SK-I006 reports, and it is the state in which no rule may conclude that
+// anything is absent.
+func (fm *Frontmatter) Readable() bool { return len(fm.Unreadable) == 0 }
+
 // ParseFrontmatter extracts the `---`-delimited block from a SKILL.md.
 func ParseFrontmatter(text string) *Frontmatter {
 	fm := &Frontmatter{Keys: map[string]string{}, Lists: map[string][]string{}}
