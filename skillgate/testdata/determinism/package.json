@@ -1,0 +1,12 @@
+{
+  "name": "determinism-fixture",
+  "version": "0.0.0",
+  "bin": {
+    "zz-tool": "./tools/zz.sh",
+    "aa-tool": "./tools/aa.sh",
+    "mm-tool": "./tools/mm.sh"
+  },
+  "pi": {
+    "extensions": ["./extensions/z-ext.ts", "./extensions/a-ext.ts"]
+  }
+}

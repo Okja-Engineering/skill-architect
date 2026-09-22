@@ -1193,13 +1193,19 @@ assert "the control's own scratch directory is not left behind" \
 
 # --- The repository boundary, and whether anything holds it -------------------
 #
-# This file is about enforcement that cannot report. `.gitignore` is the
-# enforcement the 0.5.0 release rests on: a body of 0.6.0 work lives in the
-# working tree beside it, and the entries below are what stop `git add -A` from
-# seeing it. They were landed with nothing asserting them, so a later change
-# could delete one and every suite would still print the same verdict — the
-# boundary would be gone and the only thing that would notice is a reviewer
-# reading a diff.
+# This file is about enforcement that cannot report. `.gitignore` is where the
+# repository states, in a form `git add -A` obeys, which paths are not a
+# release's to stage. Through 0.5.0 that list carried the skillgate work, which
+# sat in the working tree beside the release; 0.6.0 lands it, so those four
+# entries are gone and what remains is local scratch and the control plane.
+# They were landed with nothing asserting them, so a later change could delete
+# one and every suite would still print the same verdict — the boundary would
+# be gone and the only thing that would notice is a reviewer reading a diff.
+#
+# The second direction below is not a formality, and after a release that moves
+# paths across the boundary it is the one that matters: an entry a release
+# lifts has to be shown *lifted*, or a pattern left behind goes on hiding files
+# nobody is looking for — and the ignored half would stay just as green.
 #
 # That is the shape this file exists to refuse, one level up: a guard whose
 # removal is invisible. So the entries are asserted here.
@@ -1245,17 +1251,22 @@ stageable_in() {
   [ "$status" -eq 1 ]
 }
 
-# The 0.6.0 work and the local scratch, which must not reach `main` with 0.5.0.
+# Local scratch and the control plane: the paths no release stages.
 # `.venv-skillspector/` is named as well as `.venv/`: the widening from
 # `.venv/` to `.venv*/` is what keeps a 15,000-file virtualenv out, and an
 # entry narrowed back would pass a check that only asked about `.venv/`.
-boundary_ignored="tmp/ .venv/ .venv-skillspector/ .scuba/ go.work go.work.sum skillgate/ skills/skill-gate/"
+boundary_ignored="tmp/ .venv/ .venv-skillspector/ .scuba/"
 
-# The other direction, and it is not a formality: an over-broad pattern is the
-# more expensive mistake. It blocks a later slice silently, and the release has
-# several left. Every path here is one a remaining slice has to be able to
-# stage.
-boundary_stageable="README.md AGENTS.md .gitignore .out-of-scope.md docs/profiler-spec.md .github/workflows/ci.yml profiler/types.go profiler/claude_code.go profiler/cmd/main.go skills/skill-audit/SKILL.md skills/skill-rewrite/SKILL.md tests/test_harness.sh"
+# The other direction: an over-broad pattern is the more expensive mistake. It
+# blocks a later slice silently, and the release has several left. Every path
+# here is one a remaining slice has to be able to stage.
+#
+# The skillgate paths are here because 0.6.0 landed them, and they are named at
+# a file rather than at their directory on purpose: `skillgate/` asked of
+# `check-ignore` is a question about the directory entry, while
+# `skillgate/gate.go` is the question a slice actually has — can I write a file
+# under here — and it is the one a re-added directory pattern would answer no.
+boundary_stageable="README.md AGENTS.md .gitignore .out-of-scope.md docs/profiler-spec.md .github/workflows/ci.yml profiler/types.go profiler/claude_code.go profiler/cmd/main.go skills/skill-audit/SKILL.md skills/skill-rewrite/SKILL.md tests/test_harness.sh go.work go.work.sum NOTICE docs/skillgate-spec.md docs/skillgate-intent.md skillgate/gate.go skills/skill-gate/SKILL.md"
 
 for path in $boundary_ignored; do
   assert "the boundary hides $path" ignored_in . "$path"
@@ -1285,19 +1296,28 @@ boundary_tree() {
 
 # A boundary missing one of its entries: the change a later slice could make
 # without anything noticing, which is why these assertions exist.
-missing_entry="$fixtures/boundary-without-skillgate"
+#
+# The entry it deletes is `.scuba/`, and which entry that is carries a lesson.
+# It was `skills/skill-gate/` until 0.6.0 lifted that line, and the control
+# then built a `.gitignore` identical to the real one — `grep -vFx` removing
+# nothing — so the "entry that was removed" assertion passed on a tree where
+# nothing had been removed, and the line-count `require` beside it was the only
+# thing that could say so. Both halves are load-bearing: the count proves the
+# control did something, and the pair of assertions proves what it did. An
+# entry chosen here must be one no release is going to lift.
+missing_entry="$fixtures/boundary-without-scuba"
 require "the tree for the missing-entry control is a repository" \
   boundary_tree "$missing_entry"
-grep -vFx 'skills/skill-gate/' .gitignore > "$missing_entry/.gitignore"
+grep -vFx '.scuba/' .gitignore > "$missing_entry/.gitignore"
 
 require "the missing-entry control is this repository's boundary minus one line" \
   test "$(wc -l < "$missing_entry/.gitignore")" \
     -eq "$(( $(wc -l < .gitignore) - 1 ))"
 
 assert "the boundary check reports an entry that was removed" \
-  stageable_in "$missing_entry" skills/skill-gate/
+  stageable_in "$missing_entry" .scuba/
 assert "the missing-entry control keeps the rest of the boundary" \
-  ignored_in "$missing_entry" skillgate/
+  ignored_in "$missing_entry" tmp/
 
 # A boundary with one pattern too wide: the other mistake, and the one that
 # fails silently — it hides every file added under the path from then on.
@@ -1393,14 +1413,19 @@ assert "the barrier passes an index with nothing staged at all" \
 
 # The other direction, one repository per pattern: a single fixture staging all
 # of them would still pass with only one alternative left working.
+#
+# Five of these were skillgate paths until 0.6.0 landed them, and a control
+# that goes on naming a path the check no longer refuses does not fail — it
+# stops being a control, quietly, which is the one failure mode this whole file
+# exists to refuse. So the list is the alternatives the pattern *has*, and it
+# shrinks when the pattern does. `.venv-skillspector/` is here beside `.venv/`
+# for the reason the boundary names it too: the arm is `\.venv` rather than
+# `\.venv/`, and a control that only ever staged `.venv/…` would pass against
+# an arm narrowed back to the directory.
 for out_of_scope_path in \
-  skillgate/main.go \
-  skills/skill-gate/SKILL.md \
-  docs/skillgate-spec.md \
-  go.work \
-  NOTICE \
   docs/research/notes.md \
-  .venv/pyvenv.cfg
+  .venv/pyvenv.cfg \
+  .venv-skillspector/lib/python3.12/site.py
 do
   blocked_tree="$fixtures/index-blocked-$(printf '%s' "$out_of_scope_path" | tr '/.' '--')"
   blocked_out="$harness_scratch/blocked-$(printf '%s' "$out_of_scope_path" | tr '/.' '--').out"
@@ -1414,13 +1439,21 @@ do
 done
 
 # An in-scope path that begins like a refused one. Without this the pattern
-# could be widened to bare substrings — dropping the anchor, or matching
-# `docs/skillgate` anywhere in a name — and every assertion above would still
+# could be widened to bare substrings — dropping the `^`, or dropping the
+# trailing `/` off `docs/research/` — and every assertion above would still
 # pass while a later slice found its own files refused.
+#
+# Each member here defends one character the pattern cannot lose.
+# `docs/research.md` is a *tracked* file of this repository sitting one
+# character away from the `docs/research/` arm, so dropping that `/` would
+# refuse a file `main` already carries. `vendor/.venv-cache/x` carries `.venv`
+# somewhere other than the front, which is what the `^` is for. The member this
+# replaces was `vendor/NOTICE`, and it guarded the anchors on a `NOTICE$` arm
+# that 0.6.0 removed: a near-miss for a pattern that is gone misses nothing.
 near_miss="$fixtures/index-near-miss"
 near_miss_out="$harness_scratch/near-miss.out"
 require "the tree for the near-miss control is a repository with its paths staged" \
-  staged_tree "$near_miss" skills/skill-audit/SKILL.md docs/profiler-spec.md vendor/NOTICE
+  staged_tree "$near_miss" skills/skill-audit/SKILL.md docs/profiler-spec.md docs/research.md vendor/.venv-cache/x
 
 assert "the barrier passes an index staging paths that merely read like the refused ones" \
   check_passes "$near_miss" "$near_miss_out"

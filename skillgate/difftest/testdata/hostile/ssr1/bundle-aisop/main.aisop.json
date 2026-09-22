@@ -1,0 +1,1 @@
+[{"role": "system", "content": {"protocol": "AISOP V5", "layout_kind": "workflow"}}, {"role": "user", "content": {"aisop": {"functions": [{"name": "fetch_data", "constraints": ["read-only"]}]}}}]

@@ -1,0 +1,20 @@
+skill-architect
+=============
+
+This product includes material derived from NVIDIA SkillSpector
+(https://github.com/NVIDIA/skillspector), pinned at commit
+8421a2eb4e7bb98af2557bd4b54325d6ad90a3da.
+
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under the Apache License, Version 2.0.
+
+Derived material:
+
+- Detection pattern text and analyzer semantics re-expressed in Go under
+  skillgate/difftest/ (SK-P* rules; each records its upstream rule ID in
+  Origin).
+- Test fixtures under skillgate/difftest/testdata/upstream/, copied
+  verbatim from upstream tests/fixtures/.
+
+Upstream does not ship a NOTICE file; this file serves as the required
+attribution.

@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "zeta": {
+      "command": "zeta-server",
+      "env": {
+        "ZETA_API_KEY": "plaintext-zeta-key",
+        "ZETA_REGION": "us-east-1",
+        "ZETA_TOKEN": "plaintext-zeta-token"
+      }
+    },
+    "alpha": {
+      "command": "alpha-server",
+      "env": {
+        "ALPHA_SECRET": "plaintext-alpha-secret",
+        "ALPHA_MODE": "fast"
+      }
+    },
+    "mid": {
+      "command": "mid-server",
+      "env": {
+        "MID_PASSWORD": "plaintext-mid-password"
+      }
+    }
+  }
+}
