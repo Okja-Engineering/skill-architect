@@ -2,8 +2,14 @@ package skillgate
 
 import (
 	"encoding/json"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -52,4 +58,235 @@ func TestSkillGateDiscoverableViaPluginManifests(t *testing.T) {
 			t.Errorf("%s: skills/skill-gate/SKILL.md frontmatter name = %q, want skill-gate", mpath, n)
 		}
 	}
+}
+
+// The second manifest trap: a module manifest that misstates what the code
+// actually needs. The plugin manifest above ships a tool and drops a skill;
+// this one ships a dependency nobody imports, or an import nobody declared.
+//
+// The assertion is deliberately *not* "zero requires". Zero is a numeral about
+// today's imports — the moment a slice takes a dependency on purpose, a
+// zero-assertion is deleted rather than answered, which is the same defect as
+// an enumeration asserted complete. The invariant that survives a new
+// dependency is mutual containment between manifest and source:
+//
+//   - every direct require of a module is imported by some package in it, and
+//   - every non-standard import of its packages resolves to one of its requires.
+//
+// Both sides are derived from the artifacts — the require set is parsed out of
+// go.mod, the import set out of the Go source with go/parser — so neither is a
+// list anyone maintains by hand. Taking a dependency means stating it; losing
+// the last importer of one means removing it. Either omission names itself
+// here, in either module.
+func TestModuleDependencySurfacesAreDeclared(t *testing.T) {
+	roots := goModuleRoots(t, ".")
+	if len(roots) == 0 {
+		t.Fatal("no go.mod found under the skillgate tree — the walk found nothing to check")
+	}
+	for _, dir := range roots {
+		mod := parseGoModManifest(t, dir)
+		imports, files := collectGoImports(t, dir, roots)
+		if files == 0 {
+			t.Errorf("%s: module %s has no Go source — nothing was checked against its require block", dir, mod.Path)
+			continue
+		}
+
+		// Side 1: every non-standard import resolves to a require (or to the
+		// module itself).
+		declared := map[string]bool{}
+		for _, r := range mod.Requires {
+			declared[r.Path] = true
+		}
+		used := map[string]bool{}
+		for _, imp := range sortedKeys(imports) {
+			if isStandardImportPath(imp) || importCoveredBy(imp, mod.Path) {
+				continue
+			}
+			owner := ""
+			for _, r := range mod.Requires {
+				if importCoveredBy(imp, r.Path) && len(r.Path) > len(owner) {
+					owner = r.Path
+				}
+			}
+			if owner == "" {
+				t.Errorf("%s/go.mod: %q is imported by %s but no require declares it — the module's dependency surface is wider than it says",
+					dir, imp, strings.Join(imports[imp], ", "))
+				continue
+			}
+			used[owner] = true
+		}
+
+		// Side 2: every direct require is actually imported. Indirect requires
+		// are exempt by definition — they exist to pin a transitive module the
+		// source never names.
+		for _, r := range mod.Requires {
+			if r.Indirect || used[r.Path] {
+				continue
+			}
+			t.Errorf("%s/go.mod:%d: require %s %s is declared but no package in module %s imports it — the module claims a dependency it does not have",
+				dir, r.Line, r.Path, r.Version, mod.Path)
+		}
+
+		t.Logf("%s (%s): %d Go files, %d requires, %d imported", dir, mod.Path, files, len(mod.Requires), len(used))
+	}
+}
+
+type goModuleManifest struct {
+	Path     string
+	Requires []goModuleRequire
+}
+
+type goModuleRequire struct {
+	Path     string
+	Version  string
+	Indirect bool
+	Line     int
+}
+
+// goModuleRoots returns every directory at or under start that holds a go.mod,
+// nested modules included — so a module carved out of another is discovered
+// rather than listed.
+func goModuleRoots(t *testing.T, start string) []string {
+	t.Helper()
+	var roots []string
+	err := filepath.WalkDir(start, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if skipGoDir(p, start, d.Name()) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == "go.mod" {
+			roots = append(roots, filepath.Dir(p))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", start, err)
+	}
+	sort.Strings(roots)
+	return roots
+}
+
+func skipGoDir(p, start, name string) bool {
+	if p == start {
+		return false
+	}
+	switch name {
+	case ".git", "testdata", "vendor", "node_modules":
+		return true
+	}
+	return strings.HasPrefix(name, "_")
+}
+
+func parseGoModManifest(t *testing.T, dir string) goModuleManifest {
+	t.Helper()
+	name := filepath.Join(dir, "go.mod")
+	data, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	var m goModuleManifest
+	block := ""
+	for i, raw := range strings.Split(string(data), "\n") {
+		line, indirect := raw, false
+		if c := strings.Index(line, "//"); c >= 0 {
+			indirect = strings.Contains(line[c:], "indirect")
+			line = line[:c]
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if block != "" {
+			if fields[0] == ")" {
+				block = ""
+				continue
+			}
+			if block == "require" && len(fields) >= 2 {
+				m.Requires = append(m.Requires, goModuleRequire{fields[0], fields[1], indirect, i + 1})
+			}
+			continue
+		}
+		switch {
+		case fields[0] == "module" && len(fields) >= 2:
+			m.Path = fields[1]
+		case len(fields) >= 2 && fields[1] == "(":
+			block = fields[0]
+		case fields[0] == "require" && len(fields) >= 3:
+			m.Requires = append(m.Requires, goModuleRequire{fields[1], fields[2], indirect, i + 1})
+		}
+	}
+	if m.Path == "" {
+		t.Fatalf("%s: no module directive", name)
+	}
+	return m
+}
+
+// collectGoImports returns import path → the files importing it, for every Go
+// file belonging to the module rooted at dir. Directories that are themselves
+// module roots are pruned, so a nested module's imports are never attributed to
+// its parent — which is what makes the carve-out measurable.
+func collectGoImports(t *testing.T, dir string, allRoots []string) (map[string][]string, int) {
+	t.Helper()
+	nested := map[string]bool{}
+	for _, r := range allRoots {
+		if r != dir {
+			nested[r] = true
+		}
+	}
+	imports := map[string][]string{}
+	files := 0
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if skipGoDir(p, dir, d.Name()) || nested[p] {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".go") {
+			return nil
+		}
+		f, err := parser.ParseFile(fset, p, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Errorf("%s: %v", p, err)
+			return nil
+		}
+		files++
+		for _, spec := range f.Imports {
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Errorf("%s: unquotable import %s", p, spec.Path.Value)
+				continue
+			}
+			imports[path] = append(imports[path], filepath.ToSlash(p))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", dir, err)
+	}
+	return imports, files
+}
+
+// isStandardImportPath applies the toolchain's own rule rather than a list of
+// standard packages: an import path whose first element carries no dot is
+// resolved from the standard library, because a module path's first element is
+// a domain.
+func isStandardImportPath(p string) bool {
+	first, _, _ := strings.Cut(p, "/")
+	return !strings.Contains(first, ".")
+}
+
+// importCoveredBy reports whether import path imp is provided by module path
+// mod — equal, or below it.
+func importCoveredBy(imp, mod string) bool {
+	return imp == mod || strings.HasPrefix(imp, mod+"/")
 }
