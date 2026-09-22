@@ -570,7 +570,7 @@ infrastructure rather than as an adapter, and the harness row draws that distinc
   computed from the `source` directives, and a `source` whose path cannot be resolved is a
   violation rather than a shrug. At this head that closure is **nine** files — the seven
   suites plus `tests/lib/masked-path.sh` and `tests/lib/mutation-runner.sh` — reporting
-  `sites=837 files=9 lines=12056 accounted=12056`. (The base this work started from measured
+  `sites=837 files=9 lines=12059 accounted=12059`. (The base this work started from measured
   `sites=767 files=7 lines=10288`; the 761/9397 pair an earlier draft published was an
   earlier commit still, which is exactly why the figure is given with its command rather than
   carried forward.) **Each counter has a second reader rather than a floor.** `lines` is held

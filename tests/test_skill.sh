@@ -1209,6 +1209,9 @@ promise_scan_abs="$promise_repo_root/$FORWARD_PROMISE_SCAN"
 
 promise_scope_build() {
   local heading="$1" planted="$2" dir="$promise_scope_repo"
+  # The scratch root is the harness's and is removed and rebuilt per case, so
+  # it is worth one line making sure it is not the root of something else.
+  [ -n "$harness_scratch" ] && [ -d "$harness_scratch" ] || return 1
   rm -rf "$dir"
   mkdir -p "$dir/profiler" || return 1
   {
