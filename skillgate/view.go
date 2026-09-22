@@ -728,47 +728,69 @@ func compactLetterSpacing(text string) (string, []viewSeg) {
 }
 
 // letterSpacingRuns finds every maximal run of isolated letters of at least
-// compactMinRunLetters. A run is: a letter that does not follow a letter,
-// then repeatedly a non-empty gap of separators followed by a single letter.
-// Two adjacent letters end the run — the spacing has stopped — and so does a
-// gap that reaches a line break or the end of the text.
+// compactMinRunLetters. A run is an isolated letter, then repeatedly a
+// non-empty gap of separators followed by another isolated letter. A gap that
+// reaches a line break or the end of the text ends the run, and so does a
+// letter that is not isolated — because a letter touching another letter is
+// an ordinary word, and the spacing has stopped.
+//
+// **Isolation is tested at both edges, and it is tested before a letter
+// joins.** A letter is admitted to the run only once it is known to be
+// isolated, so the run stops *in front of* the first ordinary word rather
+// than one letter inside it. Tested after the fact, the gap before that
+// letter has already been deleted and `… p r e v i o u s instructions`
+// compacts to `previousinstructions` — which destroys a detection rather
+// than inventing one, since every phrase rule is written with whitespace
+// between its words.
 //
 // Ported from upstream's `_concealed_instruction_run_spans`
 // (ss:artifacts.py:1662-1700) by way of difftest's `concealedInstructionRunSpans`,
-// which is its measured-equivalent Go transliteration; the departure is the
-// separator class, which excludes line terminators here.
+// which is its measured-equivalent Go transliteration. Two departures: the
+// separator class excludes line terminators, and the right edge is closed
+// (upstream's transliteration carries the same late test).
 func letterSpacingRuns(rs []rune) []letterSpacingRun {
 	var runs []letterSpacingRun
 	for i := 0; i < len(rs); {
-		if !isRunLetter(rs[i]) || (i > 0 && isRunLetter(rs[i-1])) {
+		if !isIsolatedLetter(rs, i) {
 			i++
 			continue
 		}
-		start, lastLetterEnd, letters := i, i+1, 1
+		start, end, letters := i, i+1, 1
 		c := i + 1
 		for c < len(rs) {
 			gap := c
 			for c < len(rs) && isSeparator(rs[c]) {
 				c++
 			}
-			if c == gap || c >= len(rs) || !isRunLetter(rs[c]) {
+			if c == gap || !isIsolatedLetter(rs, c) {
 				break
 			}
 			letters++
-			lastLetterEnd = c + 1
-			c = lastLetterEnd
-			if c < len(rs) && isRunLetter(rs[c]) {
-				break
-			}
+			end = c + 1
+			c = end
 		}
 		if letters >= compactMinRunLetters {
-			runs = append(runs, letterSpacingRun{start: start, end: lastLetterEnd})
-			i = lastLetterEnd
+			runs = append(runs, letterSpacingRun{start: start, end: end})
+			i = end
 			continue
 		}
 		i = start + 1
 	}
 	return runs
+}
+
+// isIsolatedLetter reports whether rs[i] is a letter with no letter on either
+// side of it. Letter-spacing is a sequence of exactly these, so this single
+// predicate is what both edges of a run are cut on — the run cannot begin
+// inside an ordinary word and it cannot reach into one.
+func isIsolatedLetter(rs []rune, i int) bool {
+	if i < 0 || i >= len(rs) || !isRunLetter(rs[i]) {
+		return false
+	}
+	if i > 0 && isRunLetter(rs[i-1]) {
+		return false
+	}
+	return i+1 >= len(rs) || !isRunLetter(rs[i+1])
 }
 
 // unitGap is the width, in runes, of the narrowest gap in a run: the run's
