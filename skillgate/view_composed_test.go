@@ -154,17 +154,29 @@ func TestNoSingleStageViewReachesTheComposedSpelling(t *testing.T) {
 // is the part of this slice that is a decision rather than a registry line.
 //
 // Strip-then-compact and compact-then-strip are different transforms with
-// different outputs, and the choice was measured rather than inherited. Over
-// 18,480 spellings of the payload — every combination of unit separator, word
-// gap and interpolated construct — markup-then-compaction reached 10,968 that
-// no existing view reached, and compaction-then-markup reached **zero** that
-// markup-then-compaction did not. The reason is structural: the compaction
-// normalises every gap in a run to "" or " ", so a delimiter inside a run is
-// consumed as gap material and can never pair afterwards; the markup stage
-// run first still sees the delimiters as delimiters.
+// different outputs, and the choice was measured rather than inherited. The
+// reason it comes out this way is structural rather than incidental: the
+// compaction normalises every gap in a run to "" or " ", so a delimiter inside
+// a run is consumed as gap material and can never pair afterwards; the markup
+// stage run first still sees the delimiters as delimiters.
 //
-// This test is that measurement as an executable claim, so a later reordering
-// of the registry fails by name rather than silently losing the closure.
+// This test is that claim, executable: over composedSeparators × markupWraps,
+// markup-then-compaction must reach the payload and compaction-then-markup
+// must not, so a later reordering of the registry fails by name rather than
+// silently losing the closure. The scope is the two tables, derived — adding a
+// separator or a construct widens it with no edit here and no number to update.
+//
+// Provenance of the order decision, recorded once and only here. S16 chose it
+// against a one-off sweep at 5725c7c: 18,480 spellings — every combination of
+// unit separator, word gap and interpolated construct — of which
+// markup-then-compaction reached 10,968 that no existing view reached and
+// compaction-then-markup reached zero that markup-then-compaction did not.
+// That sweep is not in the tree and nothing re-runs it, so it is dated and
+// attributed rather than restated as a live property; what survives as a live
+// property is the assertion below. Two other copies of those numerals — in
+// view.go and in the tracked spec — claimed this test held them, which it does
+// not and never did: it sweeps the two tables, not the enumeration. They point
+// here now.
 func TestComposedStageOrderIsMarkupThenCompaction(t *testing.T) {
 	reached := 0
 	for _, sc := range composedSeparators {

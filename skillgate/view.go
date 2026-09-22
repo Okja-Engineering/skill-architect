@@ -200,16 +200,17 @@ func (b viewBuilder) build(raw string) (string, []viewSeg) {
 //
 // markupCompact is the one view whose *stage order* is a decision rather than
 // a reading of what the view is, because strip-then-compact and
-// compact-then-strip are different transforms. It is markup first, and that
-// was measured: over 18,480 spellings of the SK-T002 payload — every
-// combination of unit separator, word gap and interpolated construct —
-// markup-then-compaction reached 10,968 that no existing view reached, and
-// compaction-then-markup reached **zero** that markup-then-compaction did
-// not. The reason is structural rather than incidental: the compaction
-// normalises every gap inside a run to "" or " ", so a delimiter that sits in
-// a run is consumed as gap material and can never pair afterwards, while the
-// markup stage run first still sees delimiters as delimiters.
-// TestComposedStageOrderIsMarkupThenCompaction holds that measurement.
+// compact-then-strip are different transforms. It is markup first, and the
+// reason is structural rather than incidental: the compaction normalises every
+// gap inside a run to "" or " ", so a delimiter that sits in a run is consumed
+// as gap material and can never pair afterwards, while the markup stage run
+// first still sees delimiters as delimiters.
+//
+// TestComposedStageOrderIsMarkupThenCompaction holds that, and carries the
+// provenance of the decision. This comment used to restate the one-off sweep
+// the decision came from and say that test held it; the test sweeps two
+// tables, not the enumeration, so the claim was false and the numerals had
+// nothing behind them here. One statement, at the driver.
 var viewBuilders = []viewBuilder{
 	{name: viewSkeleton, stages: []viewStage{foldSkeleton}},
 	{name: viewCompactLetter, stages: []viewStage{foldSkeleton, compactLetterSpacing}},

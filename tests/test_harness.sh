@@ -328,6 +328,153 @@ for suite in $suites; do
     test "$(sites_counted "$suite")" -gt 0
 done
 
+# --- The Go command in the same two files, held the same way ------------------
+#
+# The block above reconciles the *shell* suites across tests/, the workflow and
+# the README. The same README block ends with a Go command, the same workflow
+# runs Go steps, and nothing held those two against each other — so the README
+# could go on telling a reader to run something CI does not run, which is the
+# defect the suite reconciliation exists to prevent, one line further down the
+# same code fence.
+#
+# What is held is the property the README states in its own prose: "The set is
+# asked of go.work rather than listed, which is what CI does". Not the text of
+# the commands, which legitimately differ — CI adds `-race -count=1` and splits
+# build, vet and test into separate steps. Two derived halves:
+#
+#   1. Both sides ask `go list -m` for the module set.
+#   2. Neither side names a module go.work declares.
+#
+# The second is what has teeth. `cd profiler && go test ./...` was the real
+# previous state of this line and it covered one module of three; it satisfies
+# nothing here, and it would satisfy a text comparison against a workflow that
+# had drifted the same way. The module names are read out of go.work rather
+# than written here, so a fourth module is covered the day it is added.
+
+# The `use (...)` entries in go.work, leading `./` stripped. awk rather than
+# `go list -m`, because this suite is the substrate and must not need a
+# toolchain to say what the workspace declares.
+workspace_modules() {
+  awk '
+    /^use[[:space:]]*\(/ { inside = 1; next }
+    inside && /^\)/      { inside = 0; next }
+    inside {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+      sub(/^\.\//, "")
+      if ($0 != "") print
+    }
+  ' go.work
+}
+
+# The unit compared is a whole script, not the line the word `go` appears on,
+# and the difference is not cosmetic. Measured while writing this: with the
+# workflow's Go step reduced to `for dir in profiler skillgate`, a line-scoped
+# check passed — the hard-coded module names sit on the `for` line, which does
+# not contain `go`, and the second Go step still carried `go list -m` to
+# satisfy the other half. A derivation replaced by a literal one line above the
+# command is exactly how this regresses, so the script is the unit.
+
+# Every script the workflow tells CI to run: the body of each `run:`, in both
+# the block and the one-line form. Blocks end at the first non-blank line
+# indented no further than the `run:` key itself, which is what makes them
+# blocks in YAML.
+workflow_run_scripts() {
+  awk '
+    /^[[:space:]]*run:[[:space:]]*\|[[:space:]]*$/ {
+      run_indent = index($0, "run:") - 1
+      inside = 1
+      next
+    }
+    /^[[:space:]]*run:[[:space:]]*[^|[:space:]]/ {
+      inside = 0
+      body = $0
+      sub(/^[[:space:]]*run:[[:space:]]*/, "", body)
+      print body
+      next
+    }
+    inside {
+      if ($0 ~ /^[[:space:]]*$/) next
+      if (match($0, /[^ ]/) - 1 <= run_indent) { inside = 0; next }
+      print
+    }
+  ' "$WORKFLOW"
+}
+
+# Shell comments are stripped from both sides. Both files name the modules in
+# prose *around* the command — the README's own comment says "currently
+# profiler, skillgate and skillgate/difftest" — and naming them there is
+# honest documentation, while naming them in the script is the hard-coding
+# this refuses. The workflow's YAML comments are already outside its `run:`
+# bodies and never reach here.
+strip_shell_comments() { sed -e 's/#.*$//'; }
+
+readme_go_command() { readme_test_block | strip_shell_comments; }
+workflow_go_commands() { workflow_run_scripts | strip_shell_comments; }
+
+# holds_line rather than a pipe into `grep -q`, for the reason harness.sh
+# records at its definition: a short-circuiting reader on a live pipe.
+invokes_go() {
+  holds_line "$1" -E -- '(^|[^[:alnum:]_/.-])go[[:space:]]'
+}
+
+# Both denominators, because "names no module" is vacuously true of an empty
+# extraction — the same shape as the workflow-names-no-suites precondition
+# above, and the reason that one exists.
+require "the README's test block carries a go command to compare" \
+  invokes_go "$(readme_go_command)"
+require "the CI workflow carries go commands to compare" \
+  invokes_go "$(workflow_go_commands)"
+
+assert "the README asks go.work for the module set rather than listing modules" \
+  holds_line "$(readme_go_command)" -F -- 'go list -m'
+assert "the CI workflow asks go.work for the module set rather than listing modules" \
+  holds_line "$(workflow_go_commands)" -F -- 'go list -m'
+
+# <extraction> <label> — no module go.work declares is written into the command.
+names_no_workspace_module() {
+  local commands="$1" module
+  for module in $(workspace_modules); do
+    if printf '%s\n' "$commands" | grep -qF -- "$module"; then
+      echo "  names the module $module instead of deriving it" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
+require "go.work declares modules, so the check below has a denominator" \
+  test -n "$(workspace_modules)"
+echo "  modules the workspace declares: $(workspace_modules | tr '\n' ' ')"
+
+assert "the README's go command names no module go.work declares" \
+  names_no_workspace_module "$(readme_go_command)"
+assert "the workflow's go commands name no module go.work declares" \
+  names_no_workspace_module "$(workflow_go_commands)"
+
+# The controls. `names_no_workspace_module` returns 0 for a command that
+# mentions nothing at all, so both assertions above would pass over an
+# extraction that had quietly stopped extracting. It is held to refusing the
+# command this README line actually used to be, and the extractor is held to
+# finding a command in the text it is pointed at.
+a_module_naming_go_command_is_refused() {
+  ! names_no_workspace_module 'cd profiler && go test ./...' 2>/dev/null
+}
+assert "a go command that names a module instead of deriving it is refused" \
+  a_module_naming_go_command_is_refused
+a_script_carrying_no_go_command_is_seen_as_carrying_none() {
+  ! invokes_go 'tests/test_walk.sh'
+}
+assert "a script that invokes go is seen to" invokes_go 'go list -m'
+assert "a script that invokes none is not" \
+  a_script_carrying_no_go_command_is_seen_as_carrying_none
+
+# The workflow's run-block reader, held to reading. Every check above is
+# vacuous over an empty extraction, and the two `require`s only ask whether the
+# word `go` survived it — not whether the body around it did.
+assert "the workflow's run blocks are read whole, not one line each" \
+  test "$(workflow_run_scripts | wc -l | tr -d '[:space:]')" -gt \
+       "$(grep -cE '^[[:space:]]*run:' "$WORKFLOW" | tr -d '[:space:]')"
+
 # --- The audited set is the closure under `source`, not the list of suites ----
 #
 # The list of files used to be whatever a caller passed, and the caller passed
