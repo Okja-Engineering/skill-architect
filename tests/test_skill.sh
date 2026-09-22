@@ -111,9 +111,36 @@ assert "profiler AdapterVersion is 0.5.0" \
 # The denominator itself, asserted before anything is walked over it. A glob
 # that matched nothing would make every per-skill check below vacuously true,
 # which is the shape tests/test_harness.sh refuses one level up.
+#
+# It was `-ge 2` against a real 2, which is floor == real: a number that says
+# nothing today and has to be raised by hand in the commit that ships a third
+# skill, by an author with no reason to come here. Its own sentence claims only
+# that the set was "not matched as an empty set", which is what `-gt 0` says
+# and what 2 never said. And a floor cannot see the denominator move the *other*
+# way: measured, an untracked `skills/skill-untracked/SKILL.md` took the set to
+# three, the floor passed, seven assertions joined this suite's published total,
+# and the only failures were two incidental content checks that name nothing
+# about where the extra skill came from — a well-formed one would have gone
+# through green.
+#
+# So the set gets the other side it never had, and it is git's: the filesystem
+# says which directories hold a SKILL.md, and the index says which of them this
+# repository actually ships. Held for equality, with no number. The index side
+# is read from the repository root rather than the process's working directory,
+# so the two cannot narrow together — the shape this round found in three
+# separate places.
+shipped_skills_tracked() {
+  git -C "$(git rev-parse --show-toplevel)" ls-files -- 'skills/*/SKILL.md' \
+    | sed -e 's|^skills/||' -e 's|/SKILL\.md$||' | sort -u
+}
 echo "  shipped skills: $(shipped_skills | tr '\n' ' ')"
+echo "  skills git tracks a SKILL.md for: $(shipped_skills_tracked | tr '\n' ' ')"
+require "git tracks a SKILL.md at all, so the comparison below has a second side" \
+  test -n "$(shipped_skills_tracked)"
 assert "the shipped skills were read from the tree, not matched as an empty set" \
-  test "${shipped_skill_count:-0}" -ge 2
+  test "${shipped_skill_count:-0}" -gt 0
+assert "every skill directory in the tree is one this repository tracks a SKILL.md for, and none it does not" \
+  test "$(shipped_skills | sort -u)" = "$(shipped_skills_tracked)"
 
 # Each skill has a valid SKILL.md with frontmatter and name matching directory.
 for skill in $(shipped_skills); do

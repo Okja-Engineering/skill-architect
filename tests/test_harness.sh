@@ -138,17 +138,30 @@ audited_closure() {
 # thing standing behind non-vacuity for the assert_value sites
 # tests/lib/harness.sh says rest on it.
 #
-# The other side of the count is `wc -l`, which is derived from the artifact and
-# compared for equality. It is asked per file rather than in total, because a
-# total can be made up: one suite going unexamined is the case that happened,
-# and it is invisible in a sum. There is no number in this file for the next
-# assertion to make wrong.
+# The other side of the count is a second program counting the same thing over
+# the same file, compared for equality. It is asked per file rather than in
+# total, because a total can be made up: one suite going unexamined is the case
+# that happened, and it is invisible in a sum. There is no number in this file
+# for the next assertion to make wrong.
+#
+# `grep -ac ''` and not `wc -l`, for the reason
+# tests/lib/forward-promise-check.sh's own record count states: a file whose
+# last line has no newline holds one more *record* than `wc -l` reports, and
+# awk — which is what the audit reads with — sees that record. Two files in
+# this repository are already written that way, so the condition is reachable
+# here and not hypothetical; it is only the closure that happens to exclude
+# them today. Measured: appending `: ;` with no trailing newline to
+# tests/lib/masked-path.sh made this check report "the audit read 90 lines of
+# tests/lib/masked-path.sh, which has 89" and redden both shells — the audit
+# being right and its own denominator being wrong. A guard that refuses a legal
+# file is a guard somebody turns off, and this one is the whole replacement for
+# the `-ge 200` floor.
 #
 # Two comparisons and not one, because there are two ends to introduce a limit
-# at. `lines` against `wc -l` catches a reader that stopped. `accounted` against
-# `lines` catches a walk that stopped while the reader went on — which is what
-# the measured regression was: a rule above the walk, with awk still reading
-# every record and reporting so.
+# at. `lines` against the second count catches a reader that stopped.
+# `accounted` against `lines` catches a walk that stopped while the reader went
+# on — which is what the measured regression was: a rule above the walk, with
+# awk still reading every record and reporting so.
 audit_read_whole_file() {
   local suite="$1"
   local read_lines
@@ -156,7 +169,7 @@ audit_read_whole_file() {
   local file_lines
   read_lines="$(lines_read "$suite")"
   walked_lines="$(lines_accounted "$suite")"
-  file_lines="$(wc -l < "$suite" | tr -d '[:space:]')"
+  file_lines="$(grep -ac '' "$suite" | tr -d '[:space:]')"
   if [ "${read_lines:-0}" != "$file_lines" ]; then
     printf 'the audit read %s lines of %s, which has %s: a check over a file it did not finish reading says nothing about the rest of it\n' \
       "${read_lines:-0}" "$suite" "$file_lines" >&2
