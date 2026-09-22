@@ -1,9 +1,195 @@
 package skillgate
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// --- the view axis is derived and published -------------------------------
+//
+// Two enumerations are compared with the same mechanism the rule catalog uses
+// (catalog_test.go): the set of views the gate builds, and the set of rules
+// that opt out of them. Both derived sides come off the registries; both
+// documented sides are parsed out of the published spec.
+
+const (
+	specViewsHeading   = "### Registered views"
+	specRawOnlyHeading = "### Rules that run on raw text only"
+)
+
+var reViewName = regexp.MustCompile(`^[a-z][a-zA-Z]*$`)
+
+var specViewsTable = publishedTable{
+	heading:   specViewsHeading,
+	shape:     "View | What it renders",
+	headerKey: "View",
+	keyNoun:   "view name",
+	validKey:  reViewName.MatchString,
+}
+
+var specRawOnlyTable = publishedTable{
+	heading:   specRawOnlyHeading,
+	shape:     "Rule | Why it is raw-only",
+	headerKey: "Rule",
+	keyNoun:   "rule id",
+	validKey:  reRuleID.MatchString,
+}
+
+var viewRegistrySubject = enumerationSubject{
+	noun:       "view",
+	claim:      "presence",
+	artifact:   "the view registry",
+	documented: specPath + " §Registered views",
+}
+
+var rawOnlySubject = enumerationSubject{
+	noun:       "rule",
+	claim:      "view axis",
+	artifact:   "the rule registry's rawOnly reasons",
+	documented: specPath + " §Rules that run on raw text only",
+}
+
+// registeredViews is the gate's side: every view it builds.
+func registeredViews() map[string]string {
+	out := map[string]string{}
+	for _, n := range ViewNames() {
+		out[n] = "registered"
+	}
+	return out
+}
+
+// rawOnlyRules is the gate's side: every text-scanning rule that carries a
+// reason not to run on views. The reason itself is not compared — the spec
+// explains it in prose and the code states it beside the rule — but its
+// absence is: a rule cannot become raw-only without one, because the reason
+// *is* the opt-out.
+func rawOnlyRules(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, r := range ViewCoverage() {
+		if r.RawOnly == "" {
+			continue
+		}
+		if strings.TrimSpace(r.RawOnly) != r.RawOnly || len(r.RawOnly) < 40 {
+			t.Errorf("%s's rawOnly reason is %q — the reason is the whole justification for "+
+				"taking a rule off the views, and it is what the spec publishes", r.ID, r.RawOnly)
+		}
+		out[r.ID] = "raw-only"
+	}
+	return out
+}
+
+// documentedRawOnly is the prose side, with each row's reason cell required
+// to say something: a row with an empty Why column would document the opt-out
+// without justifying it, which is the thing the reason exists to prevent.
+func documentedRawOnly(t *testing.T) map[string]string {
+	t.Helper()
+	rows := specRawOnlyTable.parse(t)
+	out := map[string]string{}
+	for id, why := range rows {
+		if strings.TrimSpace(why) == "" {
+			t.Errorf("%s §%s has a row for %s with no reason", specPath, specRawOnlyHeading, id)
+		}
+		out[id] = "raw-only"
+	}
+	return out
+}
+
+func documentedViews(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for name := range specViewsTable.parse(t) {
+		out[name] = "registered"
+	}
+	return out
+}
+
+// TestRegisteredViewsAreDocumented fails when a view is added to the registry
+// with no row in the spec, or a row survives a view that was removed. S10 and
+// S11 each add a view; this is what makes them document it.
+func TestRegisteredViewsAreDocumented(t *testing.T) {
+	for _, v := range enumerationDivergences(viewRegistrySubject, registeredViews(), documentedViews(t)) {
+		t.Error(v)
+	}
+}
+
+// TestRawOnlyRulesAreDocumented fails when a rule is taken off the views with
+// no row in the spec, or a row outlives the opt-out it describes.
+func TestRawOnlyRulesAreDocumented(t *testing.T) {
+	for _, v := range enumerationDivergences(rawOnlySubject, rawOnlyRules(t), documentedRawOnly(t)) {
+		t.Error(v)
+	}
+}
+
+// TestTheViewAxisCheckCanFail is the non-vacuity control for the two tests
+// above, in the shape TestTheCatalogCheckCanFail established: the comparison
+// is fed a divergence on every run, so it is never trusted on the strength of
+// having passed.
+func TestTheViewAxisCheckCanFail(t *testing.T) {
+	code, doc := rawOnlyRules(t), documentedRawOnly(t)
+	if v := enumerationDivergences(rawOnlySubject, code, doc); len(v) != 0 {
+		t.Fatalf("the two sides disagree before any mutation, so the controls below prove nothing: %v", v)
+	}
+	if len(code) == 0 {
+		t.Fatal("no rule is raw-only, so the mutations below have nothing to remove")
+	}
+	victim := sortedKeys(code)[0]
+
+	t.Run("an opt-out the spec does not document names the rule", func(t *testing.T) {
+		mutated := copyOf(doc)
+		delete(mutated, victim)
+		v := enumerationDivergences(rawOnlySubject, code, mutated)
+		if len(v) != 1 || !strings.Contains(v[0], victim) {
+			t.Fatalf("deleting the row for %s produced %v, want one violation naming it", victim, v)
+		}
+	})
+
+	t.Run("a documented opt-out that no rule carries names the rule", func(t *testing.T) {
+		mutated := copyOf(code)
+		delete(mutated, victim)
+		v := enumerationDivergences(rawOnlySubject, mutated, doc)
+		if len(v) != 1 || !strings.Contains(v[0], victim) {
+			t.Fatalf("removing %s's reason produced %v, want one violation naming it", victim, v)
+		}
+	})
+
+	t.Run("a view with no row names the view", func(t *testing.T) {
+		mutated := copyOf(registeredViews())
+		mutated["zzprobe"] = "registered"
+		v := enumerationDivergences(viewRegistrySubject, mutated, documentedViews(t))
+		if len(v) != 1 || !strings.Contains(v[0], "zzprobe") {
+			t.Fatalf("an undocumented view produced %v, want one violation naming it", v)
+		}
+	})
+}
+
+// TestRawOnlyRulesDoNotRunOnViews pins the mechanism rather than the list: a
+// rule carrying a reason is handed the raw view and nothing else, and a rule
+// without one is handed every view.
+func TestRawOnlyRulesDoNotRunOnViews(t *testing.T) {
+	root, _ := bundleWithBody(t, "x", "body")
+	l, err := BuildLedger(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := l.Get("SKILL.md")
+	if f == nil {
+		t.Fatal("SKILL.md not in the ledger")
+	}
+	if got := len(f.Views()); got != len(ViewNames()) {
+		t.Fatalf("the file has %d views, the registry names %d", got, len(ViewNames()))
+	}
+	covered := rule{id: "probe-covered", scan: func(*View) []string { return nil }}
+	if got := len(covered.views(f)); got != len(f.Views()) {
+		t.Errorf("a rule with no reason got %d of %d views", got, len(f.Views()))
+	}
+	optedOut := rule{id: "probe-raw", rawOnly: "because", scan: func(*View) []string { return nil }}
+	got := optedOut.views(f)
+	if len(got) != 1 || !got[0].IsRaw() {
+		t.Errorf("a rule carrying a reason got %d views, want the raw view alone", len(got))
+	}
+}
 
 // The payload every fixture in this file spells a different way. It is the
 // SK-T002 blocker case: raw, it fires; through any surface-form evasion it

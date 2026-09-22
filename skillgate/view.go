@@ -211,6 +211,55 @@ func (l *Ledger) buildViews() {
 	}
 }
 
+// ViewNames returns every view the gate builds, raw first, in the order they
+// are scanned.
+//
+// Derived from the registry, so the published list of views is the list that
+// runs. Adding a view is one registry entry and the spec comparison in
+// view_test.go then demands its row.
+func ViewNames() []string {
+	out := make([]string, 0, 1+len(viewBuilders))
+	out = append(out, viewRaw)
+	for _, b := range viewBuilders {
+		out = append(out, b.name)
+	}
+	return out
+}
+
+// ViewRuleCoverage is one text-scanning rule's position on the view axis.
+type ViewRuleCoverage struct {
+	// ID is the rule identifier.
+	ID string `json:"id"`
+	// RawOnly is the written reason the rule runs on raw text alone, or
+	// empty when it runs on every view.
+	RawOnly string `json:"raw_only,omitempty"`
+}
+
+// ViewCoverage returns every rule that scans text, with the reason it is
+// raw-only when it is one.
+//
+// This is the view axis of the ceded-lane sentence, and it is *derived*: a
+// rule is view-covered unless it carries a reason not to be, so a rule added
+// later is covered by default and a rule taken off the views cannot be taken
+// off silently. Nothing here is a list anyone maintains — the registry is the
+// list, and view_test.go compares this to the spec in both directions.
+//
+// Rules that only inspect cross-file state (scanBundle) have no view axis and
+// are absent.
+func ViewCoverage() []ViewRuleCoverage {
+	var out []ViewRuleCoverage
+	for _, gr := range tripwireGroups {
+		for _, r := range gr.rules {
+			if r.scan == nil {
+				continue
+			}
+			out = append(out, ViewRuleCoverage{ID: r.id, RawOnly: r.rawOnly})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 // IsRaw reports whether this is the untransformed view.
 func (v *View) IsRaw() bool { return v.Name == viewRaw }
 

@@ -110,6 +110,10 @@ var ruleT001 = rule{
 	id: "SK-T001", sev: SeverityBlocker, quality: "security", effort: 10,
 	msg:   "invisible or bidi control characters in loaded text (hidden-instruction channel)",
 	files: isLoadedText,
+	rawOnly: "its subject is the invisible control characters a normalised view removes " +
+		"by construction — the Skeleton view strips Cf, the non-whitespace Cc and the " +
+		"default-ignorables, which is exactly this rule's set, so a derived view can " +
+		"never contain what it looks for",
 	scan: func(v *View) []string {
 		var out []string
 		for i, line := range strings.Split(v.Text, "\n") {
@@ -144,6 +148,9 @@ var ruleT003 = rule{
 	id: "SK-T003", sev: SeverityBlocker, quality: "security", effort: 20,
 	msg:   "confusable non-Latin characters mixed into a name or description",
 	files: isLoadedText,
+	rawOnly: "its subject is the confusable code points the Skeleton view folds onto " +
+		"their ASCII prototypes, so the mixed-script condition it tests for cannot " +
+		"survive into a derived view — the fold is what makes the text unmixed",
 	scan: func(v *View) []string {
 		fm := ParseFrontmatter(v.Text)
 		var out []string
@@ -198,6 +205,9 @@ var ruleT005 = rule{
 	id: "SK-T005", sev: SeverityBlocker, quality: "security", effort: 20,
 	msg:   "environment dump reaches a network or file sink",
 	files: isScript,
+	rawOnly: "its evidence is a synthesised pair of lines, not a substring of the text it " +
+		"scanned, so a hit found on a derived view has no offset to map back to the raw " +
+		"source and could only be reported at an invented position",
 	// File-level correlation was the dominant dogfood FP (272/565 on the pi
 	// monorepo): an env read *anywhere* plus any URL/sink token *anywhere*
 	// fired. Require proximity — a wholesale env dump within 10 lines of a
@@ -237,6 +247,9 @@ var ruleT005 = rule{
 var ruleT006 = rule{
 	id: "SK-T006", sev: SeverityBlocker, quality: "security", effort: 15,
 	msg: "credential-shaped literal in a bundled file",
+	rawOnly: "its evidence is masked before it leaves the rule — the gate never " +
+		"republishes a secret — so it is never a substring of the text it scanned and a " +
+		"hit found on a derived view has no offset to map back to the raw source",
 	scan: func(v *View) []string {
 		var out []string
 		for _, line := range strings.Split(v.Text, "\n") {
@@ -276,6 +289,9 @@ var ruleT009 = rule{
 	id: "SK-T009", sev: SeverityHigh, quality: "security", effort: 25,
 	msg:   "encoded payload feeding an interpreter (decode-then-execute)",
 	files: isScript,
+	rawOnly: "its evidence is a synthesised decode-line / exec-line pair, not a substring " +
+		"of the text it scanned, so a hit found on a derived view has no offset to map " +
+		"back to the raw source",
 	// File-level co-occurrence was the FP amplifier (JWT `atob` + `re.exec`
 	// anywhere in an auth file fired). Same-line, or decode within 10 lines
 	// of exec — the decode-then-execute payload shape.

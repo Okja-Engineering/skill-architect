@@ -187,6 +187,12 @@ var rePathRef = regexp.MustCompile(`[\w.\-/\\]*\.\.([\\/][\w.\-/\\]*)?`)
 var ruleT019 = rule{
 	id: "SK-T019", sev: SeverityBlocker, quality: "security", effort: 15,
 	msg: "path escape: reference resolves outside the bundle root",
+	rawOnly: "its subject is path syntax, and a normalised view manufactures path syntax " +
+		"out of prose: NFKC deliberately maps typographic punctuation onto ASCII, so " +
+		"U+2025 TWO DOT LEADER becomes `..`. Measured — a bare `‥` in an ordinary " +
+		"sentence fires this blocker on the Skeleton view. The cost is that a " +
+		"fullwidth-spelled `../` escape is not caught; a false blocker against correct " +
+		"prose is the worse direction, which is the ruling SK-G003 already took",
 	scan: func(v *View) []string {
 		dir := v.Path
 		if i := strings.LastIndex(dir, "/"); i >= 0 {
