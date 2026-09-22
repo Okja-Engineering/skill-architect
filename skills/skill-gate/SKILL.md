@@ -32,11 +32,17 @@ Wraps the `skillgate` Go binary (slice 1: the safety gate — G0 quarantine, G1 
 Binary on PATH:
 
 ```sh
-skillgate gate <dir-or-git-url> [-o report.json] [--format json|sarif] [--baseline b.json] [--fail-on-incomplete]
+skillgate gate <dir-or-git-url> [-o report.json] [--format json|sarif] [--baseline b.json] [--fail-on-incomplete] [--skip-checks a,b] [--only a,b]
+skillgate gate --list-checks
 ```
 
 Flags may be written before or after the target; the report is the same either
 way. `--` ends flag parsing, for a target whose name begins with `-`.
+
+`--list-checks` prints every registered check and the rules it runs, and exits;
+it is where the names `--skip-checks` and `--only` accept come from, and a name
+matching none of them is refused. Whatever `--only` leaves out is named in
+`checks_skipped`, so a narrowed run never reads as a full one.
 
 From the repo checkout:
 
