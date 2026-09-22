@@ -12,7 +12,9 @@ import (
 
 var (
 	// T010/T011/T012 — reads of other harnesses' config and credential
-	// stores. Applied to script files and code blocks, not prose.
+	// stores. T010 and T011 read the executed part of a script file only
+	// (see their codeOnly reasons); T012's subject reaches further and it
+	// reads whole files.
 	reClaudePaths = regexp.MustCompile(`(?i)(~/|~?/?\.?/)?\.claude/|\$HOME/\.claude|~/\.codex|\.codex/|\.gemini/|\.continue/`)
 	reCursorPaths = regexp.MustCompile(`(?i)(~/|~?/?\.?/)?\.cursor/|\$HOME/\.cursor|\.cursor/mcp\.json|\.cursor/hooks\.json`)
 	reCursorCreds = regexp.MustCompile(`(?i)state\.vscdb|cursorAuth|ItemTable`)
@@ -107,7 +109,14 @@ var ruleT010 = rule{
 	id: "SK-T010", sev: SeverityHigh, quality: "security", effort: 15,
 	msg:   "touches another harness's config directory (.claude/.codex/.gemini/.continue)",
 	files: isScript,
-	scan:  func(v *View) []string { return harnessPathFindings(v, reClaudePaths) },
+	codeOnly: "its verb is *touches*: the finding claims the script reaches into another " +
+		"harness's config directory, and a comment reaches into nothing. Naming the " +
+		"directory is what a script that refuses to write there does — measured, this " +
+		"rule flagged draft-rewrite.sh six times on the comments describing its own " +
+		"containment bound and never on the live line that names all five directories. " +
+		"A payload hidden in a comment still has to be assembled and run by live code, " +
+		"which is SK-T009's subject and is not elided here",
+	scan: func(v *View) []string { return harnessPathFindings(v, reClaudePaths) },
 }
 
 // T011 — reads of Cursor config paths.
@@ -115,7 +124,10 @@ var ruleT011 = rule{
 	id: "SK-T011", sev: SeverityHigh, quality: "security", effort: 15,
 	msg:   "reads Cursor config or state paths (.cursor/)",
 	files: isScript,
-	scan:  func(v *View) []string { return harnessPathFindings(v, reCursorPaths) },
+	codeOnly: "its verb is *reads*, and a comment reads nothing. Same subject and same " +
+		"reasoning as SK-T010: a skill that documents the Cursor paths it stays out of " +
+		"is describing the boundary, not crossing it",
+	scan: func(v *View) []string { return harnessPathFindings(v, reCursorPaths) },
 }
 
 // T012 — reads of the Cursor credential store. `state.vscdb`, `cursorAuth`,
@@ -151,22 +163,24 @@ var ruleT013 = rule{
 		}
 		for _, sf := range skillFiles(l) {
 			fm := ParseFrontmatter(sf.Text)
-			at, ok := fm.Keys["allowed-tools"]
-			if ok {
-				for _, item := range fm.Lists["allowed-tools"] {
-					if isWildcardGrant(item) {
-						out = append(out, Finding{RuleID: "SK-T013", Severity: SeverityBlocker,
-							Quality: "security", Message: "allowed-tools wildcard grant",
-							File: sf.Entry.Path, Evidence: "allowed-tools: " + item,
-							EffortMinutes: 10, Source: "skillgate"})
-					}
-				}
-				if isWildcardGrant(at) {
+			// The wildcard leg reads what the document *says*, so it runs on
+			// whatever the reader delivered: a grant it could read is a
+			// grant however the rest of the document fared.
+			for _, item := range append(fm.Lists["allowed-tools"], fm.Keys["allowed-tools"]) {
+				if isWildcardGrant(item) {
 					out = append(out, Finding{RuleID: "SK-T013", Severity: SeverityBlocker,
 						Quality: "security", Message: "allowed-tools wildcard grant",
-						File: sf.Entry.Path, Evidence: "allowed-tools: " + at,
+						File: sf.Entry.Path, Evidence: "allowed-tools: " + item,
 						EffortMinutes: 10, Source: "skillgate"})
 				}
+			}
+			// The no-boundary leg is the opposite kind of claim: that the
+			// skill *declares* nothing. On a document the reader refused
+			// that is not something the gate knows, and asserting it at
+			// blocker severity rejects a bundle for a cause that is not the
+			// bundle's. fm.Absent is where the two are told apart, and
+			// SK-I006 reports the parse refusal as itself.
+			if !fm.Absent("allowed-tools") {
 				continue
 			}
 			// Executable scope is the skill's own directory tree, not the

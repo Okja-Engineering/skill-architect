@@ -14,8 +14,9 @@ import (
 // documented sides are parsed out of the published spec.
 
 const (
-	specViewsHeading   = "### Registered views"
-	specRawOnlyHeading = "### Rules that run on raw text only"
+	specViewsHeading    = "### Registered views"
+	specRawOnlyHeading  = "### Rules that run on raw text only"
+	specCodeOnlyHeading = "### Rules that read executed code only"
 )
 
 var reViewName = regexp.MustCompile(`^[a-z][a-zA-Z]*$`)
@@ -50,6 +51,21 @@ var rawOnlySubject = enumerationSubject{
 	documented: specPath + " §Rules that run on raw text only",
 }
 
+var specCodeOnlyTable = publishedTable{
+	heading:   specCodeOnlyHeading,
+	shape:     "Rule | Why it is code-only",
+	headerKey: "Rule",
+	keyNoun:   "rule id",
+	validKey:  reRuleID.MatchString,
+}
+
+var codeOnlySubject = enumerationSubject{
+	noun:       "rule",
+	claim:      "region axis",
+	artifact:   "the rule registry's codeOnly reasons",
+	documented: specPath + " §Rules that read executed code only",
+}
+
 // registeredViews is the gate's side: every view it builds.
 func registeredViews() map[string]string {
 	out := map[string]string{}
@@ -59,41 +75,66 @@ func registeredViews() map[string]string {
 	return out
 }
 
-// rawOnlyRules is the gate's side: every text-scanning rule that carries a
-// reason not to run on views. The reason itself is not compared — the spec
-// explains it in prose and the code states it beside the rule — but its
-// absence is: a rule cannot become raw-only without one, because the reason
-// *is* the opt-out.
-func rawOnlyRules(t *testing.T) map[string]string {
+// cededRules is the gate's side of a ceded lane: every text-scanning rule
+// that carries a written reason to give up reach on the named axis. The
+// reason itself is not compared — the spec explains it in prose and the code
+// states it beside the rule — but its absence is, and so is a reason too
+// short to be one: a rule cannot cede a lane without justifying it, because
+// the reason *is* the opt-out.
+//
+// Parameterised over which reason to read, because the two axes are the same
+// question asked twice. A third axis costs a `pick` and a spec heading, not
+// another copy of this.
+func cededRules(t *testing.T, axis string, pick func(ViewRuleCoverage) string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
 	for _, r := range ViewCoverage() {
-		if r.RawOnly == "" {
+		why := pick(r)
+		if why == "" {
 			continue
 		}
-		if strings.TrimSpace(r.RawOnly) != r.RawOnly || len(r.RawOnly) < 40 {
-			t.Errorf("%s's rawOnly reason is %q — the reason is the whole justification for "+
-				"taking a rule off the views, and it is what the spec publishes", r.ID, r.RawOnly)
+		if strings.TrimSpace(why) != why || len(why) < 40 {
+			t.Errorf("%s's %s reason is %q — the reason is the whole justification for "+
+				"narrowing a rule, and it is what the spec publishes", r.ID, axis, why)
 		}
-		out[r.ID] = "raw-only"
+		out[r.ID] = axis
 	}
 	return out
 }
 
-// documentedRawOnly is the prose side, with each row's reason cell required
-// to say something: a row with an empty Why column would document the opt-out
+// documentedCeded is the prose side, with each row's reason cell required to
+// say something: a row with an empty Why column would document the opt-out
 // without justifying it, which is the thing the reason exists to prevent.
-func documentedRawOnly(t *testing.T) map[string]string {
+func documentedCeded(t *testing.T, axis string, table publishedTable) map[string]string {
 	t.Helper()
-	rows := specRawOnlyTable.parse(t)
 	out := map[string]string{}
-	for id, why := range rows {
+	for id, why := range table.parse(t) {
 		if strings.TrimSpace(why) == "" {
-			t.Errorf("%s §%s has a row for %s with no reason", specPath, specRawOnlyHeading, id)
+			t.Errorf("%s §%s has a row for %s with no reason", specPath, table.heading, id)
 		}
-		out[id] = "raw-only"
+		out[id] = axis
 	}
 	return out
+}
+
+func rawOnlyRules(t *testing.T) map[string]string {
+	t.Helper()
+	return cededRules(t, "raw-only", func(r ViewRuleCoverage) string { return r.RawOnly })
+}
+
+func documentedRawOnly(t *testing.T) map[string]string {
+	t.Helper()
+	return documentedCeded(t, "raw-only", specRawOnlyTable)
+}
+
+func codeOnlyRules(t *testing.T) map[string]string {
+	t.Helper()
+	return cededRules(t, "code-only", func(r ViewRuleCoverage) string { return r.CodeOnly })
+}
+
+func documentedCodeOnly(t *testing.T) map[string]string {
+	t.Helper()
+	return documentedCeded(t, "code-only", specCodeOnlyTable)
 }
 
 func documentedViews(t *testing.T) map[string]string {
@@ -119,6 +160,72 @@ func TestRegisteredViewsAreDocumented(t *testing.T) {
 func TestRawOnlyRulesAreDocumented(t *testing.T) {
 	for _, v := range enumerationDivergences(rawOnlySubject, rawOnlyRules(t), documentedRawOnly(t)) {
 		t.Error(v)
+	}
+}
+
+// TestCodeOnlyRulesAreDocumented is the region axis of the same contract:
+// a rule that stops reading part of a file with no row in the spec, or a row
+// that outlives the narrowing it describes, fails here by name. This is what
+// keeps B2's repair from becoming a quiet loss of reach.
+func TestCodeOnlyRulesAreDocumented(t *testing.T) {
+	for _, v := range enumerationDivergences(codeOnlySubject, codeOnlyRules(t), documentedCodeOnly(t)) {
+		t.Error(v)
+	}
+}
+
+// TestTheRegionAxisCheckCanFail is TestTheViewAxisCheckCanFail's twin: the
+// region comparison is fed a divergence on every run, so it is never trusted
+// on the strength of having passed.
+func TestTheRegionAxisCheckCanFail(t *testing.T) {
+	code, doc := codeOnlyRules(t), documentedCodeOnly(t)
+	if v := enumerationDivergences(codeOnlySubject, code, doc); len(v) != 0 {
+		t.Fatalf("the two sides disagree before any mutation, so the controls below prove nothing: %v", v)
+	}
+	if len(code) == 0 {
+		t.Fatal("no rule is code-only, so the mutations below have nothing to remove")
+	}
+	victim := sortedKeys(code)[0]
+
+	t.Run("a narrowing the spec does not document names the rule", func(t *testing.T) {
+		mutated := copyOf(doc)
+		delete(mutated, victim)
+		v := enumerationDivergences(codeOnlySubject, code, mutated)
+		if len(v) != 1 || !strings.Contains(v[0], victim) {
+			t.Fatalf("deleting the row for %s produced %v, want one violation naming it", victim, v)
+		}
+	})
+
+	t.Run("a documented narrowing that no rule carries names the rule", func(t *testing.T) {
+		mutated := copyOf(code)
+		delete(mutated, victim)
+		v := enumerationDivergences(codeOnlySubject, mutated, doc)
+		if len(v) != 1 || !strings.Contains(v[0], victim) {
+			t.Fatalf("removing %s's reason produced %v, want one violation naming it", victim, v)
+		}
+	})
+}
+
+// TestCommentaryElisionPreservesOffsets is the property the region projection
+// rests on: blanked, not deleted, so every offset map built over the text —
+// the raw line index, a derived view's segments, S10's and S11's when they
+// land — still means what it meant. A projection that shortened the text
+// would silently move every finding's line number.
+func TestCommentaryElisionPreservesOffsets(t *testing.T) {
+	for _, src := range []string{
+		"#!/bin/sh\n# cat ~/.claude/x\ncat ~/.cursor/y\n",
+		"// lead\nconst x = 1;\n",
+		"no comments here at all\n",
+		"   \t# indented comment with no trailing newline",
+	} {
+		for _, marker := range []string{"#", "//"} {
+			got := elideCommentary(src, marker)
+			if len(got) != len(src) {
+				t.Errorf("elideCommentary(%q, %q) changed length %d → %d", src, marker, len(src), len(got))
+			}
+			if strings.Count(got, "\n") != strings.Count(src, "\n") {
+				t.Errorf("elideCommentary(%q, %q) changed the line count", src, marker)
+			}
+		}
 	}
 }
 
