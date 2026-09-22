@@ -49,6 +49,7 @@ const (
 	viewSkeleton      = "skeleton"
 	viewCompactLetter = "compactLetter"
 	viewMarkup        = "markup"
+	viewMarkupCompact = "markupCompact"
 )
 
 // View is one rendering of a file's text together with the map back to the
@@ -196,10 +197,24 @@ func (b viewBuilder) build(raw string) (string, []viewSeg) {
 // viewBuilders is the ordered registry of normalised views. Order is the
 // order findings are discovered in, which matters only for which view's
 // rendering survives dedup when two views find the same place.
+//
+// markupCompact is the one view whose *stage order* is a decision rather than
+// a reading of what the view is, because strip-then-compact and
+// compact-then-strip are different transforms. It is markup first, and that
+// was measured: over 18,480 spellings of the SK-T002 payload — every
+// combination of unit separator, word gap and interpolated construct —
+// markup-then-compaction reached 10,968 that no existing view reached, and
+// compaction-then-markup reached **zero** that markup-then-compaction did
+// not. The reason is structural rather than incidental: the compaction
+// normalises every gap inside a run to "" or " ", so a delimiter that sits in
+// a run is consumed as gap material and can never pair afterwards, while the
+// markup stage run first still sees delimiters as delimiters.
+// TestComposedStageOrderIsMarkupThenCompaction holds that measurement.
 var viewBuilders = []viewBuilder{
 	{name: viewSkeleton, stages: []viewStage{foldSkeleton}},
 	{name: viewCompactLetter, stages: []viewStage{foldSkeleton, compactLetterSpacing}},
 	{name: viewMarkup, stages: []viewStage{foldSkeleton, stripInlineMarkup}},
+	{name: viewMarkupCompact, stages: []viewStage{foldSkeleton, stripInlineMarkup, compactLetterSpacing}},
 }
 
 // composeSegs composes two offset maps: outer maps a stage's own offsets onto
