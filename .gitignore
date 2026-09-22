@@ -8,11 +8,15 @@ tmp/
 # history. Committing it here would fork the mirror.
 .scuba/
 
-# The skillgate program is 0.6.0. These paths exist in the working tree today
-# and must not reach `main` with 0.5.0. They are ignored rather than merely
-# avoided so that the boundary is enforced by the tool instead of remembered by
-# the author: a `git add -A` cannot stage what git will not see.
-go.work
-go.work.sum
-skillgate/
-skills/skill-gate/
+# The skillgate block that stood here through 0.5.0 — `go.work`, `go.work.sum`,
+# `skillgate/`, `skills/skill-gate/` — is gone because 0.6.0 ships that program.
+# It is named here rather than deleted silently: the entries were what stopped a
+# `git add -A` from staging the 0.6.0 work beside the 0.5.0 release, so their
+# absence is the release, and a reader who finds skillgate files tracked should
+# find the reason where the refusal used to be.
+#
+# What is out of scope for 0.6.0 is out of scope for a different reason and is
+# held in a different place. `docs/research/` belongs to 0.7.0 and is refused at
+# the index by tests/lib/out-of-scope-check.sh, not here — a research note is
+# meant to be visible to its author while it is being written, which is the
+# opposite of what an ignore entry does.

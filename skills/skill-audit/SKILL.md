@@ -5,6 +5,7 @@ license: MIT
 compatibility: bash 3.2+.
 metadata:
   version: "0.2.0"
+  carrier: bundled-scripts
 ---
 
 # skill-audit

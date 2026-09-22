@@ -1,0 +1,1271 @@
+{
+  "skill": {
+    "name": "skill-audit",
+    "source": "/Users/matthewvandusen/Development/Auraprix/skill-architect/skills/skill-audit",
+    "scanned_at": "2026-09-13T03:26:43.680212+00:00"
+  },
+  "risk_assessment": {
+    "score": 43,
+    "severity": "MEDIUM",
+    "recommendation": "CAUTION",
+    "max_issue_severity": "HIGH"
+  },
+  "components": [
+    {
+      "path": "SKILL.md",
+      "type": "markdown",
+      "lines": 196,
+      "executable": false,
+      "size_bytes": 8149,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    },
+    {
+      "path": "references/best-practices.md",
+      "type": "markdown",
+      "lines": 113,
+      "executable": false,
+      "size_bytes": 4776,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    },
+    {
+      "path": "references/checklists.md",
+      "type": "markdown",
+      "lines": 58,
+      "executable": false,
+      "size_bytes": 1991,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    },
+    {
+      "path": "references/evaluation-matrix.md",
+      "type": "markdown",
+      "lines": 61,
+      "executable": false,
+      "size_bytes": 2424,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    },
+    {
+      "path": "scripts/audit-report.sh",
+      "type": "shell",
+      "lines": 117,
+      "executable": true,
+      "size_bytes": 4070,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    },
+    {
+      "path": "scripts/check-frontmatter.sh",
+      "type": "shell",
+      "lines": 54,
+      "executable": true,
+      "size_bytes": 1440,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    },
+    {
+      "path": "scripts/check-paths.sh",
+      "type": "shell",
+      "lines": 113,
+      "executable": true,
+      "size_bytes": 3232,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    },
+    {
+      "path": "scripts/check-quality.sh",
+      "type": "shell",
+      "lines": 20,
+      "executable": true,
+      "size_bytes": 580,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    },
+    {
+      "path": "scripts/check-structure.sh",
+      "type": "shell",
+      "lines": 117,
+      "executable": true,
+      "size_bytes": 3514,
+      "source_url": null,
+      "source_identity": null,
+      "source_digest": null
+    }
+  ],
+  "structured_summaries": [],
+  "issues": [
+    {
+      "id": "AE1",
+      "finding_id": "finding-9dee597138c549c28445ca012f216489",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 20,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "- You have made a major edit to a `SKILL.md` or bundled resource.",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 20,
+          "end_line": null
+        }
+      ]
+    },
+    {
+      "id": "AE1",
+      "finding_id": "finding-9dee597138c549c28445ca012f216489",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 31,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "- You have made a major edit to a `SKILL.md` or bundled resource.",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 31,
+          "end_line": null
+        }
+      ]
+    },
+    {
+      "id": "AE1",
+      "finding_id": "finding-9dee597138c549c28445ca012f216489",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 44,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "- You have made a major edit to a `SKILL.md` or bundled resource.",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 44,
+          "end_line": null
+        }
+      ]
+    },
+    {
+      "id": "AE1",
+      "finding_id": "finding-9dee597138c549c28445ca012f216489",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 123,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "- You have made a major edit to a `SKILL.md` or bundled resource.",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 123,
+          "end_line": null
+        }
+      ]
+    },
+    {
+      "id": "AE1",
+      "finding_id": "finding-9dee597138c549c28445ca012f216489",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 124,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "- You have made a major edit to a `SKILL.md` or bundled resource.",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 124,
+          "end_line": null
+        }
+      ]
+    },
+    {
+      "id": "AE1",
+      "finding_id": "finding-9dee597138c549c28445ca012f216489",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 128,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "- You have made a major edit to a `SKILL.md` or bundled resource.",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 128,
+          "end_line": null
+        }
+      ]
+    },
+    {
+      "id": "AE1",
+      "finding_id": "finding-9dee597138c549c28445ca012f216489",
+      "category": "analysis-evasion",
+      "pattern": null,
+      "severity": "HIGH",
+      "confidence": 1.0,
+      "location": {
+        "file": "SKILL.md",
+        "start_line": 129,
+        "end_line": null
+      },
+      "finding": "SKILL.md (partial)",
+      "explanation": "Referenced artifact was not completely inspected",
+      "remediation": "Make the referenced artifact locally available and fully analyzable, or remove the reference.",
+      "code_snippet": "- You have made a major edit to a `SKILL.md` or bundled resource.",
+      "intent": null,
+      "tags": [
+        "coverage",
+        "reference",
+        "target-disposition:partial"
+      ],
+      "evidence": {},
+      "match_fingerprint": "3759e6a4effbd89fa5b6fc80754a6923d55bc99fda186e8e597107f2cd346b04",
+      "occurrences": [
+        {
+          "file": "SKILL.md",
+          "start_line": 129,
+          "end_line": null
+        }
+      ]
+    }
+  ],
+  "suppressed_count": 0,
+  "suppressed": [],
+  "metadata": {
+    "has_executable_scripts": true,
+    "skillspector_version": "2.11.2",
+    "llm_requested": false,
+    "llm_available": false,
+    "meta_analysis_applied": false,
+    "inference_usage": [],
+    "filtering_mode": "heuristic"
+  },
+  "execution_successful": true,
+  "analysis_completeness": {
+    "total_components": 9,
+    "scanned_components": 9,
+    "coverage_percent": 100.0,
+    "is_complete": false,
+    "status": "partial",
+    "execution_successful": true,
+    "fully_inspected_files": 9,
+    "partially_inspected_files": 0,
+    "entirely_uninspected_files": 0,
+    "ledger_exceptions": [
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 8,
+        "end_line": 8,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 13,
+        "end_line": 13,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 47,
+        "end_line": 47,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 50,
+        "end_line": 50,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 51,
+        "end_line": 51,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 52,
+        "end_line": 52,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 57,
+        "end_line": 57,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 67,
+        "end_line": 67,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 68,
+        "end_line": 68,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 69,
+        "end_line": 69,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 70,
+        "end_line": 70,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 71,
+        "end_line": 71,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 77,
+        "end_line": 77,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 80,
+        "end_line": 80,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 83,
+        "end_line": 83,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 84,
+        "end_line": 84,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 85,
+        "end_line": 85,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 88,
+        "end_line": 88,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 93,
+        "end_line": 93,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 94,
+        "end_line": 94,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 95,
+        "end_line": 95,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 116,
+        "end_line": 116,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 154,
+        "end_line": 154,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 170,
+        "end_line": 170,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 171,
+        "end_line": 171,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 172,
+        "end_line": 172,
+        "fatal": false
+      },
+      {
+        "outcome": "partial",
+        "phase": "reference_resolution",
+        "reason_code": "reference_unresolved",
+        "message": "A local path-like reference could not be resolved unambiguously.",
+        "path": "SKILL.md",
+        "start_line": 173,
+        "end_line": 173,
+        "fatal": false
+      }
+    ],
+    "scope_exclusions": [],
+    "analyzer_statuses": [
+      {
+        "analyzer_id": "artifact_integrity",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "behavioral_ast",
+        "status": "not_applicable",
+        "planned_work": 0,
+        "completed": 0,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0,
+        "reason_code": "no_applicable_files",
+        "message": "No files matched this analyzer's applicability contract."
+      },
+      {
+        "analyzer_id": "behavioral_taint_tracking",
+        "status": "not_applicable",
+        "planned_work": 0,
+        "completed": 0,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0,
+        "reason_code": "no_applicable_files",
+        "message": "No files matched this analyzer's applicability contract."
+      },
+      {
+        "analyzer_id": "bundled_execution_surface",
+        "status": "not_applicable",
+        "planned_work": 0,
+        "completed": 0,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0,
+        "reason_code": "no_applicable_files",
+        "message": "No files matched this analyzer's applicability contract."
+      },
+      {
+        "analyzer_id": "mcp_least_privilege",
+        "status": "completed",
+        "planned_work": 6,
+        "completed": 6,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "mcp_rug_pull",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "mcp_tool_poisoning",
+        "status": "completed",
+        "planned_work": 1,
+        "completed": 1,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "meta_analyzer",
+        "status": "not_applicable",
+        "planned_work": 0,
+        "completed": 0,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0,
+        "reason_code": "no_applicable_files",
+        "message": "No files matched this analyzer's applicability contract."
+      },
+      {
+        "analyzer_id": "reference_coverage",
+        "status": "completed",
+        "planned_work": 7,
+        "completed": 7,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_agent_snooping",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_anti_refusal",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_data_exfiltration",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_deserialization",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_excessive_agency",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_harmful_content",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_memory_poisoning",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_output_handling",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_privilege_escalation",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_prompt_injection",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_rogue_agent",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_ssrf",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_supply_chain",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_system_prompt_leakage",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_patterns_tool_misuse",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      },
+      {
+        "analyzer_id": "static_yara",
+        "status": "completed",
+        "planned_work": 9,
+        "completed": 9,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+        "unaccounted": 0
+      }
+    ],
+    "references": [
+      {
+        "source_path": "SKILL.md",
+        "line": 8,
+        "column": 13,
+        "evidence": "version: \"0.2.0\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 13,
+        "column": 151,
+        "evidence": "opic best practices, and the Interpretable Context Methodology (ICM). Produce a pass/fail report with actionable fixes.",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 20,
+        "column": 36,
+        "evidence": "- You have made a major edit to a `SKILL.md` or bundled resource.",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 31,
+        "column": 87,
+        "evidence": "Identify the skill to audit. `target_skill` must be one skill directory containing a `SKILL.md`, not a repository root or collection.",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 44,
+        "column": 56,
+        "evidence": "Resolve `skill_root` to the directory containing this `SKILL.md` and run the bundled scripts:",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 47,
+        "column": 143,
+        "evidence": "dator not found \u2014 spec checks will report 'unknown'. Install with: brew install agent-ecosystem/tap/skill-validator\" >&2",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 50,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/check-frontmatter.sh\" \"$target_skill\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 51,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/check-structure.sh\" \"$target_skill\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 52,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/check-quality.sh\" \"$target_skill\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 57,
+        "column": 32,
+        "evidence": "- **`skill-validator`** (from `agent-ecosystem/skill-validator`, Go binary) \u2014 spec validation: frontmatter format, name, description, YAML validity, code fence ",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 57,
+        "column": 282,
+        "evidence": "n counts, content analysis, contamination detection. Install with `brew install agent-ecosystem/tap/skill-validator`.",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 60,
+        "column": 6,
+        "evidence": "- **`check-paths.sh`** \u2014 resolves local script references in code blocks against the filesystem.",
+        "target_path": "scripts/check-paths.sh",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 67,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/check-paths.sh\" \"$target_skill\" # script path resolution (text)",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 68,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/check-paths.sh\" --json \"$target_skill\" # script path resolution (JSON)",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 69,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/check-structure.sh\" \"$target_skill\" # policy + path checks (text)",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 70,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/check-structure.sh\" --json \"$target_skill\" # policy + path checks (JSON)",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 71,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/check-quality.sh\" \"$target_skill\" # quality scoring (JSON)",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 77,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/audit-report.sh\" \"$target_skill\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 80,
+        "column": 125,
+        "evidence": "The report nests the full output of each source under `spec`, `quality`, and `policy`, with a top-level `summary` for quick pass/fail checks. Parse with `jq`:",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 83,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/audit-report.sh\" \"$target_skill\" | jq '.summary.passed'",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 83,
+        "column": 61,
+        "evidence": "\"$skill_root/scripts/audit-report.sh\" \"$target_skill\" | jq '.summary.passed'",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 84,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/audit-report.sh\" \"$target_skill\" | jq '.summary.quality_grade'",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 85,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/audit-report.sh\" \"$target_skill\" | jq '.policy.findings[] | select(.level == \"fail\")'",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 88,
+        "column": 23,
+        "evidence": "Exit codes: 0=pass, 1=spec/path failure, 2=policy failure, 3=execution error. House-policy findings include rule IDs: PL001 for license, PL002 for headings, PL0",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 93,
+        "column": 10,
+        "evidence": "ls -la \"$target_skill/scripts\" 2>/dev/null || echo \"no scripts/\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 94,
+        "column": 10,
+        "evidence": "ls -la \"$target_skill/references\" 2>/dev/null || echo \"no references/\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 95,
+        "column": 10,
+        "evidence": "ls -la \"$target_skill/assets\" 2>/dev/null || echo \"no assets/\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 102,
+        "column": 19,
+        "evidence": "Load [checklists](references/checklists.md) for criteria that the scripts do not cover mechanically. Consult [best practices](references/best-practices.md) for ",
+        "target_path": "references/checklists.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 102,
+        "column": 127,
+        "evidence": "r criteria that the scripts do not cover mechanically. Consult [best practices](references/best-practices.md) for criteria requiring interpretation.",
+        "target_path": "references/best-practices.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 104,
+        "column": 97,
+        "evidence": "Score each dimension 0\u20132 using the dimensions and strong-signal criteria in [evaluation matrix](references/evaluation-matrix.md):",
+        "target_path": "references/evaluation-matrix.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 112,
+        "column": 46,
+        "evidence": "Use the report format in [evaluation matrix](references/evaluation-matrix.md). Include:",
+        "target_path": "references/evaluation-matrix.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 116,
+        "column": 7,
+        "evidence": "- The 60/30/10 ratio.",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 123,
+        "column": 51,
+        "evidence": "- `target_skill`: one skill directory containing `SKILL.md`.",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 124,
+        "column": 58,
+        "evidence": "- `skill_root`: the directory containing this auditor's `SKILL.md` and scripts.",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 128,
+        "column": 77,
+        "evidence": "1. Confirm `target_skill` is a single skill directory, not a repository or `SKILL.md` file.",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 129,
+        "column": 13,
+        "evidence": "2. Inspect `SKILL.md`, then `scripts/`, `references/`, and `assets/` when present.",
+        "target_path": "SKILL.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 131,
+        "column": 13,
+        "evidence": "4. Consult `references/best-practices.md` only for criteria requiring interpretation.",
+        "target_path": "references/best-practices.md",
+        "status": "resolved",
+        "disposition": "analyzed"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 154,
+        "column": 18,
+        "evidence": "- Estimating the 60/30/10 ratio from the body text.",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 170,
+        "column": 13,
+        "evidence": "skill_root=\".devin/skills/skill-audit\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 171,
+        "column": 15,
+        "evidence": "target_skill=\".devin/skills/release-check\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 172,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/check-frontmatter.sh\" \"$target_skill\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      },
+      {
+        "source_path": "SKILL.md",
+        "line": 173,
+        "column": 3,
+        "evidence": "\"$skill_root/scripts/check-structure.sh\" \"$target_skill\"",
+        "target_path": null,
+        "status": "missing",
+        "disposition": "partial"
+      }
+    ],
+    "limitations": [],
+    "findings_before_filtering": 7,
+    "findings_after_filtering": 7
+  }
+}
