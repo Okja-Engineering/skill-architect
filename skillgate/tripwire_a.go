@@ -52,7 +52,19 @@ var (
 	// func(x)` three lines later produced a **blocker** SK-T005 for dumping
 	// the environment to a network sink. 326 mid-word matches in this
 	// repository's own text before the anchors.
-	reSink = regexp.MustCompile(`(?i)(\bcurl|\bwget|\bnc\b|\bncat|\bsocat|/dev/tcp|\brequests\.post|\burllib|\bfetch\(|\bhttps?://|>\s*[/~]|\|\s*(base64|sh|bash)|\bscp\b|\brsync\b)`)
+	// The pipe-to-interpreter leg is spelled the way rePipeToShell below
+	// already spells it — `(sudo\s+)?((ba|z|fi|da)?sh|base64)\b` — rather
+	// than keeping a second, worse version of the same idea beside it.
+	//
+	// The trailing `\b` is the fix: `sh` and `bash` are *command words*, and
+	// unanchored at the end this leg matched `|| showhelp`, `|| shadow_code=`,
+	// `bashrc|bash_profile`, and the `|sh` inside any other regex's
+	// `(?:can|may|should)` — each of which, with an env dump nearby, was a
+	// **blocker** SK-T005 for piping the environment into a shell.
+	//
+	// Taking the neighbour's spelling also closes four shells this leg never
+	// covered: `| zsh`, `| fish`, `| dash`, and `| sudo sh`.
+	reSink = regexp.MustCompile(`(?i)(\bcurl|\bwget|\bnc\b|\bncat|\bsocat|/dev/tcp|\brequests\.post|\burllib|\bfetch\(|\bhttps?://|>\s*[/~]|\|\s*(sudo\s+)?((ba|z|fi|da)?sh|base64)\b|\bscp\b|\brsync\b)`)
 
 	// T006 — credential-shaped literals. Evidence is masked before it lands
 	// in a finding — the gate never re-publishes a secret.
@@ -100,7 +112,16 @@ var (
 	// in a comment supplied the exec half of the decode→exec pair. `popen`
 	// stays leading-anchored only, so `subprocess.Popen(` still matches — a
 	// `.` is no more a word character than a space.
-	reExec = regexp.MustCompile(`(?i)(^|[^\w.])(eval|exec)\b|\bchild_process\.exec|\.exec(Sync|File|FileSync)\s*\(|\bos\.system|\bsubprocess|\bpopen|\bInvoke-Expression|\biex\s*\(|\|\s*(ba|z|fi)?sh\b`)
+	//
+	// `subprocess` also takes a *trailing* anchor, which is unusual in this
+	// file and deliberate: it is the name of a module, so every real use is
+	// `subprocess.run`, `subprocess.Popen`, `import subprocess` — all of
+	// which keep matching, `.` and a space being equally non-word. What it
+	// drops is `subprocessEnv` and `subprocess_helper`, which are ordinary
+	// identifiers that happen to start with the module's name and execute
+	// nothing. `popen` gets no trailing anchor, so `subprocess.Popen(` still
+	// matches through that leg too.
+	reExec = regexp.MustCompile(`(?i)(^|[^\w.])(eval|exec)\b|\bchild_process\.exec|\.exec(Sync|File|FileSync)\s*\(|\bos\.system|\bsubprocess\b|\bpopen|\bInvoke-Expression|\biex\s*\(|\|\s*(ba|z|fi)?sh\b`)
 )
 
 // lineMatches returns each line matching any of the patterns.
