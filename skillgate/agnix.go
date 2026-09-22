@@ -2,7 +2,6 @@ package skillgate
 
 import (
 	"context"
-	"encoding/json"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -51,17 +50,13 @@ func runAgnix(l *Ledger, t *Target) ([]Finding, *SkippedCheck) {
 	ctx, cancel := context.WithTimeout(context.Background(), agnixTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "--target", "generic", "--format", "json", l.Root)
-	out, err := cmd.Output()
-	if err != nil {
-		reason := "scan failed: " + err.Error()
-		if ctx.Err() == context.DeadlineExceeded {
-			reason = "scan timed out after " + agnixTimeout.String()
-		}
-		return nil, &SkippedCheck{Check: "agnix", Reason: reason}
-	}
+	// Same shape as skill-validator's, and repaired for the same reason: a
+	// linter that reports diagnostics by exiting non-zero would have had its
+	// report discarded by the branch that collected it. See external.go.
+	out, runErr := cmd.Output()
 	var rep agnixReport
-	if err := json.Unmarshal(out, &rep); err != nil {
-		return nil, &SkippedCheck{Check: "agnix", Reason: "report unparseable: " + err.Error()}
+	if skip := externalOutcome(ctx, "agnix", "scan", agnixTimeout, runErr, out, &rep); skip != nil {
+		return nil, skip
 	}
 	var findings []Finding
 	for _, d := range rep.Diagnostics {

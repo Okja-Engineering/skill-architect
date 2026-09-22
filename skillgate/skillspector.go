@@ -2,7 +2,6 @@ package skillgate
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,21 +78,28 @@ func runSkillSpector(l *Ledger, t *Target) ([]Finding, *SkippedCheck) {
 	cmd := exec.CommandContext(ctx, bin, "scan", l.Root,
 		"--no-llm", "--format", "json", "--output", outPath)
 	cmd.Dir = l.Root
-	if err := cmd.Run(); err != nil {
-		reason := "scan failed: " + err.Error()
+	// Same conflation as the other two, one step removed: skillspector
+	// writes its report to --output rather than stdout, so a non-zero exit
+	// never destroyed the file — but the branch on the exit status meant the
+	// gate never opened it. A scanner that exits non-zero *because it found
+	// something* is the case that matters. See external.go.
+	runErr := cmd.Run()
+	data, readErr := os.ReadFile(outPath)
+	if readErr != nil {
+		// No report file at all: nothing to decide from, so the run error is
+		// the whole story.
+		reason := "scan produced no report: " + readErr.Error()
+		if runErr != nil {
+			reason = "scan failed (" + runErr.Error() + ") and produced no report: " + readErr.Error()
+		}
 		if ctx.Err() == context.DeadlineExceeded {
 			reason = "scan timed out after " + skillSpectorTimeout.String()
 		}
 		return nil, &SkippedCheck{Check: "skillspector", Reason: reason}
 	}
-
-	data, err := os.ReadFile(outPath)
-	if err != nil {
-		return nil, &SkippedCheck{Check: "skillspector", Reason: "report unreadable: " + err.Error()}
-	}
 	var rep ssReport
-	if err := json.Unmarshal(data, &rep); err != nil {
-		return nil, &SkippedCheck{Check: "skillspector", Reason: "report unparseable: " + err.Error()}
+	if skip := externalOutcome(ctx, "skillspector", "scan", skillSpectorTimeout, runErr, data, &rep); skip != nil {
+		return nil, skip
 	}
 
 	var findings []Finding
