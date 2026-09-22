@@ -157,19 +157,113 @@ func clamp(n, lo, hi int) int {
 	return n
 }
 
-// viewBuilder is one registered transform. Adding a view is adding an entry
-// here; every rule that has not opted out then runs on it, with no edit at
-// the rule.
+// viewStage is one transform in a view's pipeline: it takes the text of the
+// stage before it and returns its own text with the map back to that text's
+// offsets. A stage that changes nothing returns a nil map, which is the same
+// identity convention View.segs uses.
+//
+// Views are pipelines rather than monoliths because that is what they are:
+// the compact view *is* the skeleton fold with letter-spacing separators
+// removed, and writing it as `{foldSkeleton, compactLetterSpacing}` is the
+// contract rather than a paraphrase of it. composeSegs is what lets a stage
+// be written against the text it actually sees while its findings still
+// anchor to raw.
+type viewStage func(text string) (string, []viewSeg)
+
+// viewBuilder is one registered view. Adding a view is adding an entry here;
+// every rule that has not opted out then runs on it, with no edit at the rule.
 type viewBuilder struct {
-	name  string
-	build func(raw string) (string, []viewSeg)
+	name   string
+	stages []viewStage
+}
+
+// build runs the pipeline over a file's raw text, composing each stage's
+// offset map onto the one before it, so the view that comes out maps its own
+// offsets straight back to raw however many stages produced it.
+func (b viewBuilder) build(raw string) (string, []viewSeg) {
+	text := raw
+	var segs []viewSeg
+	for _, stage := range b.stages {
+		next, stageSegs := stage(text)
+		segs = composeSegs(stageSegs, segs, len(raw))
+		text = next
+	}
+	return text, segs
 }
 
 // viewBuilders is the ordered registry of normalised views. Order is the
 // order findings are discovered in, which matters only for which view's
 // rendering survives dedup when two views find the same place.
 var viewBuilders = []viewBuilder{
-	{name: viewSkeleton, build: buildSkeleton},
+	{name: viewSkeleton, stages: []viewStage{foldSkeleton}},
+}
+
+// composeSegs composes two offset maps: outer maps a stage's own offsets onto
+// the text it was given, inner maps that text's offsets onto raw. The result
+// maps the stage's offsets onto raw.
+//
+// A nil map means the identity, exactly as View.segs does, so a stage that
+// changed nothing costs nothing here.
+//
+// A linear outer segment is split at the inner map's boundaries rather than
+// carried whole: inside the range it covers, the inner map may be linear in
+// one part and a rewrite in the next, and a composition that kept the outer
+// segment's linearity would interpolate positions through a character that
+// has no interior.
+func composeSegs(outer, inner []viewSeg, rawLen int) []viewSeg {
+	if outer == nil {
+		return inner
+	}
+	if inner == nil {
+		return outer
+	}
+	in := &View{segs: inner, rawLen: rawLen}
+	var out segList
+	for _, o := range outer {
+		if !o.linear {
+			// The whole of o's output came from o's input range as a unit;
+			// that range's raw bounds are the composition.
+			out.add(viewSeg{
+				dStart: o.dStart, dEnd: o.dEnd,
+				sStart: in.SourceOffset(o.sStart), sEnd: in.SourceEnd(o.sEnd),
+			})
+			continue
+		}
+		i := in.segAt(o.sStart)
+		if i < 0 {
+			i = 0
+		}
+		for ; i < len(inner) && inner[i].dStart < o.sEnd; i++ {
+			s := inner[i]
+			lo, hi := max(s.dStart, o.sStart), min(s.dEnd, o.sEnd)
+			if lo >= hi {
+				continue
+			}
+			seg := viewSeg{dStart: o.dStart + (lo - o.sStart), dEnd: o.dStart + (hi - o.sStart)}
+			if s.linear {
+				seg.sStart, seg.sEnd, seg.linear = s.sStart+(lo-s.dStart), s.sStart+(hi-s.dStart), true
+			} else {
+				seg.sStart, seg.sEnd = s.sStart, s.sEnd
+			}
+			out.add(seg)
+		}
+	}
+	return out.segs
+}
+
+// segList accumulates segments, coalescing a linear segment onto the linear
+// segment before it when the two are contiguous on both sides — so a stretch
+// the pipeline left alone costs one entry however long it is.
+type segList struct{ segs []viewSeg }
+
+func (sl *segList) add(s viewSeg) {
+	if s.linear && len(sl.segs) > 0 {
+		if last := &sl.segs[len(sl.segs)-1]; last.linear && last.dEnd == s.dStart && last.sEnd == s.sStart {
+			last.dEnd, last.sEnd = s.dEnd, s.sEnd
+			return
+		}
+	}
+	sl.segs = append(sl.segs, s)
 }
 
 // Views returns the raw view followed by every registered normalised view.
@@ -190,6 +284,21 @@ func (f *FileContent) rawView() *View {
 	return &View{Name: viewRaw, Path: f.Entry.Path, Text: f.Text, rawLen: len(f.Text)}
 }
 
+// newViews builds the raw view and every registered view of one file's text.
+// It is the single place the registry is walked, so a view the ledger builds
+// and a view a test builds are the same object by construction.
+func newViews(path, raw string) []*View {
+	views := make([]*View, 0, 1+len(viewBuilders))
+	views = append(views, &View{Name: viewRaw, Path: path, Text: raw, rawLen: len(raw)})
+	for _, b := range viewBuilders {
+		text, segs := b.build(raw)
+		views = append(views, &View{
+			Name: b.name, Path: path, Text: text, segs: segs, rawLen: len(raw),
+		})
+	}
+	return views
+}
+
 // buildViews materialises every view of every inspected file. Called by
 // BuildLedger after the file list is final, so the views are built once and
 // read many times.
@@ -199,15 +308,7 @@ func (l *Ledger) buildViews() {
 		if f.Entry.Outcome != "inspected" {
 			continue
 		}
-		views := make([]*View, 0, 1+len(viewBuilders))
-		views = append(views, f.rawView())
-		for _, b := range viewBuilders {
-			text, segs := b.build(f.Text)
-			views = append(views, &View{
-				Name: b.name, Path: f.Entry.Path, Text: text, segs: segs, rawLen: len(f.Text),
-			})
-		}
-		f.views = views
+		f.views = newViews(f.Entry.Path, f.Text)
 	}
 }
 
@@ -273,9 +374,46 @@ func (v *View) Tag() string {
 	return v.Name
 }
 
+// ---- building a stage's text and its offset map ----
+
+// segBuilder accumulates a stage's output text together with the map back to
+// the text it was given. Both stages build their map through it, so there is
+// one implementation of the three cases a transform can produce.
+type segBuilder struct {
+	b    strings.Builder
+	segs segList
+}
+
+// emit records one contribution of the input to the output.
+//
+//   - repl == "" is a deletion, and produces no segment at all: the input
+//     bytes it occupied belong to no output byte, which is the honest answer
+//     rather than a fabricated one.
+//   - identity means the output is the input verbatim, so consecutive
+//     identity contributions coalesce into one linear segment however long
+//     the run — a stage that changes one character in a megabyte costs three
+//     segments, not a million.
+//   - otherwise the contribution is a rewrite and gets its own segment:
+//     every output byte in it came from the same input range, so the mapping
+//     inside it is not positional and the segment reports its own bounds.
+func (sb *segBuilder) emit(repl string, sStart, sLen int, identity bool) {
+	dStart := sb.b.Len()
+	sb.b.WriteString(repl)
+	if repl == "" {
+		return
+	}
+	sb.segs.add(viewSeg{
+		dStart: dStart, dEnd: dStart + len(repl),
+		sStart: sStart, sEnd: sStart + sLen,
+		linear: identity,
+	})
+}
+
+func (sb *segBuilder) done() (string, []viewSeg) { return sb.b.String(), sb.segs.segs }
+
 // ---- the Skeleton view ----
 
-// buildSkeleton renders the Unicode fold: per-character NFKC, then the UTS #39
+// foldSkeleton renders the Unicode fold: per-character NFKC, then the UTS #39
 // ASCII confusable skeleton, then removal of format and control characters and
 // default-ignorables.
 //
@@ -296,38 +434,16 @@ func (v *View) Tag() string {
 // that a combining sequence spelled as base + mark is not composed; that is a
 // stated limit, not an oversight, and it costs nothing for the ASCII-phrase
 // rules this view exists to serve.
-func buildSkeleton(raw string) (string, []viewSeg) {
-	var b strings.Builder
-	b.Grow(len(raw))
-	var segs []viewSeg
-
-	// emit records one raw character's contribution. repl == "" deletes it.
-	emit := func(repl string, sStart, sLen int, identity bool) {
-		dStart := b.Len()
-		b.WriteString(repl)
-		if repl == "" {
-			return
-		}
-		if identity && len(segs) > 0 {
-			if last := &segs[len(segs)-1]; last.linear && last.dEnd == dStart && last.sEnd == sStart {
-				last.dEnd += len(repl)
-				last.sEnd += sLen
-				return
-			}
-		}
-		segs = append(segs, viewSeg{
-			dStart: dStart, dEnd: dStart + len(repl),
-			sStart: sStart, sEnd: sStart + sLen,
-			linear: identity,
-		})
-	}
+func foldSkeleton(raw string) (string, []viewSeg) {
+	var sb segBuilder
+	sb.b.Grow(len(raw))
 
 	for i := 0; i < len(raw); {
 		r, n := utf8.DecodeRuneInString(raw[i:])
 		if r == utf8.RuneError && n <= 1 {
 			// Invalid UTF-8: pass the byte through untouched. Normalising
 			// bytes that are not characters would invent text.
-			emit(raw[i:i+1], i, 1, true)
+			sb.emit(raw[i:i+1], i, 1, true)
 			i++
 			continue
 		}
@@ -335,18 +451,18 @@ func buildSkeleton(raw string) (string, []viewSeg) {
 			// ASCII is already NFKC and has no confusable mapping; only the
 			// C0/DEL controls are dropped, and not the whitespace ones.
 			if isStrippableControl(r) {
-				emit("", i, n, false)
+				sb.emit("", i, n, false)
 			} else {
-				emit(raw[i:i+n], i, n, true)
+				sb.emit(raw[i:i+n], i, n, true)
 			}
 			i += n
 			continue
 		}
 		folded := foldRune(r)
-		emit(folded, i, n, folded == raw[i:i+n])
+		sb.emit(folded, i, n, folded == raw[i:i+n])
 		i += n
 	}
-	return b.String(), segs
+	return sb.done()
 }
 
 // foldRune is NFKC then confusable-skeleton then ignorable-removal, for one
