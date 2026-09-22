@@ -78,47 +78,79 @@ func TestSkillGateDiscoverableViaPluginManifests(t *testing.T) {
 // list anyone maintains by hand. Taking a dependency means stating it; losing
 // the last importer of one means removing it. Either omission names itself
 // here, in either module.
+//
+// An import is resolved to its *longest* matching module path, sibling modules
+// in this tree included. That is load-bearing rather than tidy: difftest's
+// module path is a subpath of the production module's, so a production import
+// of difftest looks like a self-import to a naive prefix test and builds
+// cleanly under go.work — while failing for anyone who resolves the production
+// module on its own. The workspace is exactly what hides this, so the check
+// cannot lean on the toolchain to find it.
 func TestModuleDependencySurfacesAreDeclared(t *testing.T) {
 	roots := goModuleRoots(t, ".")
 	if len(roots) == 0 {
 		t.Fatal("no go.mod found under the skillgate tree — the walk found nothing to check")
 	}
+	mods := make(map[string]goModuleManifest, len(roots))
 	for _, dir := range roots {
-		mod := parseGoModManifest(t, dir)
+		mods[dir] = parseGoModManifest(t, dir)
+	}
+
+	for _, dir := range roots {
+		mod := mods[dir]
 		imports, files := collectGoImports(t, dir, roots)
 		if files == 0 {
 			t.Errorf("%s: module %s has no Go source — nothing was checked against its require block", dir, mod.Path)
 			continue
 		}
 
-		// Side 1: every non-standard import resolves to a require (or to the
-		// module itself).
-		declared := map[string]bool{}
+		// Candidate providers, longest match wins: the module itself, each of
+		// its requires, and every sibling module in the tree.
+		const (
+			self     = "self"
+			required = "require"
+			sibling  = "workspace sibling"
+		)
+		provider := map[string]string{mod.Path: self}
 		for _, r := range mod.Requires {
-			declared[r.Path] = true
+			provider[r.Path] = required
 		}
+		for other, om := range mods {
+			if other != dir {
+				if _, ok := provider[om.Path]; !ok {
+					provider[om.Path] = sibling
+				}
+			}
+		}
+
 		used := map[string]bool{}
 		for _, imp := range sortedKeys(imports) {
-			if isStandardImportPath(imp) || importCoveredBy(imp, mod.Path) {
+			if isStandardImportPath(imp) {
 				continue
 			}
 			owner := ""
-			for _, r := range mod.Requires {
-				if importCoveredBy(imp, r.Path) && len(r.Path) > len(owner) {
-					owner = r.Path
+			for path := range provider {
+				if importCoveredBy(imp, path) && len(path) > len(owner) {
+					owner = path
 				}
 			}
-			if owner == "" {
+			switch provider[owner] {
+			case self:
+				continue
+			case required:
+				used[owner] = true
+			case sibling:
+				t.Errorf("%s/go.mod: %q is imported by %s and is satisfied only by go.work — module %s must require %s, or anyone resolving it outside this workspace cannot build it",
+					dir, imp, strings.Join(imports[imp], ", "), mod.Path, owner)
+			default:
 				t.Errorf("%s/go.mod: %q is imported by %s but no require declares it — the module's dependency surface is wider than it says",
 					dir, imp, strings.Join(imports[imp], ", "))
-				continue
 			}
-			used[owner] = true
 		}
 
-		// Side 2: every direct require is actually imported. Indirect requires
-		// are exempt by definition — they exist to pin a transitive module the
-		// source never names.
+		// The other direction: every direct require is actually imported.
+		// Indirect requires are exempt by definition — they exist to pin a
+		// transitive module the source never names.
 		for _, r := range mod.Requires {
 			if r.Indirect || used[r.Path] {
 				continue
