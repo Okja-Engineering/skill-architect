@@ -1,10 +1,11 @@
 # skillgate — intent
 
 What this program is and why, in one file. The normative contract is
-`docs/skillgate-spec.md`; the research that produced this is
-`docs/research/recommendation.md` + `pi-integration.md` (working notes — may
-fall away at release). This file and the spec are kept current as we deliver;
-if they drift from the code, that's a defect.
+`docs/skillgate-spec.md`; the research that produced this is `docs/research/`
+(`recommendation.md`, `pi-integration.md`, `rule-language.md`) — **kept
+permanently** by standing ruling and durable at the `archive/docs-research-0.6.0`
+tag, though not tracked in the release tree. This file and the spec are kept
+current as we deliver; if they drift from the code, that's a defect.
 
 ## What
 
@@ -61,15 +62,28 @@ plugin/package root — never just the `SKILL.md` in isolation.
 
 ## What falls away before release
 
-Working notes and control plane, not product: `docs/research/**`,
-`tmp/teams/**` (gitignored), `.scuba/**` (temporarily un-ignored for gate
-spec work — re-hide or archive at release), `docs/research/verdicts/**`.
-What stays: this file, `docs/skillgate-spec.md`, `PRINCIPLES.md`,
+Control plane, not product: `tmp/teams/**` (gitignored) and `.scuba/**`
+(temporarily un-ignored for gate spec work — re-hide or archive at release).
+
+**`docs/research/**` does not fall away.** A standing user ruling keeps the
+design corpus permanently, and it is durable at the `archive/docs-research-0.6.0`
+tag. It stays **out of the tracked release tree** in 0.6.0, which is a
+different thing from being discarded — and it is why nothing tracked may depend
+on it: where a research note is normative for shipped behaviour, the spec
+restates it and the spec governs. When it becomes tracked is a later release's
+question.
+
+What stays tracked: this file, `docs/skillgate-spec.md`, `PRINCIPLES.md`,
 `.out-of-scope.md`, `docs/profiler-spec.md`, README/CHANGELOG, the skills,
 and both Go modules.
 
 ## Where it lives
 
-Slices and status: `.scuba/roadmap.md` (resume anchor). Pending research
-gate: `docs/research/rule-language.md` lands before any rule-representation
-refactor.
+Slices and status: `.scuba/roadmap.md` (resume anchor).
+
+The research gate is **discharged**: `docs/research/rule-language.md` has
+landed, and 0.6.0 implements its **view axis**, restated normatively in
+`docs/skillgate-spec.md` §Views. Rule *representation* is unchanged — a rule is
+still a Go literal beside the code that emits it — and the rule **language**
+that note proposes is not built. A refactor to it is a later release's, gated
+on a `report/v1` golden diff rather than on the note.

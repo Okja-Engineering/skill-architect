@@ -374,7 +374,7 @@ nobody can falsify decays. **Do not reword a limit to keep a driver green.**
   alone: neither the skeleton nor the compaction reaches them. The fold has no
   mapping for `*`, and folding the payload the skeleton's way runs the words
   together, so the phrase rule then fails for want of whitespace instead —
-  a different miss, not a fix. Three bounds on that view are contract:
+  a different miss, not a fix. The bounds on that view are contract:
   - **Reference links** (`[text][ref]`) are not resolved. They need the
     document's link-reference definitions, which a line-bounded stage does not
     have. Inline links and images are resolved.
@@ -483,9 +483,9 @@ whether the token names a file or a directory:
 
 Everything else produces **no edge**: URLs, anchors, `~/` home-relative
 paths, `$VAR`/`<placeholder>` forms, command strings, and bare prose
-mentions of a path outside the five conventional directories.
+mentions of a path outside the conventional directories named above.
 
-### The three rulings, and the direction the rule errs
+### The rulings, and the direction the rule errs
 
 - **A cycle is not reachability.** An island of files referencing only each
   other is reached by nobody, so every member is reported. A cycle hanging
