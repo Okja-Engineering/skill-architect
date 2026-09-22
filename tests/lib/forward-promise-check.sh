@@ -136,15 +136,20 @@
 # sentence that is nonetheless assigning work. Separating those needs the
 # sentence parsed, which is not what this does.
 #
-# Two things this still does not do, stated so the next round does not have to
-# find them. The window is two records, so a promise spread over three lines
-# with neither the verb nor the version adjacent to the join is not seen. And
-# the section-heading probe reads a literal `## v?<version>`, so the two
-# history documents are scoped by an exact heading match; a heading written
-# some other way would take that file's whole section out of scope rather than
-# report anything, which is why tests/test_skill.sh holds the per-file skip
-# counts against this script's own HISTORY_DOCS rather than trusting the
-# accounting to add up.
+# The window is two records, and the honest way to say what that buys is that
+# the verb and the version have to land on records next to each other. An
+# earlier wording here said a promise spread over three lines goes unseen "with
+# neither the verb nor the version adjacent to the join", which reads as though
+# a verb sitting next to a break were enough; driven, it is not — no single
+# join carries both, and the promise is unseen.
+#
+# The section-heading probe reads `## v?<version>`, in any case. It used to
+# read the raw record, so a capital V meant no section at all. That is fixed
+# and it is not the interesting half: any heading this probe does not
+# recognise leaves the file scoped to a section that does not exist, which is
+# not a narrower scope but no scope, and the END rule below refuses exactly
+# that. Tolerating a list of heading spellings instead would leave the next
+# one; what is asserted is that the section was entered.
 #
 # Usage:
 #   forward-promise-check.sh <version>                the tracked tree
@@ -302,6 +307,9 @@ scan() {
       files++
       sectioned = (single == "" && index(history_docs, " " FILENAME " ") > 0)
       in_section = !sectioned
+      # Which files are being scoped by a heading, so the END rule can ask
+      # whether each of them was ever actually entered.
+      if (sectioned) sectioned_files[FILENAME] = 1
       # A file boundary is never a line wrap, so the window starts empty.
       prev = ""
       prev_raw = ""
@@ -312,10 +320,13 @@ scan() {
     # counters, which is what makes "the whole of what was read was looked at"
     # an answerable question rather than a claim.
     sectioned && /^## / {
-      probe = $0
+      # Folded like every other test here, because the probe read the raw
+      # record and a capital V in the heading was enough to mean no section.
+      probe = tolower($0)
       sub(/^## v?/, "", probe)
       sub(/[^0-9.].*$/, "", probe)
       in_section = (probe == version)
+      if (in_section) saw_section[FILENAME] = 1
       skipped++
       scope_skips[FILENAME]++
       prev = ""
@@ -388,6 +399,31 @@ scan() {
       if (single == "" && exempt_seen == 0) {
         printf "%s: the exemption for the negative control matched nothing, so it is stale or the control is gone\n", exempt_file
         found++
+      }
+      # A scope that misses fails closed, which is the only reason the scoping
+      # above is safe to have.
+      #
+      # in_section starts false in a scoped file and is turned on by a heading
+      # that matches. So a heading written any other way is not a narrower
+      # scope, it is *no* scope: every record in the file leaves through the
+      # skip counter, the accounting still adds up perfectly, and the reader
+      # exits 0 over a document it did not read a line of. Driven, five
+      # ordinary spellings of the heading did exactly that — a bracketed
+      # version, a leading word, a doubled space, a deeper heading level — and
+      # a live assignment planted inside the section went unreported with the
+      # counts all self-consistent, which is the one failure this whole file
+      # exists to make impossible.
+      #
+      # Tolerating those five spellings would leave the sixth, and enumerating
+      # forms is the defect this reader has now been repaired for twice. So
+      # what is asserted instead is the thing that has to be true: a file
+      # scoped by a heading has to have entered its section. Miss it and this
+      # is a finding, loudly, rather than a silent narrowing to nothing.
+      for (f in sectioned_files) {
+        if (!(f in saw_section)) {
+          printf "%s: no heading for the release being cut was found, so none of this file was read: it is scoped to a section that is not there\n", f
+          found++
+        }
       }
       # Refused here and not only by the caller, so a limit inserted anywhere
       # in the walk above is refused by the reader on its own terms. A scan that

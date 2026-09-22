@@ -1182,4 +1182,121 @@ assert "the same copy without the rule reads the whole tree, so the copy is not 
 assert "the same copy without the rule accounts for what it read" \
   reader_accounted_for_what_it_read "$untruncated_reader"
 
+# --- Controls: the section scope, which nothing above can reach ---------------
+#
+# Every fixture control in this file runs the reader in `--over` mode, and
+# `--over` applies no section scoping and no exemption. So the two halves of
+# the reader that decide *what it reads at all* had no control anywhere — and
+# both of them were wrong. The scoping was: a heading written in any of five
+# ordinary ways — a bracketed version, a leading word, a doubled space, a
+# deeper level — took the whole document out of scope, the accounting stayed
+# perfectly self-consistent, and the reader exited 0 over a file it had not
+# read a line of. Driven end to end, an assignment planted inside the section
+# went unreported that way.
+#
+# The script header used to justify shipping that residual by pointing here,
+# at "the per-file skip counts". Nothing here held a skip *count*: the only
+# assertion over `skipped-in=` compares a set of file **names**, and the set is
+# unchanged when a section silently becomes the whole file. The justification
+# named a control that did not exist. This is that control.
+#
+# It needs a tracked tree of its own, because scoping only applies in tree
+# mode: a scratch repository with the two history documents and the one file
+# the exemption names, driven from inside it. The mutation is the heading and
+# nothing else.
+promise_scope_repo="$harness_scratch/promise-scope"
+promise_scan_abs="$promise_repo_root/$FORWARD_PROMISE_SCAN"
+
+promise_scope_build() {
+  local heading="$1" planted="$2" dir="$promise_scope_repo"
+  rm -rf "$dir"
+  mkdir -p "$dir/profiler" || return 1
+  {
+    echo '# Changelog'
+    echo ''
+    echo '## Unreleased'
+    echo ''
+    printf '%s\n' "$heading"
+    echo ''
+    if [ "$planted" = planted ]; then
+      printf -- '- a receiver subcommand for the spool is deferred to %s, once it lands\n' \
+        "$skill_release_version"
+    else
+      echo '- nothing in this section assigns any work'
+    fi
+    echo ''
+    echo '## 0.4.3 — earlier'
+    echo ''
+    # History, and the whole reason the scoping exists: an older section saying
+    # what it had put off until its successor is true as written.
+    printf -- '- surfacing a count of skipped records is deferred to %s\n' \
+      "$skill_release_version"
+  } > "$dir/CHANGELOG.md" || return 1
+  {
+    echo '# Release notes'
+    echo ''
+    printf '## v%s\n' "$skill_release_version"
+    echo ''
+    echo '- nothing in this section assigns any work'
+  } > "$dir/RELEASE_NOTES.md" || return 1
+  # The reader refuses an exemption that matched nothing, so the negative
+  # control it exempts has to be here too or every run below is red for an
+  # unrelated reason.
+  printf '// retiredActivationDeferral: the string a test asserts is gone from the tree\n' \
+    > "$dir/profiler/profiler_test.go" || return 1
+  quietly git -C "$dir" init || return 1
+  quietly git -C "$dir" add -A || return 1
+}
+
+# Output and status together, because what has to be asserted is *which*
+# finding came back and not merely that one did.
+promise_scope_run() {
+  local heading="$1" planted="$2" out status=0
+  promise_scope_build "$heading" "$planted" || return 1
+  out="$( cd "$promise_scope_repo" && "$promise_scan_abs" "$skill_release_version" 2>&1 )" \
+    || status=$?
+  printf '%s\nrc=%d\n' "$out" "$status"
+}
+
+promise_scope_names_the_promise() {
+  promise_scope_run "$1" planted | grep -q '^CHANGELOG\.md:7: \[deferral verb\]'
+}
+promise_scope_refuses_the_scope() {
+  promise_scope_run "$1" "${2:-planted}" | grep -q '^CHANGELOG\.md: no heading for the release being cut was found'
+}
+promise_scope_is_quiet() {
+  promise_scope_run "$1" clean | grep -q '^rc=0$'
+}
+
+promise_scope_heading="## $skill_release_version — 2026-09-21"
+
+# The positive side first: with the heading it knows, the reader reads the
+# section, names the planted assignment at its own line, and leaves the older
+# section alone. Without this one the refusals below would pass over a reader
+# that simply refuses everything.
+assert "with the heading it knows, the scoped reader reads the section and names the assignment in it" \
+  promise_scope_names_the_promise "$promise_scope_heading"
+assert "with the heading it knows and nothing to find, the scoped reader is quiet" \
+  promise_scope_is_quiet "$promise_scope_heading"
+
+# The heading spellings. Each of these used to exit 0 over an unread document.
+assert "a bracketed heading does not silently take the document out of scope" \
+  promise_scope_refuses_the_scope "## [$skill_release_version] — 2026-09-21"
+assert "a heading with a word in front of the version does not silently take the document out of scope" \
+  promise_scope_refuses_the_scope "## Release $skill_release_version — 2026-09-21"
+assert "a deeper heading level does not silently take the document out of scope" \
+  promise_scope_refuses_the_scope "### $skill_release_version — 2026-09-21"
+assert "a doubled space after the marker does not silently take the document out of scope" \
+  promise_scope_refuses_the_scope "##  $skill_release_version — 2026-09-21"
+# And with nothing planted, so what is refused is the scope itself rather than
+# the assignment inside it.
+assert "an unreadable heading is refused even when the section holds nothing to find" \
+  promise_scope_refuses_the_scope "## [$skill_release_version] — 2026-09-21" clean
+
+# Case, which is the other half and needs the opposite verdict: a capital V is
+# a spelling of the heading and not a different heading, so this one must be
+# *read*, not refused. A reader that only failed closed would fail this.
+assert "a capital V in the heading is read as the section, not refused as a missing one" \
+  promise_scope_names_the_promise "## V$skill_release_version — 2026-09-21"
+
 harness_summary

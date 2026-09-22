@@ -434,13 +434,26 @@ infrastructure rather than as an adapter, and the harness row draws that distinc
   still fire.
 
   **What it still does not do, stated rather than left to be found.** The window is two
-  records, so a promise spread over three lines with neither the verb nor the version
-  adjacent to the join is not seen. And a version
+  records, so the verb and the version have to land on records next to each other; a promise
+  spread wider than that is not seen. (An earlier wording here said "with neither the verb
+  nor the version adjacent to the join", which reads as though a verb next to a break were
+  enough. Driven, it is not: no single join carries both.) And a version
   surface standing beside the `is` exempts that occurrence of the bare `is <version>`
   shape. `CHANGELOG.md` and
   `RELEASE_NOTES.md` are
   scoped to the section for the release being cut, because 0.4.3's section saying what 0.4.3
-  deferred is history and stays byte-identical. **Its own counts have other sides, and no
+  deferred is history and stays byte-identical — **and that scope now fails closed, which it
+  did not when this entry was first written.** The section was found by an exact heading
+  match, so a heading written any of several ordinary ways was not a narrower scope but no
+  scope: every record left through the skip counter, the accounting added up perfectly, and
+  the reader exited 0 over a document it had not read a line of. Driven end to end, an
+  assignment planted inside the section went unreported that way. The repair is not a list
+  of tolerated heading spellings, which would leave the next one — the probe folds case like
+  everything else here, and a scoped file that never entered its section is a **finding**,
+  named as one. The controls for it are new too, and they are the first in this file to
+  exercise section scoping at all: every fixture case runs the reader in its one-file mode,
+  which applies no scoping and no exemption, so the two halves of the reader that decide
+  what it reads at all had nothing holding them. **Its own counts have other sides, and no
   numeral is published for any of them:** the files it opened are compared for equality
   against the tracked files that have a record in them (not against `git ls-files` outright —
   awk's per-file counter cannot fire for a zero-byte file, and
