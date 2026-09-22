@@ -1,0 +1,10 @@
+```sh
+subprocess.run(response2)
+subprocess.run(responses)
+subprocess.run("my_output")
+subprocess.run("the-output")
+subprocess.Popen(myreply)
+subprocess.run(xresult)
+subprocess.run(-response)
+subprocess.run('response')
+```

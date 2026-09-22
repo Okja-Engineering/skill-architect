@@ -22,6 +22,14 @@ mkdir -p "$tmp"
 # skills, which is true of either spelling, so that is what is asserted. Whether
 # the four manifests *agree* is a four-manifest question and lives with the rest
 # of them, in tests/test_install.sh.
+#
+# The skills walked over are read out of the tree, not written down. They were
+# the literal pair `('skill-audit', 'skill-rewrite')` until skill-gate landed,
+# and the failure mode of a written-down pair is not that it breaks — it is that
+# it does not: a third skill joins the repository, the manifest stops pointing at
+# it, and this check goes on passing about the two it was told about. The
+# non-empty assertion below is what keeps the derived form from being the weaker
+# of the two, since a glob that matches nothing walks over nothing.
 plugin_points_to_canonical_skill_dir() {
   python3 - <<'PY'
 import json, os
@@ -30,16 +38,34 @@ with open('.devin-plugin/plugin.json') as f:
 assert manifest['name'] == 'skill-architect'
 skills = manifest['skills']
 assert os.path.isdir(skills), 'skills path does not resolve: %r' % skills
-for skill in ('skill-audit', 'skill-rewrite'):
+shipped = sorted(d for d in os.listdir('skills')
+                 if os.path.isfile(os.path.join('skills', d, 'SKILL.md')))
+assert shipped, 'the repository ships no skills, so this check asserts nothing'
+for skill in shipped:
     assert os.path.isfile(os.path.join(skills, skill, 'SKILL.md')), skill
 PY
 }
 
+# The skills this repository ships, by directory name. Same derivation as the
+# one inside the manifest check above, in the language this file's assertions
+# are written in.
+shipped_skill_names() {
+  local d
+  for d in skills/*/; do
+    d="${d%/}"
+    [ -f "$d/SKILL.md" ] || continue
+    printf '%s\n' "${d##*/}"
+  done
+}
+
 test_plugin_layout() {
+  local skill
   assert "plugin points to canonical skill directory" \
     quietly plugin_points_to_canonical_skill_dir
-  assert "no skill contains a plugin manifest" test ! -e skills/skill-audit/.devin-plugin/plugin.json
-  assert "no skill contains a plugin manifest" test ! -e skills/skill-rewrite/.devin-plugin/plugin.json
+  for skill in $(shipped_skill_names); do
+    assert "$skill contains no plugin manifest" \
+      test ! -e "skills/$skill/.devin-plugin/plugin.json"
+  done
 }
 
 # Audit a deliberately broken skill and confirm failures are reported.

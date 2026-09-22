@@ -875,7 +875,7 @@ below, and change nothing else:
 skills_dir=~/.claude/skills
 
 mkdir -p "$skills_dir"
-for skill in skill-audit skill-rewrite; do
+for skill in skill-audit skill-gate skill-rewrite; do
   rm -rf "$skills_dir/.$skill.new" &&
     cp -R "skills/$skill" "$skills_dir/.$skill.new" &&
     rm -rf "$skills_dir/$skill" &&
