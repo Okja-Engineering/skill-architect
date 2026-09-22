@@ -794,23 +794,175 @@ PROMISE_CASES_EXPECTED=18
 assert "every one of the $PROMISE_CASES_EXPECTED forward-promise cases was driven, not a prefix of them" \
   test "$promise_n" -eq "$PROMISE_CASES_EXPECTED"
 
-# And the denominator: the reader walked the tracked tree rather than reporting
-# "none found" over nothing. The other side is `git ls-files` itself, compared
-# for equality, which is the same arrangement tests/test_harness.sh holds the
-# assertion audit to — and it is why this reader prints what it read.
+# And the denominator, in three parts, because "the reader ran", "the reader
+# read the whole of what it opened" and "the reader looked at what it read" are
+# three claims and only the first had anything behind it.
 #
-# Non-empty, because awk's per-file counter cannot fire for a file with no
-# records and `profiler/testdata/otlp/empty.json` is deliberately one. The side
-# that matters is still git's: a file that stops being tracked leaves both
-# counts lower together, and a reader that stops opening files leaves only its
-# own lower.
+# The reader printed a `lines` figure that nothing in this file compared against
+# anything. Measured: a forward promise appended to README.md, and
+# `FNR > 400 { next }` inserted below the reader's counting rule — the same
+# regression that motivated the two-sided count in tests/lib/audit-suites.sh —
+# and the reader reported `files=162` and exit 0 over a tree with a live
+# violation in it. `files` was green because `files` was the only side wired up.
+#
+#   files    — against `git ls-files`, compared for equality.
+#   lines    — against `grep -ac ''` over the same files, which is a different
+#              program counting the same thing. Not `wc -l`: a file with no
+#              final newline has one more record than `wc -l` reports, and two
+#              tracked files are like that, so `wc -l` would be off by two and
+#              somebody would "fix" it with a fudge.
+#   skipped  — against the reader's own HISTORY_DOCS and EXEMPT_FILE, read out
+#              of the script's text. The reader holds `examined + skipped ==
+#              lines` itself, so an accounting that still adds up is not enough:
+#              what this side refuses is a skip path that started swallowing a
+#              file nobody scoped it to.
+#
+# Non-empty files, because awk's per-file counter cannot fire for a file with no
+# records and `profiler/testdata/otlp/empty.json` is deliberately one.
+#
+# Every side here is derived from the repository root and not from the process's
+# working directory. That is not hygiene. The previous version asked
+# `git ls-files` twice from the cwd, once inside the reader and once here, so
+# run from a subdirectory both sides narrowed together and stayed equal over a
+# fraction of the tree — a denominator derived from the thing it is checking,
+# which is the shape this whole round is about, in its third location. It also
+# built its side with `xargs -0 -I{} sh -c '[ -s "{}" ]'`, interpolating each
+# tracked filename into a shell string; no filename in this tree has a
+# metacharacter in it today and the loop below does not care whether one ever
+# does.
+promise_repo_root="$(git rev-parse --show-toplevel)"
 promise_scan_report() {
-  { "$FORWARD_PROMISE_SCAN" "$skill_release_version" || true; } | sed -n 's/^files=\([0-9]*\).*/\1/p'
+  { "${1:-$FORWARD_PROMISE_SCAN}" "$skill_release_version" 2>/dev/null || true; } \
+    | sed -n '/^files=/p'
 }
-promise_files_read="$(promise_scan_report)"
-promise_files_tracked="$(git ls-files -z | xargs -0 -I{} sh -c '[ -s "{}" ] && echo x' 2>/dev/null | grep -c . || true)"
+promise_figure() {
+  printf '%s\n' "$2" | sed -n "s/^.*$1=\\([0-9]*\\).*/\\1/p"
+}
+
+promise_report="$(promise_scan_report)"
+promise_files_read="$(promise_figure files "$promise_report")"
+promise_lines_read="$(promise_figure lines "$promise_report")"
+promise_examined="$(promise_figure examined "$promise_report")"
+promise_skipped="$(promise_figure skipped "$promise_report")"
+
+promise_files_tracked=0
+promise_lines_tracked=0
+while IFS= read -r -d '' promise_path; do
+  promise_n="$(grep -ac '' "$promise_repo_root/$promise_path" 2>/dev/null || true)"
+  [ -n "$promise_n" ] || promise_n=0
+  [ "$promise_n" -gt 0 ] || continue
+  promise_files_tracked=$((promise_files_tracked + 1))
+  promise_lines_tracked=$((promise_lines_tracked + promise_n))
+done < <(git -C "$promise_repo_root" ls-files -z)
+
 echo "  files the forward-promise reader read: $promise_files_read of $promise_files_tracked non-empty tracked files"
+echo "  records it read: $promise_lines_read of $promise_lines_tracked; it looked at $promise_examined and skipped $promise_skipped"
+
+require "a second reader counted the tracked tree, so these comparisons have a side" \
+  test "$promise_lines_tracked" -gt 0
 assert "the forward-promise reader read every non-empty tracked file, not a prefix of the tree" \
-  test "${promise_files_read:-0}" -eq "${promise_files_tracked:-0}"
+  test "${promise_files_read:-0}" -eq "$promise_files_tracked"
+assert "the forward-promise reader read every record in those files, not a prefix of each" \
+  test "${promise_lines_read:-0}" -eq "$promise_lines_tracked"
+assert "every record the reader read, it either looked at or said it was skipping" \
+  test "$((${promise_examined:-0} + ${promise_skipped:-0}))" -eq "${promise_lines_read:-0}"
+assert "the reader looked at records at all, so 'none found' is not 'none read'" \
+  test "${promise_examined:-0}" -gt 0
+
+# The skips, held against the scope the script states for itself. Two readings
+# of one artifact: the files the reader reports skipping in, and the two
+# variables that are the only reason it may skip anything.
+promise_scoped_in_script() {
+  { sed -n 's/^HISTORY_DOCS="\(.*\)"$/\1/p' "$FORWARD_PROMISE_SCAN" | tr ' ' '\n'
+    sed -n 's/^EXEMPT_FILE=\(.*\)$/\1/p' "$FORWARD_PROMISE_SCAN"
+  } | grep -v '^$' | sort -u
+}
+promise_scoped_reported() {
+  { "$FORWARD_PROMISE_SCAN" "$skill_release_version" 2>/dev/null || true; } \
+    | sed -n 's/^skipped-in=\([^ ]*\).*/\1/p' | sort -u
+}
+echo "  the reader skipped records in: $(promise_scoped_reported | tr '\n' ' ')"
+echo "  the script scopes skipping to: $(promise_scoped_in_script | tr '\n' ' ')"
+require "the script states the files it may skip in, so this comparison has two sides" \
+  test -n "$(promise_scoped_in_script)"
+assert "the reader skipped records only in the files its own scope names, and in all of them" \
+  test "$(promise_scoped_reported)" = "$(promise_scoped_in_script)"
+
+# --- Controls: the reader can say it did not read the whole tree --------------
+#
+# Every comparison above can only ever say "it read all of it". The 18 fixture
+# controls at the top of this block cannot say the opposite about any of them:
+# all 18 run in `--over` single-file mode over one-line fixtures, so not one
+# reaches the line count it would take to exercise a limit. A control that
+# cannot reach the condition it tests is the shape tests/test_harness.sh
+# explicitly refuses, and this block had it for the whole of the release.
+#
+# So the reader is copied twice, with a limit inserted at each of the two ends a
+# limit can be introduced at, and each copy is driven over the **real tracked
+# tree**, which holds files of 2,800 lines — so the limit is reached.
+#
+#   above the counting rule — `lines` itself drops, and the comparison against
+#   `grep -ac ''` refuses it. This is the end the audit's own control uses.
+#   below the counting rule — `lines` is untouched and the *walk* stops, which
+#   is the regression that was actually walked through here. The accounting
+#   comparison refuses it, and so does the reader on its own terms.
+promise_scanners="$harness_scratch/promise-scanners"
+mkdir -p "$promise_scanners"
+truncated_reader="$promise_scanners/stops-reading-at-400.sh"
+awk '/^    \{ lines\+\+ \}$/ { print "    FNR > 400 { next }" } { print }' \
+  "$FORWARD_PROMISE_SCAN" > "$truncated_reader"
+halted_walk_reader="$promise_scanners/stops-walking-at-400.sh"
+awk '/^    FNR == 1 \{$/ { print "    FNR > 400 { next }" } { print }' \
+  "$FORWARD_PROMISE_SCAN" > "$halted_walk_reader"
+chmod +x "$truncated_reader" "$halted_walk_reader"
+
+assert "the truncated copy really is a different program from the reader" \
+  quietly grep -qF 'FNR > 400' "$truncated_reader"
+assert "the halted-walk copy really is a different program from the reader" \
+  quietly grep -qF 'FNR > 400' "$halted_walk_reader"
+
+reader_read_the_whole_tree() {
+  local rep
+  rep="$(promise_scan_report "$1")"
+  test "$(promise_figure lines "$rep")" = "$promise_lines_tracked"
+}
+reader_accounted_for_what_it_read() {
+  local rep
+  rep="$(promise_scan_report "$1")"
+  test "$(( $(promise_figure examined "$rep") + $(promise_figure skipped "$rep") ))" \
+    -eq "$(promise_figure lines "$rep")"
+}
+# Written as the inverse rather than as `!`, because the expected diagnostic of
+# a firing control is noise on a passing run.
+refuses_a_truncated_reader() {
+  if reader_read_the_whole_tree "$1" 2>/dev/null; then
+    printf 'the record count accepted a reader that stops at line 400, so it cannot refuse one\n' >&2
+    return 1
+  fi
+  return 0
+}
+refuses_an_unaccounted_walk() {
+  if reader_accounted_for_what_it_read "$1" 2>/dev/null; then
+    printf 'the accounting accepted a walk that stops at line 400, so it cannot refuse one\n' >&2
+    return 1
+  fi
+  return 0
+}
+
+assert "a reader that stops reading at line 400 is refused by the record count" \
+  refuses_a_truncated_reader "$truncated_reader"
+assert "a walk that stops at line 400 while the reader goes on is refused by the accounting" \
+  refuses_an_unaccounted_walk "$halted_walk_reader"
+assert "a walk that stops is refused by the reader on its own terms, without a caller" \
+  quietly test "$("$halted_walk_reader" "$skill_release_version" >/dev/null 2>&1; echo $?)" -ne 0
+# And the other direction, over the same two copies with the rule taken back
+# out, so the refusals above are the injected rule's doing and not the copy's.
+untruncated_reader="$promise_scanners/reads-it-all.sh"
+grep -v '^    FNR > 400 { next }$' "$truncated_reader" > "$untruncated_reader"
+chmod +x "$untruncated_reader"
+assert "the same copy without the rule reads the whole tree, so the copy is not what was refused" \
+  reader_read_the_whole_tree "$untruncated_reader"
+assert "the same copy without the rule accounts for what it read" \
+  reader_accounted_for_what_it_read "$untruncated_reader"
 
 harness_summary
