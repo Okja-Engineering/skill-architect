@@ -320,6 +320,13 @@ nobody can falsify decays. **Do not reword a limit to keep a driver green.**
   reads whole files rather than overlapping windows. All three are asserted
   absent from the registry, so building one fails a test rather than leaving
   this paragraph behind.
+- **The legs whose vocabulary is a name stay loose at the trailing end**, and
+  what that costs is measured rather than assumed — see **Word boundaries**
+  above for the legs, the spellings each would have dropped, and why the two
+  ends of a word are not symmetric. It is a ceded lane and is named here as
+  one: a leg with no trailing anchor can match inside a longer word, and the
+  release accepts that rather than lose `cursorAuth`, `writeFileSync` and
+  `urllib3`.
 - **`\| /bin/sh` is not caught** by SK-T005's sink leg or by SK-T007's
   pipe-to-shell leg: both require the interpreter name immediately after the
   pipe, and neither accepts a leading path. This is a vocabulary-and-form

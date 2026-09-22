@@ -330,6 +330,27 @@ var cededLanes = []cededLane{
 		drivenBy: []string{"TestPriorArtViewsThisReleaseDoesNotBuild"},
 	},
 	{
+		// Landed by the compactLetter run-edge repair, after this lane table
+		// was written and by an author who had not seen it. The join is what
+		// found it: the limit arrived stated and undriven, and the check named
+		// the sentence and its line. Its driver pins both halves of the trade —
+		// the spelling that is lost and the spelling that still fires — which
+		// is what a lane wants, so this is a pointer rather than a second copy.
+		heading:  specLimitsHeading,
+		anchor:   "one unbroken token across that boundary",
+		drivenBy: []string{"TestARunDoesNotReconstructATokenAcrossItsEdge"},
+	},
+	{
+		// S15c's measurement, stated in §Word boundaries as a table and named
+		// here so it is under the same discipline as every other ceded lane.
+		// The driver carries, for each loose leg, the spelling anchoring it
+		// would have dropped — so the day one of them is anchored, the cost is
+		// a red rather than a discovery.
+		heading:  specLimitsHeading,
+		anchor:   "stay loose at the trailing end",
+		drivenBy: []string{"TestLegsWhoseVocabularyIsANameStayLoose"},
+	},
+	{
 		heading:  specG003LimitsHeading,
 		anchor:   "A directory reference blinds the directory",
 		drivenBy: []string{"TestG003DirectoryReferenceSuppressesOrphansInsideIt", "TestG003IsBlindedWhereTheSpecSaysItIs"},
