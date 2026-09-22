@@ -87,10 +87,10 @@ func suppressSameDirRefs(line, own string) string {
 
 // harnessPathFindings runs a harness-path regex over a file's lines,
 // suppressing same-dotdir self-references.
-func harnessPathFindings(f *FileContent, re *regexp.Regexp) []string {
-	own := ownHarnessDir(f.Entry.Path)
+func harnessPathFindings(v *View, re *regexp.Regexp) []string {
+	own := ownHarnessDir(v.Path)
 	var out []string
-	for _, line := range strings.Split(normPathSep(f.Text), "\n") {
+	for _, line := range strings.Split(normPathSep(v.Text), "\n") {
 		l := line
 		if own != "" {
 			l = suppressSameDirRefs(l, own)
@@ -107,7 +107,7 @@ var ruleT010 = rule{
 	id: "SK-T010", sev: SeverityHigh, quality: "security", effort: 15,
 	msg:   "touches another harness's config directory (.claude/.codex/.gemini/.continue)",
 	files: isScript,
-	scan:  func(f *FileContent) []string { return harnessPathFindings(f, reClaudePaths) },
+	scan:  func(v *View) []string { return harnessPathFindings(v, reClaudePaths) },
 }
 
 // T011 — reads of Cursor config paths.
@@ -115,7 +115,7 @@ var ruleT011 = rule{
 	id: "SK-T011", sev: SeverityHigh, quality: "security", effort: 15,
 	msg:   "reads Cursor config or state paths (.cursor/)",
 	files: isScript,
-	scan:  func(f *FileContent) []string { return harnessPathFindings(f, reCursorPaths) },
+	scan:  func(v *View) []string { return harnessPathFindings(v, reCursorPaths) },
 }
 
 // T012 — reads of the Cursor credential store. `state.vscdb`, `cursorAuth`,
@@ -126,10 +126,10 @@ var ruleT012 = rule{
 	id: "SK-T012", sev: SeverityBlocker, quality: "security", effort: 10,
 	msg:   "references the Cursor credential store (state.vscdb / cursorAuth / accessToken)",
 	files: nil,
-	scan: func(f *FileContent) []string {
-		out := lineMatches(f.Text, reCursorCreds)
-		if reCursorCtx.MatchString(f.Text) {
-			out = append(out, lineMatches(f.Text, reAccessToken)...)
+	scan: func(v *View) []string {
+		out := lineMatches(v.Text, reCursorCreds)
+		if reCursorCtx.MatchString(v.Text) {
+			out = append(out, lineMatches(v.Text, reAccessToken)...)
 		}
 		return out
 	},
@@ -266,14 +266,14 @@ var ruleT015 = rule{
 	id: "SK-T015", sev: SeverityBlocker, quality: "security", effort: 15,
 	msg:   "MCP config carries a plaintext secret or wildcard HTTP binding",
 	files: isHarnessConfig,
-	scan: func(f *FileContent) []string {
-		if !strings.Contains(f.Entry.Path, "mcp") {
+	scan: func(v *View) []string {
+		if !strings.Contains(v.Path, "mcp") {
 			return nil
 		}
 		var out []string
-		out = append(out, lineMatches(f.Text, reWildcardBind)...)
+		out = append(out, lineMatches(v.Text, reWildcardBind)...)
 		var doc map[string]any
-		if json.Unmarshal([]byte(f.Text), &doc) != nil {
+		if json.Unmarshal([]byte(v.Text), &doc) != nil {
 			return out
 		}
 		servers, _ := doc["mcpServers"].(map[string]any)
@@ -310,7 +310,7 @@ var ruleT016 = rule{
 	id: "SK-T016", sev: SeverityBlocker, quality: "security", effort: 10,
 	msg:   "MCP tool auto-approved without user consent",
 	files: isHarnessConfig,
-	scan:  func(f *FileContent) []string { return lineMatches(f.Text, reAutoApprove) },
+	scan:  func(v *View) []string { return lineMatches(v.Text, reAutoApprove) },
 }
 
 // T017/T018 — a hook config inside the bundle that executes bundled content.
@@ -533,11 +533,11 @@ var ruleT020 = rule{
 	id: "SK-T020", sev: SeverityBlocker, quality: "security", effort: 20,
 	msg:   "writes to a persistence or self-modification surface (shell rc, .claude/.cursor config, crontab, LaunchAgents)",
 	files: isScript,
-	scan: func(f *FileContent) []string {
+	scan: func(v *View) []string {
 		var out []string
 		// Normalize Windows separators (.cursor\hooks.json evasion) and mask
 		// /dev/null — `2>/dev/null` discards output; it isn't persistence.
-		text := normPathSep(strings.ReplaceAll(f.Text, "/dev/null", "DEVNULL"))
+		text := normPathSep(strings.ReplaceAll(v.Text, "/dev/null", "DEVNULL"))
 		for _, line := range strings.Split(text, "\n") {
 			ploc := rePersistPath.FindStringIndex(line)
 			if ploc == nil {

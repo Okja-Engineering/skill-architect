@@ -274,7 +274,7 @@ var ruleG001 = rule{
 	id: "SK-G001", sev: SeverityMedium, quality: "reliability", effort: 10,
 	msg:   "dangling reference: path resolves inside the bundle but no file exists",
 	files: isLoadedText,
-	scan:  func(f *FileContent) []string { return nil }, // filled by scanBundle below
+	scan:  func(v *View) []string { return nil }, // filled by scanBundle below
 	scanBundle: func(l *Ledger) []Finding {
 		var out []Finding
 		seen := map[string]bool{}
