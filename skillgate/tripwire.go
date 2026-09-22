@@ -145,13 +145,13 @@ func tripwireChecks() []Check {
 	for _, gr := range tripwireGroups {
 		rules := gr.rules
 		checks = append(checks, Check{
-			Name: gr.name,
-			Run: func(l *Ledger, _ *Target) []Finding {
+			Name: gr.name, Stage: stageScan,
+			Run: func(in checkInput) checkResult {
 				var out []Finding
 				for _, r := range rules {
-					out = append(out, r.run(l)...)
+					out = append(out, r.run(in.Ledger)...)
 				}
-				return out
+				return checkResult{Findings: out}
 			},
 		})
 	}
