@@ -874,6 +874,17 @@ assert "the audit accepts a heredoc that closes, so the refusal is the runaway's
 #
 # tests/lib/harness.sh asks bash three questions at every summary, and all three
 # can only ever say nothing. So each is handed the thing it watches for.
+#
+# Every fixture below is run with `"$BASH"` — the interpreter this suite is
+# itself running under — and not with a bare `bash`, which is whichever one is
+# first on PATH. That is the same reason `bash_defines_in` and
+# `abort_guard_survives` already do it, applied to the rest of the file: with a
+# bare `bash` these controls ran under 5.3.15 whichever shell drove the suite,
+# so "the abort guard fires on both shells" was a claim about one of them and a
+# 3.2-only fail-open in any of these three guards had no control that could
+# reach it. Driven under 3.2.57 for the first time, all nine pass — including
+# `declare -F` under `extdebug` naming the file that defined a function, which
+# every one of the shadowing checks rests on.
 shadow_after_load="$fixtures/shadows-after-loading.sh"
 cat > "$shadow_after_load" <<'EOF'
 #!/usr/bin/env bash
@@ -886,7 +897,7 @@ harness_summary
 EOF
 shadow_out="$harness_scratch/shadows-after-loading.out"
 shadow_code=0
-HARNESS_LIB="$PWD/$HARNESS" bash "$shadow_after_load" > "$shadow_out" 2>&1 \
+HARNESS_LIB="$PWD/$HARNESS" "$BASH" "$shadow_after_load" > "$shadow_out" 2>&1 \
   || shadow_code=$?
 assert "a suite that redefines a harness name after loading is told whose copy is live" \
   grep -q 'is running a private copy of the harness' "$shadow_out"
@@ -917,7 +928,7 @@ EOF
 census_out="$harness_scratch/census.out"
 census_code=0
 HARNESS_LIB="$PWD/$HARNESS" CRIPPLED_AUDIT="$crippled_audit" \
-  bash "$census_fixture" > "$census_out" 2>&1 || census_code=$?
+  "$BASH" "$census_fixture" > "$census_out" 2>&1 || census_code=$?
 assert "a suite that ran an assertion the reader never examined says which line" \
   grep -q 'ran an assertion at a line the audit never examined' "$census_out"
 assert "a suite that ran an assertion the reader never examined fails" \
@@ -927,7 +938,7 @@ assert "a suite that ran an assertion the reader never examined fails" \
 census_ok_out="$harness_scratch/census-ok.out"
 census_ok_code=0
 HARNESS_LIB="$PWD/$HARNESS" CRIPPLED_AUDIT="$PWD/$AUDIT" \
-  bash "$census_fixture" > "$census_ok_out" 2>&1 || census_ok_code=$?
+  "$BASH" "$census_fixture" > "$census_ok_out" 2>&1 || census_ok_code=$?
 assert "the same fixture against the real audit passes, so the census refuses the crippling" \
   test "$census_ok_code" -eq 0
 
@@ -951,7 +962,7 @@ EOF
 smuggle_out="$harness_scratch/smuggled.out"
 smuggle_code=0
 HARNESS_LIB="$PWD/$HARNESS" SMUGGLED_LIB="$smuggled_lib" \
-  bash "$smuggle_fixture" > "$smuggle_out" 2>&1 || smuggle_code=$?
+  "$BASH" "$smuggle_fixture" > "$smuggle_out" 2>&1 || smuggle_code=$?
 assert "a suite running code the audit never read is told which file" \
   grep -q 'running code from a file the assertion audit never read' "$smuggle_out"
 assert "a suite running code the audit never read fails" \
@@ -997,7 +1008,7 @@ EOF
 
 failing_out="$harness_scratch/one-failure.out"
 failing_code=0
-HARNESS_LIB="$PWD/$HARNESS" bash "$fixtures/one-failure.sh" > "$failing_out" 2>&1 \
+HARNESS_LIB="$PWD/$HARNESS" "$BASH" "$fixtures/one-failure.sh" > "$failing_out" 2>&1 \
   || failing_code=$?
 
 assert "a failing check prints FAIL against its own label" \
@@ -1021,7 +1032,7 @@ EOF
 
 abort_out="$harness_scratch/aborts.out"
 abort_code=0
-HARNESS_LIB="$PWD/$HARNESS" bash "$fixtures/aborts.sh" > "$abort_out" 2>&1 \
+HARNESS_LIB="$PWD/$HARNESS" "$BASH" "$fixtures/aborts.sh" > "$abort_out" 2>&1 \
   || abort_code=$?
 
 assert "a suite that dies before its summary says it aborted" \
@@ -1061,7 +1072,7 @@ refuse_out="$harness_scratch/refuses.out"
 refuse_code=0
 side_effect="$harness_scratch/the-step-the-precondition-guards"
 HARNESS_LIB="$PWD/$HARNESS" SIDE_EFFECT="$side_effect" \
-  bash "$fixtures/refuses.sh" > "$refuse_out" 2>&1 || refuse_code=$?
+  "$BASH" "$fixtures/refuses.sh" > "$refuse_out" 2>&1 || refuse_code=$?
 
 assert "a failed precondition prints FAIL against its own label" \
   grep -q '^FAIL: control: a precondition the repository fails$' "$refuse_out"
@@ -1090,7 +1101,7 @@ EOF
 
 met_out="$harness_scratch/requires-met.out"
 met_code=0
-HARNESS_LIB="$PWD/$HARNESS" bash "$fixtures/requires-met.sh" > "$met_out" 2>&1 \
+HARNESS_LIB="$PWD/$HARNESS" "$BASH" "$fixtures/requires-met.sh" > "$met_out" 2>&1 \
   || met_code=$?
 
 assert "a met precondition lets the suite run on" \
@@ -1119,7 +1130,7 @@ EOF
 
 stuck_out="$harness_scratch/cleanup-fails.out"
 stuck_code=0
-HARNESS_LIB="$PWD/$HARNESS" bash "$fixtures/cleanup-fails.sh" > "$stuck_out" 2>&1 \
+HARNESS_LIB="$PWD/$HARNESS" "$BASH" "$fixtures/cleanup-fails.sh" > "$stuck_out" 2>&1 \
   || stuck_code=$?
 
 assert "the abort diagnostic survives a cleanup step that fails" \
