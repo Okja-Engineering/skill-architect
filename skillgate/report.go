@@ -112,6 +112,16 @@ type SkippedCheck struct {
 // instead of the harness's read path. Present on every report.
 const CheckPreactivationBashLeg = "preactivation-bash-leg"
 
+// The two registered checks that own rules but are not tripwire groups. Named
+// constants because the name is load-bearing twice over: it is what
+// --skip-checks matches and what checks_skipped reports, and it is the check a
+// CatalogRule names. A literal repeated across gate.go and the catalog is a
+// literal that can be renamed in one of them.
+const (
+	CheckICM                = "icm"
+	CheckHarnessFrontmatter = "harness-frontmatter"
+)
+
 // Provenance records where the bundle came from (G0). For a local directory
 // only Path is set. For a fetched URL, the quarantine fields are populated.
 // PackageManifests lists the manifest files found in the package — the

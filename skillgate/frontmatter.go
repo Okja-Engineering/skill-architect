@@ -158,6 +158,18 @@ func validSkillName(n string) bool { return reSkillName.MatchString(n) }
 // downgrade of the T013 boundary check.
 var ccOnlyFrontmatterKeys = []string{"allowed-tools", "disable-model-invocation", "context", "when_to_use"}
 
+// ruleH002 — the per-harness frontmatter leg. Declared here rather than in a
+// tripwire group because its finding is built inline against the parsed
+// frontmatter; the check below reads its identity out of this declaration, so
+// the severity is stated once and RuleCatalog publishes the same one.
+var ruleH002 = CatalogRule{
+	ID: "SK-H002", Severity: SeverityInfo, Quality: "maintainability",
+	Check: CheckHarnessFrontmatter,
+}
+
+// harnessRules is the pack, as RuleCatalog reads it.
+var harnessRules = []CatalogRule{ruleH002}
+
 // harnessFrontmatterCheck is the per-harness validity dimension's slice-1
 // leg (Pack D's SK-H002): informational findings only.
 func harnessFrontmatterCheck(l *Ledger, _ *Target) []Finding {
@@ -175,7 +187,7 @@ func harnessFrontmatterCheck(l *Ledger, _ *Target) []Finding {
 		}
 		if len(ignored) > 0 {
 			out = append(out, Finding{
-				RuleID: "SK-H002", Severity: SeverityInfo, Quality: "maintainability",
+				RuleID: ruleH002.ID, Severity: ruleH002.Severity, Quality: ruleH002.Quality,
 				Message: "frontmatter keys valid for Claude Code, silently ignored by Cursor",
 				File:    sf.Entry.Path, Evidence: strings.Join(ignored, ", "),
 				EffortMinutes: 0, Source: "skillgate",

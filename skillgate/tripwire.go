@@ -6,10 +6,14 @@ import (
 	"strings"
 )
 
-// Pack B — the tripwire floor. SK-T001..T020, hard-capped at 20 rules. These
-// are the checks that must block a dangerous bundle with no Python and no
-// Rust present; deeper coverage (SkillSpector's 113 IDs, agnix's 455) is
-// delegated to opt-in shell-outs that degrade to checks_skipped.
+// Pack B — the tripwire floor, hard-capped at 20 rules. These are the checks
+// that must block a dangerous bundle with no Python and no Rust present;
+// deeper coverage (SkillSpector's 113 IDs, agnix's 455) is delegated to
+// opt-in shell-outs that degrade to checks_skipped.
+//
+// Which rules those are is tripwireGroups below, and RuleCatalog() reads it —
+// not a range written out here, which is the comment that goes on naming a
+// rule after it is gone. The cap is enforced in catalog_test.go.
 //
 // Every rule ships two tests: fires on a real malicious fixture and does not
 // fire on the clean corpus.
