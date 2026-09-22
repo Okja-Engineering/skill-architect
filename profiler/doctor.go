@@ -50,7 +50,6 @@ package profiler
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"time"
 )
@@ -199,10 +198,10 @@ func DetectEnvironment(q EnvironmentQuery) EnvironmentReport {
 	spoolDir := q.SpoolDir
 	if spoolDir == "" {
 		// The writer's own layout, relative to the home being asked about.
-		// DefaultSpoolDir answers for the real user's home and this function
-		// never asks about that one, so the join is here and the two are held
-		// to each other by a test rather than by this comment.
-		spoolDir = filepath.Join(q.Home, ".skill-architect", "spool")
+		// SpoolDirIn is that layout, and it is called rather than repeated:
+		// this join used to be spelled out here and held to the writer's by a
+		// comment, and a comment is not a mechanism.
+		spoolDir = SpoolDirIn(q.Home)
 	}
 
 	return EnvironmentReport{

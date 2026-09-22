@@ -47,21 +47,70 @@ const (
 )
 
 // MetricSource identifies where a metric value came from.
+//
+// Two of these seven are produced by something in this build and five are not,
+// and the difference is written down rather than left to be discovered. A
+// declared source is a claim — a reader who sees `sqlite` in this enumeration
+// concludes some capture somewhere reads a SQLite database — and until the
+// release gate that claim was made five times **silently**, by declaration
+// alone, with no comment on any of them. `SourceServerAPI`'s string is even one
+// of the three `doctor` tiers this release removed for advertising a surface
+// nothing reads, and cmd/main_test.go asserts the doctor report may not contain
+// it "which no capture in this release delivers" — while it stood here as a
+// valid profile source 1,600 lines away.
+//
+// So every source that nothing produces carries the sentence in
+// reservedSourceNote, and adapter_contract_test.go reads this block with the
+// AST and holds the two sets to each other: a source with no production
+// reference and no note turns it red, and so does a note on a source that is
+// produced. The tier vocabulary next door has had that guard since this
+// release; this one did not.
 type MetricSource string
 
+// The sentence a MetricSource nothing in this build produces has to carry, so
+// the reservation is a statement in the file rather than something a reader has
+// to infer from the absence of callers. Exported nowhere: it is the text the
+// exhaustiveness guard greps for, and adapter_contract_test.go names it.
+const reservedSourceNote = "No capture in this release produces it."
+
 const (
-	SourceOtel  MetricSource = "otel"
+	// SourceOtel is a value read out of an OTLP/JSON export. The Claude Code
+	// adapter is the only thing that produces it.
+	SourceOtel MetricSource = "otel"
+
+	// SourceHooks would mark a value measured from hook payloads.
+	// No capture in this release produces it. The hook spool is capture only
+	// and no adapter reads it back into a profile.
 	SourceHooks MetricSource = "hooks"
+
 	// SourceHooksEstimated marks a value derived by estimation over hook
 	// payloads — chars/4 over what a hook carried — and never a measured or
 	// billed count. It is a distinct source rather than a note on the reason
 	// so that a reader grouping profiles by source cannot pool an estimate
 	// with a measurement.
+	// No capture in this release produces it. The estimate has a constructor
+	// and a schema key, and nothing that fills them.
 	SourceHooksEstimated MetricSource = "hooks_estimated"
-	SourceSessionData    MetricSource = "session_data"
-	SourceServerAPI      MetricSource = "server_api"
-	SourceSQLite         MetricSource = "sqlite"
-	SourceNone           MetricSource = "none"
+
+	// SourceSessionData would mark a value read from a harness's own session
+	// transcript.
+	// No capture in this release produces it. The three removed adapter drafts
+	// advertised it, which is part of why they were removed.
+	SourceSessionData MetricSource = "session_data"
+
+	// SourceServerAPI would mark a value fetched from a vendor's admin API.
+	// No capture in this release produces it. There is no API client in this
+	// repository, and `server_api` is one of the three doctor tiers this
+	// release removed for exactly that reason.
+	SourceServerAPI MetricSource = "server_api"
+
+	// SourceSQLite would mark a value read out of a harness's local database.
+	// No capture in this release produces it.
+	SourceSQLite MetricSource = "sqlite"
+
+	// SourceNone is an adapter saying it has no source for a signal. Produced
+	// by every adapter's probe.
+	SourceNone MetricSource = "none"
 )
 
 // CapabilityReport declares what an adapter can produce after probing its environment.
@@ -77,12 +126,19 @@ type CapabilityReport struct {
 // ExportFile and APIKey are the input contract for adapters that do not exist
 // yet, and no shipped adapter reads either: the Claude Code adapter refuses an
 // ExportFile rather than ignoring it, and there is no CLI flag for an API key
-// at all. They are kept because they are the shape the Devin and Cursor
-// adapters need in 0.5.0, and removing them now would be a breaking change to
-// this struct twice over.
+// at all. They are kept because they are the shape a Devin or Cursor adapter
+// would need, and removing them now would be a breaking change to this struct
+// twice over.
+//
+// **0.5.0 ships none of those adapters** — it removed three drafts of them
+// rather than shipping them broken — so these two fields are reserved and
+// nothing in this release reads either one. No release is named as the one that
+// will read them, on purpose: this comment used to name the release being cut,
+// which read as a schedule and became a false claim the moment that release was
+// the one shipping.
 type CaptureOpts struct {
-	ExportFile   string `json:"export_file,omitempty"` // ATIF export or session transcript path; reserved for 0.5.0
-	APIKey       string `json:"api_key,omitempty"`     // server API auth; reserved for the Devin and Cursor adapters in 0.5.0
+	ExportFile   string `json:"export_file,omitempty"` // ATIF export or session transcript path; reserved, read by nothing in this release
+	APIKey       string `json:"api_key,omitempty"`     // server API auth for a Devin or Cursor adapter; reserved, read by nothing in this release
 	SnapshotHash string `json:"snapshot_hash"`         // git SHA or content hash of the skill being profiled
 	SkillDir     string `json:"skill_dir"`             // path to the skill being profiled
 }

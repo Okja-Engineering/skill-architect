@@ -279,6 +279,20 @@ func AppendSpool(spoolDir string, ev SpoolEvent) error {
 	return err
 }
 
+// SpoolDirIn is the spool directory under a given home: the writer's own
+// layout, in one place.
+//
+// It is one function because the join had been written out three times — here,
+// in doctor's DetectEnvironment, and implicitly in the CLI — and the three were
+// held to each other by a comment. What "the spool for this home" means has to
+// be one answer or `install`, `ingest` and `doctor` end up describing different
+// directories, which is exactly what happened: the command `install` registered
+// carried no spool at all, so it resolved one from whatever `$HOME` was when a
+// hook fired while `doctor --home X` reported X's.
+func SpoolDirIn(home string) string {
+	return filepath.Join(home, ".skill-architect", "spool")
+}
+
 // DefaultSpoolDir is ~/.skill-architect/spool.
 //
 // This is the only function in the package that reads the real home directory,
@@ -290,7 +304,7 @@ func DefaultSpoolDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".skill-architect", "spool"), nil
+	return SpoolDirIn(home), nil
 }
 
 // getString reads a string field out of a decoded JSON object, answering ""

@@ -577,6 +577,17 @@ assert "the prefix-sibling destination was written" test -f "$prefix_out"
 # FAIL and installed anyway: the status is a refusal, nothing was written at the
 # destination, and nothing was left in the target directory either. A drafter
 # that said no and wrote anyway would pass the first.
+#
+# It reads the status and not merely `!= 0`, and the difference is a whole
+# defect. While this asked only for nonzero, every refusal below was satisfied
+# by exit 3 — *"the destination could not be resolved, so where the draft would
+# be written is unknown"* — which is a different answer from the one being
+# asserted: it says no verdict was reached, not that the caller named a
+# destination the drafter will not write. The resolution step was emitting it for
+# any destination that merely already existed as a regular file, and two of the
+# refusals here were passing on it while the rules they name never ran. The
+# status registry the header publishes makes 1 a usage error, so a refusal of
+# the caller's destination is 1 and nothing else.
 refused_out() {
   local home="$1"
   local target="$2"
@@ -584,6 +595,11 @@ refused_out() {
   draft_run_home "$home" -t "$target" -o "$dest"
   if [ "$code" -eq 0 ]; then
     printf 'the drafter accepted a destination it must refuse: %s\n' "$dest" >&2
+    return 1
+  fi
+  if [ "$code" -ne 1 ]; then
+    printf 'the drafter refused %s with exit %s; a refusal of the destination is exit 1, and %s means no verdict was reached:\n%s\n' \
+      "$dest" "$code" "$code" "$errout" >&2
     return 1
   fi
   return 0
@@ -614,6 +630,19 @@ assert "a destination named directly inside a live config directory is refused" 
   refused_out "$out_home" "$direct_target" "$out_home/.claude/skills/direct.md"
 assert "the directly named config destination was not written" \
   test ! -f "$out_home/.claude/skills/direct.md"
+
+# The same rule at the root the list did not have. `$HOME/.agents/skills/` is
+# not a harness's own configuration directory — it is the shared one Codex and
+# Cursor both read — which is exactly why the list built from harness names
+# missed it, and why the rationale is about what an agent reads rather than
+# about whose directory it is. Driven behaviourally as well as compared as a
+# list, because the list comparison would pass over a root the loop never uses.
+mkdir -p "$out_home/.agents/skills"
+agents_target="$(target_from tests/fixtures/f01/valid-full agents-config-out)"
+assert "a destination inside the shared agent skills directory is refused" \
+  refused_out "$out_home" "$agents_target" "$out_home/.agents/skills/shared.md"
+assert "the shared agent skills destination was not written" \
+  test ! -f "$out_home/.agents/skills/shared.md"
 
 # (iii) A `SKILL.md`. This is the one refusal that is not about the caller's
 # machine but about this skill's own stated constraint — "Do not overwrite the
@@ -685,6 +714,38 @@ if [ "$(protected_roots_in_script)" != "$(documented_protected_roots)" ]; then
   echo "  documented   : $(documented_protected_roots | tr '\n' ' ')"
 fi
 
+# And the side that was missing, which is the one the rationale actually rests
+# on. The refusal exists because "an agent reads its skills directory as
+# skills", so the list has to be the set of directories *this repository tells a
+# reader an agent reads skills from* — and the document that tells them that is
+# the README, not the SKILL.md. Held against the SKILL.md alone, the two lists
+# agreed with each other and both disagreed with the README: `$HOME/.agents/`
+# is documented there as a global skills directory for Codex and for Cursor, and
+# it was not protected. Reproduced — rc=0, draft written into
+# `$HOME/.agents/skills/`.
+#
+# Read off the README as a path shape rather than out of a table, because the
+# table is prose and the paths are spread through it: every `$HOME`-relative
+# path the document spells with a `skills` component in it, reduced to its first
+# component. That is deliberately over-inclusive — `~/.devin/skills/` appears
+# there only to say it is *not* the place, and this counts it anyway — and
+# over-inclusive is the safe direction for a refusal list: protecting a
+# directory nobody reads costs a destination, and not protecting one costs a
+# document loaded as instructions.
+readme_skills_roots() {
+  { grep -oE '~/\.[a-z][a-z-]*(/[a-z][a-z-]*)*/skills' README.md || true; } \
+    | sed -e 's|^~/||' -e 's|/.*$||' | sort -u
+}
+
+assert "the README names a \$HOME-relative skills directory at all, so the comparison has two sides" \
+  test -n "$(readme_skills_roots)"
+assert "the drafter protects every directory the README documents an agent reading skills from, and none it does not" \
+  test "$(protected_roots_in_script)" = "$(readme_skills_roots)"
+if [ "$(protected_roots_in_script)" != "$(readme_skills_roots)" ]; then
+  echo "  in the script  : $(protected_roots_in_script | tr '\n' ' ')"
+  echo "  in the README  : $(readme_skills_roots | tr '\n' ' ')"
+fi
+
 # And the premise that comparison rests on: the roots are `$HOME`-relative, so
 # the refusals above were decided against the redirected home this suite made
 # and not against the developer's own. A drafter that had resolved them from a
@@ -692,7 +753,7 @@ fi
 # that wrote it and none on anybody else's — and would be reading a live
 # configuration directory to do it.
 assert "the protected directories are anchored on \$HOME, not on a literal home path" \
-  test -n "$(grep -F 'path_resolved "$HOME/$root"' "$DRAFTER" || true)"
+  test -n "$(grep -F 'path_target_is_inside "$spelled" "$HOME/$root" or-equal' "$DRAFTER" || true)"
 
 # Every refusal above is a usage error — the caller named a destination the
 # drafter will not write — so it takes the status this script's header registers
@@ -701,6 +762,323 @@ assert "the protected directories are anchored on \$HOME, not on a literal home 
 # up would pass either way.
 assert "a refused destination exits 1, the status the header registers for a usage error" \
   test "$code" -eq 1
+
+# --- the bound, against where a write on that spelling actually lands ---------
+#
+# Everything above names a destination somebody thought of, and that is how the
+# bound came to be defeatable purely by spelling — twice. The first round of it
+# was a textual `..` fold standing in front of symlink resolution. The second
+# round was the repair for the first: it compared the *bytes of a resolved name*
+# against the bytes of a name built for the root, and a name is not an identity.
+# `$HOME/.CLAUDE/skills/x` and an NFD spelling of an NFC home both resolved to a
+# string that did not match and landed in the live directory anyway, for all six
+# roots; and the resolved name came back through a command substitution, which
+# strips trailing newlines, so a destination spelled with one was *decided* on
+# one path and *written* on another.
+#
+# So no case below names an expected verdict — and, the repair to the test this
+# time, no case below is written out by hand either. The previous round's table
+# was twelve spellings, which is twelve of the spellings its author thought of:
+# two whole classes of escape sat outside it, and inserting one row into it
+# turned it red. A table cannot be the completeness argument, for the same
+# reason a denylist cannot: it is complete only about what somebody enumerated.
+#
+# What is enumerated here instead is *the protected roots the script itself
+# declares* and *a set of mutation operators*, and the cases are their product.
+# The roots come from `protected_roots_in_script`, which reads the drafter's own
+# `protected_home_dirs` line, so a seventh root is covered the moment it is
+# added and without anybody remembering that this file exists. The operators are
+# the mechanisms by which a name can name something other than what it appears
+# to — case, Unicode normalisation, a trailing byte, a link at the leaf, a link
+# mid-path, a dangling link, a `..` crossing any of them — so a newly understood
+# mechanism is one line here and is then applied to every root.
+#
+# Each generated spelling is performed twice over two trees built by one
+# function. Once as a plain redirect, so the filesystem says where a write on
+# that exact spelling lands; once through the drafter. The oracle is the kernel,
+# and it is an *identity* oracle rather than a name one: the object the write
+# created is compared with the root by `-ef` and searched for under the root by
+# content, so neither a link hanging out of the tree nor a spelling of the root
+# can fool it.
+#
+# What is asserted is the safety direction without qualification — a spelling
+# whose bytes land inside a protected directory is refused — and the other
+# direction up to the three refusals this script publishes: a destination that
+# lands outside is accepted unless it is refused as a symbolic link, as a
+# directory or as a SKILL.md, and a refusal that names none of those is a
+# failure. That is what stops the repair from being "refuse everything" while
+# still allowing the rules `-o` documents. The leaf-symlink rule refuses every
+# leaf link before containment is ever asked, so the proof that the walk
+# *follows* a leaf link lives where there is no such rule in front of it: in
+# tests/test_install.sh, over the copy of the walk this file's own copy is
+# asserted to be byte-identical to.
+#
+# A spelling the kernel refuses to write on at all is recorded and not asserted:
+# no object was created or truncated, so there is no landing place for a verdict
+# to agree or disagree with. The count is asserted instead, because a generator
+# whose cases had all quietly become unperformable would otherwise look exactly
+# like a generator that passed.
+containment_tree() {
+  local h="$1"
+  local r="$2"
+  rm -rf "$h"
+  mkdir -p "$h/$r/skills" "$h/${r}-notes" "$h/${r}X" "$h/plain" "$h/elsewhere"
+  # Beside the protected directory, pointing into it — and a chain of two, so
+  # one hop of resolution is not mistaken for all of it.
+  ln -s "$h/$r/skills" "$h/aside"
+  ln -s "$h/aside" "$h/chain"
+  # Inside the protected directory, pointing out of it. Once with an absolute
+  # target and once with a relative one, because a relative target is resolved
+  # against the link's own directory and that is a second thing to get wrong.
+  ln -s "$h/elsewhere" "$h/$r/away"
+  ln -s "../elsewhere" "$h/$r/rel"
+  # At the leaf. `: > "$dest"` follows a leaf symlink, so each of these is a
+  # write into the protected directory whatever the destination is called.
+  : > "$h/$r/skills/leaf.md"
+  ln -s "$h/$r/skills/leaf.md" "$h/plain/leaflink"
+  ln -s "$h/$r/skills/dangles.md" "$h/plain/dangling"
+  # The same link with a trailing newline in *its own* name, which is the
+  # spelling the previous round's barrier decided on one path and wrote on
+  # another: the resolved name came back through `$( )`, which strips the
+  # newline, so the verdict was reached for `nl-link` and the redirect was
+  # performed on `nl-link` followed by a newline — a different entry, and this
+  # one is a link into the protected directory.
+  ln -s "$h/$r/skills/nl-leaf.md" "$h/plain/nl-link"$'\n'
+  # And the mirror of them, pointing out, so the repair cannot be "follow the
+  # leaf and refuse".
+  : > "$h/elsewhere/leaf.md"
+  ln -s "$h/elsewhere/leaf.md" "$h/$r/skills/outlink"
+  # A directory link in front of the leaf links, to reach the same two through
+  # one more hop.
+  ln -s "$h/plain" "$h/plainlink"
+  # A link whose *target* ends with a newline, which is a different defect from
+  # a link whose *name* does. `twin` is a plain file outside the protected
+  # directory; `twin` followed by a newline is a link to a file inside it. A
+  # link whose target is the second of those, read back through a command
+  # substitution, comes back naming the first — so the decision would be taken
+  # about a file outside while the redirect truncates one inside.
+  : > "$h/plain/twin"
+  ln -s "$h/$r/skills/leaf.md" "$h/plain/twin"$'\n'
+  ln -s "$h/plain/twin"$'\n' "$h/plain/via-nl-target"
+}
+
+# <home> <root> <destination> — inside, outside, or nowrite: where a plain
+# redirect on this exact spelling put its bytes, answered by identity and by
+# content and never by comparing the destination's name with the root's.
+containment_landed() {
+  local h="$1" r="$2" dest="$3" marker
+  marker="where-did-this-land-$$-${RANDOM}"
+  if ! printf '%s\n' "$marker" > "$dest" 2>/dev/null; then
+    printf 'nowrite\n'
+    return 0
+  fi
+  if [ -e "$h/$r" ] && [ "$dest" -ef "$h/$r" ]; then
+    printf 'inside\n'
+    return 0
+  fi
+  # `find` does not follow the links this tree hangs out of the protected
+  # directory, so a file it reports under the root really is under it.
+  if [ -d "$h/$r" ] &&
+    [ -n "$(find "$h/$r" -type f -exec grep -lF -- "$marker" {} + 2>/dev/null || true)" ]; then
+    printf 'inside\n'
+  else
+    printf 'outside\n'
+  fi
+}
+
+# <root> <destination template> — the drafter's verdict for this spelling is the
+# answer the filesystem gives for it. `@H` stands for the home the tree is built
+# under, so one template can be instantiated in two trees; `@N` for that same
+# home spelled NFD, which is the same directory under a different name; and `@R`
+# for the protected root being generated over.
+containment_agrees() {
+  local r="$1"
+  local template="${2//@R/$1}"
+  local oracle_home="$work/bound-oracle/$bound_home_nfc"
+  local drafter_home="$work/bound-drafter/$bound_home_nfc"
+  local oracle_dest drafter_dest landed verdict
+  containment_tree "$oracle_home" "$r"
+  containment_tree "$drafter_home" "$r"
+  oracle_dest="${template//@H/$oracle_home}"
+  oracle_dest="${oracle_dest//@N/$work/bound-oracle/$bound_home_nfd}"
+  drafter_dest="${template//@H/$drafter_home}"
+  drafter_dest="${drafter_dest//@N/$work/bound-drafter/$bound_home_nfd}"
+
+  bound_cases=$((bound_cases + 1))
+  landed="$(containment_landed "$oracle_home" "$r" "$oracle_dest")"
+  if [ "$landed" = nowrite ]; then
+    bound_unperformable=$((bound_unperformable + 1))
+    return 0
+  fi
+
+  draft_run_home "$drafter_home" -t "$bound_target" -o "$drafter_dest"
+  if [ "$code" -eq 0 ]; then verdict=accepted; else verdict=refused; fi
+
+  if [ "$landed" = inside ]; then
+    if [ "$verdict" = refused ]; then
+      bound_refused_inside=$((bound_refused_inside + 1))
+      return 0
+    fi
+    printf 'the destination %s: a write on that spelling lands inside the protected directory, and the drafter accepted it (exit %s)\n%s\n' \
+      "$template" "$code" "$errout" >&2
+    return 1
+  fi
+  if [ "$verdict" = accepted ]; then
+    bound_accepted_outside=$((bound_accepted_outside + 1))
+    return 0
+  fi
+  case "$errout" in
+    *'is a symbolic link'* | *'is a directory, and the draft is a file'* | *'which is a SKILL.md'*)
+      bound_refused_by_rule=$((bound_refused_by_rule + 1))
+      return 0
+      ;;
+  esac
+  printf 'the destination %s: a write on that spelling lands outside every protected directory, and the drafter refused it (exit %s) for a reason that is not one of the three refusals it publishes\n%s\n' \
+    "$template" "$code" "$errout" >&2
+  return 1
+}
+
+# The operators. One line per mechanism by which a spelling can name an object
+# other than the one it appears to name, each applied to every root. `@R` is the
+# root, so the case set grows with the root list and not with this list.
+#
+# Deliberately in both directions: the ones that resolve *into* the protected
+# directory while their spelling says otherwise are the hole, and the ones that
+# resolve *out* of it while their spelling says inside are the false refusal,
+# which costs a caller a legitimate destination. A repair that closed only the
+# first would pass half of this.
+bound_operators=(
+  '@H/@R/skills/exact.md'
+  '@H/@R'
+  '@H/@R/skills/UPPER-LEAF.md'
+  '@H/plain/plain.md'
+  '@H/@RX/sibling.md'
+  '@H/@R-notes/sibling.md'
+  '@H/aside/mid-link.md'
+  '@H/chain/mid-chain.md'
+  '@H/aside/../climb-out-of-link.md'
+  '@H/chain/../climb-out-of-chain.md'
+  '@H/aside/../../@R/skills/climb-back-in.md'
+  '@H/@R/away/out-link.md'
+  '@H/@R/away/../climb-out.md'
+  '@H/@R/rel/../climb-out-rel.md'
+  '@H/plain/leaflink'
+  '@H/plain/dangling'
+  '@H/plainlink/leaflink'
+  '@H/@R/skills/outlink'
+  '@H/plain/../@R/skills/through-dotdot.md'
+  '@H/@R/skills/../../plain/out-through-dotdot.md'
+  '@H/@R/nope/../tail-fold.md'
+  '@H/@R/nope/../../plain/tail-climb.md'
+  '@H//@R///skills//doubled.md'
+  '@H/./@R/./skills/./dots.md'
+  '@N/@R/skills/nfd-home.md'
+  '@N/plain/nfd-home-outside.md'
+  '@N/aside/nfd-home-mid-link.md'
+  '@H/@R/skills/leaf.md/through-a-file.md'
+  '@H/elsewhere/leaf.md/through-a-file.md'
+  '@H/plain/via-nl-target'
+)
+
+# The mutations that are about the *bytes* of the spelling rather than its
+# shape. These are the ones the previous round's table had no row for and could
+# not have had one for: the escape is not a path shape, it is the difference
+# between the name a barrier compares and the name the kernel writes on. Written
+# with `$'…'` so the byte is in the array and not in a format string — a
+# trailing newline put through `$(printf …)` would be stripped by the very
+# mechanism being tested.
+bound_byte_operators=(
+  '@H/@R/skills/trailing-nl.md'$'\n'
+  '@H/plain/trailing-nl.md'$'\n'
+  '@H/@R/skills/trailing-tab.md'$'\t'
+  '@H/plain/trailing-tab.md'$'\t'
+  '@H/@R/skills/trailing-space.md '
+  '@H/plain/trailing-space.md '
+  '@H/@R/skills/two-newlines.md'$'\n\n'
+  '@H/plain/nl-link'$'\n'
+  '@H/plainlink/nl-link'$'\n'
+)
+
+bound_cases=0
+bound_unperformable=0
+bound_refused_inside=0
+bound_accepted_outside=0
+bound_refused_by_rule=0
+bound_home_nfc=$'caf\xc3\xa9/h'
+bound_home_nfd=$'cafe\xcc\x81/h'
+bound_target="$(target_from tests/fixtures/f01/valid-full bound-target)"
+
+for bound_root in $(protected_roots_in_script); do
+  bound_upper="$(printf '%s' "$bound_root" | tr 'a-z' 'A-Z')"
+  for bound_case in "${bound_operators[@]}" "${bound_byte_operators[@]}"; do
+    assert "the drafter's verdict for $(printf '%q' "${bound_case//@R/$bound_root}") is where a write on it lands" \
+      containment_agrees "$bound_root" "$bound_case"
+  done
+  # The root component spelled in a case the volume folds. Live for all six
+  # roots at the head this replaces: the exact spelling was refused and the
+  # capitalised one was accepted, and the draft landed in the live directory.
+  for bound_case in '@H/@U/skills/case-folded.md' '@H/@U/skills/../@U/skills/case-folded-twice.md' '@N/@U/skills/nfd-and-case-folded.md'; do
+    assert "the drafter's verdict for ${bound_case//@U/$bound_upper} is where a write on it lands" \
+      containment_agrees "$bound_root" "${bound_case//@U/$bound_upper}"
+  done
+done
+
+# A generated case set that had quietly become unperformable would look exactly
+# like one that passed — every case would return 0 having asserted nothing — so
+# the sweep reports what it actually did and both directions are asserted to
+# have happened.
+#
+# Both directions and not a proportion of unperformable cases, deliberately: the
+# proportion is different on a case-sensitive filesystem, where a folded
+# spelling of a protected root names a directory that is not there and this
+# script, which never creates a parent, cannot write to it. A bound that has to
+# be retuned per platform is a bound nobody trusts. What has to be true
+# everywhere is that the sweep really saw a write land inside a protected
+# directory and really saw the drafter refuse it, and really saw one land outside
+# and really saw the drafter accept it.
+echo "  the generated bound drove $bound_cases spellings: $bound_unperformable unwritable, $bound_refused_inside refused for landing inside, $bound_accepted_outside accepted for landing outside, $bound_refused_by_rule refused by a published destination rule"
+assert "the generated bound generated a case set at all" \
+  test "$bound_cases" -gt 100
+assert "the generated bound saw a write land inside a protected directory and the drafter refuse it" \
+  test "$bound_refused_inside" -gt 0
+assert "the generated bound saw a write land outside every protected directory and the drafter accept it" \
+  test "$bound_accepted_outside" -gt 0
+
+# `-o` re-run over its own output. The flag exists so a draft can be kept
+# somewhere of the caller's choosing, and a caller who audits the same skill
+# twice writes to the same file twice — which the default destination does
+# happily, overwriting the previous `REWRITE-DRAFT.md`. While resolution
+# ended in `cd -P`, every destination that already existed as a regular file
+# came back unresolvable, so the second run exited 3 saying it could not tell
+# where the draft would go: an undocumented fifth refusal, and the one
+# destination the flag is most likely to be pointed at twice.
+idem_target="$(target_from tests/fixtures/f01/valid-full idempotent-out)"
+idem_out="$out_home/plain/idempotent.md"
+rm -f "$idem_out"
+draft_run_home "$out_home" -t "$idem_target" -o "$idem_out"
+assert "the first run to a fresh destination exits 0" test "$code" -eq 0
+idem_first="$work/idempotent-first"
+cp "$idem_out" "$idem_first"
+draft_run_home "$out_home" -t "$idem_target" -o "$idem_out"
+assert "-o re-run over its own output exits 0, as the default destination does" \
+  test "$code" -eq 0
+assert "-o re-run over its own output rewrote the draft rather than leaving the first one" \
+  test -f "$idem_out"
+assert "the re-run did not report that it could not tell where the draft would go" \
+  test -z "$(printf '%s\n' "$errout" | grep -F 'could not be resolved' || true)"
+
+# And the same property one step out: a destination that is somebody else's
+# existing file is a destination, not a path with no answer. The drafter
+# overwrites it, which is what `-o` promises — "anywhere else you can write, it
+# will write" — and the refusals are a short list rather than a sandbox.
+existing_target="$(target_from tests/fixtures/f01/valid-full existing-file-out)"
+existing_out="$out_home/plain/notes-of-mine.md"
+printf 'my own notes\n' > "$existing_out"
+draft_run_home "$out_home" -t "$existing_target" -o "$existing_out"
+assert "a destination that already exists as a regular file is written, not refused" \
+  test "$code" -eq 0
+assert "the draft replaced the file that was there" \
+  grep -q 'Rewrite draft' "$existing_out"
 
 # And the other half of the resolution rule, which is the one that cannot be
 # got at by choosing a better destination: **a path that cannot be resolved
@@ -1169,10 +1547,22 @@ fi
 
 # The three claims the document made that the script does not keep, each asked
 # of the artifact rather than of the prose. They are asserted as absences on
-# purpose: 0.4.3 corrects the description, and building the capability is
-# 0.5.0. When it is built these three go red, which is the point — they are
-# what will stop the document being left describing the old draft a second
-# time.
+# purpose: 0.4.3 corrected the description, and if the capability is ever built
+# these three go red, which is the point — they are what stops the document
+# being left describing the old draft a second time.
+#
+# This comment used to schedule the capability into the release now being cut,
+# which became a false statement about a shipped release: 0.5.0 did not build
+# it. It also contradicted the document it is written to hold.
+# `skills/skill-rewrite/SKILL.md`
+# states the same gap as a boundary rather than a schedule — "**What the drafter
+# does not do**, and what Stage 3 is therefore for … Scoring the dimensions and
+# turning them into fixes is Stage 1 and Stage 3 work, done by the reader" — and
+# the shipped document is the one that defines what this skill promises. Nothing
+# in the repository commits to moving that boundary: there is no open ledger row
+# for it, and the two places that scheduled it are 0.4.3's own text, which is
+# history. So this comment names no release. It says what is true of the
+# artifact and cites the sentence it is holding, which is what neither side did.
 assert "the draft does not carry the target's frontmatter, so the document must not promise it" \
   test -z "$(grep -m1 -F 'name: all-sections' "$no_templates_target/REWRITE-DRAFT.md" || true)"
 

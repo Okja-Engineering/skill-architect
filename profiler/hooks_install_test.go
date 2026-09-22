@@ -136,6 +136,165 @@ func TestInstall_IsIdempotent(t *testing.T) {
 	})
 }
 
+// TestInstall_WritesTheSchemaVersionCursorRequires is the assertion the
+// thirty-one hook tests around it did not contain.
+//
+// Cursor's configuration reference marks the top-level `version` **required**:
+// "Config schema version. Must be a positive integer (use 1)." Nothing here
+// wrote one, so a virgin install produced `{"hooks":{…}}` — a file that fails
+// the published schema, and whose most likely fate is to be ignored whole,
+// leaving the spool permanently empty while `doctor` reports all 21 events
+// registered.
+//
+// Why the suite did not catch it is the part worth keeping. `version` was
+// tested only as a field to *preserve*: every case that mentions it seeds a
+// value into a file that already exists and then checks it survived. Fixture
+// and emitter were written from the same document, so they agreed with each
+// other and both disagreed with it. So this asks the one question none of them
+// asked — what does a machine with no hooks.json end up with — and asks it of
+// the file on disk rather than of the result struct.
+//
+// The consequence is not measured here and is not claimed: no Cursor was
+// installed on the machine this was written on, so what a real Cursor does with
+// a file missing a required field is inference from the schema. The missing
+// field is a fact.
+func TestInstall_WritesTheSchemaVersionCursorRequires(t *testing.T) {
+	home := homesafe.SandboxHome(t)
+
+	if _, err := InstallHooks(home, testHookCommand); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	root := hooksRootOnDisk(t, home)
+	raw, present := root["version"]
+	if !present {
+		t.Fatalf("a virgin install wrote no top-level `version`, which Cursor documents as "+
+			"required: %#v", root)
+	}
+	n, ok := raw.(float64)
+	if !ok {
+		t.Fatalf("`version` = %#v, which is not a number", raw)
+	}
+	if n <= 0 || n != float64(int64(n)) {
+		t.Errorf("`version` = %v, want a positive integer", n)
+	}
+
+	// Idempotency is the property this must not have cost. A second run has
+	// nothing to add and must therefore write nothing at all — no file, no
+	// backup — which is what says the version is written as part of the merge
+	// and not unconditionally on every pass.
+	t.Run("a second run adds nothing and writes nothing", func(t *testing.T) {
+		before := fileBytes(t, hooksJSONPath(home))
+		res, err := InstallHooks(home, testHookCommand)
+		if err != nil {
+			t.Fatalf("InstallHooks: %v", err)
+		}
+		if res.EventsRegistered != 0 || res.SchemaVersionAdded {
+			t.Errorf("the second run reported %d events registered and schema_version_added=%v, want 0 and false",
+				res.EventsRegistered, res.SchemaVersionAdded)
+		}
+		if res.Backup != "" {
+			t.Errorf("Backup = %q on a run that changed nothing", res.Backup)
+		}
+		if after := fileBytes(t, hooksJSONPath(home)); after != before {
+			t.Errorf("the file changed on a run that registered nothing:\nbefore: %s\nafter:  %s", before, after)
+		}
+	})
+}
+
+// TestInstall_RepairsAFileRegisteredWithoutAVersion is the machine every build
+// before this one left behind: our entries are in the file and the required
+// field is not, so the registration is there and inert. Re-running the install
+// is the only instruction a user has, and it has to be the one that fixes it.
+//
+// The field is added by *install* and not inside the shared save path, because
+// uninstall goes through the same save and adding a field there would have
+// uninstall writing a value into a file it is meant to be leaving.
+func TestInstall_RepairsAFileRegisteredWithoutAVersion(t *testing.T) {
+	home := homesafe.SandboxHome(t)
+	registered := map[string]any{"hooks": map[string]any{}}
+	hooks := registered["hooks"].(map[string]any)
+	for _, event := range CursorHookEvents {
+		hooks[event] = []any{map[string]any{"command": testHookCommand}}
+	}
+	writeHooksFile(t, home, registered)
+
+	res, err := InstallHooks(home, testHookCommand)
+	if err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+	if res.EventsRegistered != 0 {
+		t.Errorf("EventsRegistered = %d, want 0 — every event was already registered", res.EventsRegistered)
+	}
+	if !res.SchemaVersionAdded {
+		t.Error("the result does not say the schema version was added, so a run that wrote a " +
+			"backup reports nothing it did")
+	}
+	if res.Backup == "" {
+		t.Error("the file was replaced with no backup taken")
+	}
+	if root := hooksRootOnDisk(t, home); root["version"] == nil {
+		t.Errorf("the repair run left the file without a `version`: %#v", root)
+	}
+}
+
+// TestHooks_NeverOverwriteAVersionThatIsThere covers the direction the schema
+// will eventually need. A newer Cursor may use 2; ours is a default for a file
+// that has none, never a correction of one somebody set. Asserted on the value
+// and not on "not nil", which is all the preservation test next door could say.
+func TestHooks_NeverOverwriteAVersionThatIsThere(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(home, command string) (HookInstallResult, error)
+	}{
+		{"install", InstallHooks},
+		{"uninstall", UninstallHooks},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := homesafe.SandboxHome(t)
+			writeHooksFile(t, home, map[string]any{
+				"version": 2,
+				"hooks": map[string]any{
+					"sessionStart": []any{map[string]any{"command": testHookCommand}},
+				},
+			})
+			res, err := tc.run(home, testHookCommand)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if res.SchemaVersionAdded {
+				t.Error("the result claims a schema version was added to a file that had one")
+			}
+			if got := hooksRootOnDisk(t, home)["version"]; got != float64(2) {
+				t.Errorf("`version` = %#v after %s, want the 2 that was there", got, tc.name)
+			}
+		})
+	}
+}
+
+// TestUninstall_InventsNoVersionOnAFileThatHasNone is the other half of the
+// same rule. Uninstall's whole contract is that it leaves everything that is
+// not ours, and a required field we added on the way out is something of ours
+// left behind in a file we are meant to have vacated.
+func TestUninstall_InventsNoVersionOnAFileThatHasNone(t *testing.T) {
+	home := homesafe.SandboxHome(t)
+	writeHooksFile(t, home, map[string]any{
+		"hooks": map[string]any{
+			"sessionStart": []any{
+				map[string]any{"command": testHookCommand},
+				map[string]any{"command": "/opt/someone-else/hook"},
+			},
+		},
+	})
+
+	if _, err := UninstallHooks(home, testHookCommand); err != nil {
+		t.Fatalf("UninstallHooks: %v", err)
+	}
+	if root := hooksRootOnDisk(t, home); root["version"] != nil {
+		t.Errorf("uninstall added a `version` to a file that had none: %#v", root)
+	}
+}
+
 // TestInstall_PreservesWhatIsAlreadyThere is the other property the slice was
 // asked to prove, and it is the reason the merge decodes into map[string]any
 // rather than into a struct of the fields this build knows: a foreign hook, a
@@ -535,6 +694,19 @@ func writeHooksFile(t *testing.T, home string, doc map[string]any) {
 	if err := os.WriteFile(path, append(body, '\n'), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+}
+
+// fileBytes is the file as bytes, for the checks that are about a write not
+// happening. "Wrote nothing" cannot be asked of the decoded document: two
+// encodings of the same map compare equal, and a rewrite that changed nothing
+// is still a rewrite of somebody else's file.
+func fileBytes(t *testing.T, path string) string {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(body)
 }
 
 func hooksRootOnDisk(t *testing.T, home string) map[string]any {

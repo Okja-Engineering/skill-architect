@@ -23,15 +23,15 @@ Skill Architect catches these problems with deterministic checks first, then rep
 | [`skill-audit`](skills/skill-audit/SKILL.md) | `/skill-architect:skill-audit` | Evaluate a skill directory against the Agent Skills spec, Anthropic best practices, and ICM context-management criteria. Reports pass/fail per dimension with concrete fixes. |
 | [`skill-rewrite`](skills/skill-rewrite/SKILL.md) | `/skill-architect:skill-rewrite` | Draft a rewritten `SKILL.md` from a `skill-audit` report. Produces a `REWRITE-DRAFT.md` with templates for missing sections; does not apply changes without approval. |
 
-## The profiler (preview)
+## The profiler
 
-v0.4.0 adds a harness-agnostic profiler that captures runtime signals (tokens, tool calls, timing) from agent sessions and writes them to a profile JSON labelled with the snapshot id you pass in. It degrades gracefully — unavailable metrics are `unknown` with a reason, never invented.
+A harness-agnostic profiler that captures runtime signals from agent sessions and writes them to a profile JSON labelled with the snapshot id you pass in. It arrived in v0.4.0; v0.5.0 added six subcommands to it — `compare`, `experiment`, `hooks`, `ingest`, `analyze` and `doctor` — so it is no longer the preview earlier editions of this file called it. The Claude Code adapter reads four signals — tokens, tool calls, timing, and, since v0.5.0, skill activation. It degrades gracefully — unavailable metrics are `unknown` with a reason, never invented.
 
 The profiler uses an adapter-per-harness architecture:
 
 | Adapter | Status | Telemetry surface |
 |---|---|---|
-| Claude Code | ✅ Slice 1 | OTel export (tokens, tool calls, timing) |
+| Claude Code | ✅ Ships | OTel export (tokens, tool calls, timing, skill activation) |
 | Cursor | Planned | Lifecycle hooks. The [spool that captures them](#capturing-cursor-hooks-to-a-spool) ships now and [`analyze`](#reading-a-spool-back) summarises it; the adapter that turns one into a profile does not |
 | Codex | Planned | OTel logs + hooks |
 | Devin | Planned | ATIF export + server API |
@@ -95,8 +95,9 @@ probe: failed to read OTel export file: open ./typo.json: no such file or direct
 
 stdout is unchanged — the report is the same JSON a caller already parses — and the exit
 status is still 0. `probe` has no documented exit contract to extend, so giving it one is
-new surface rather than a repair and is **deferred to 0.5.0**; until then a script that has
-to branch on a bad export should use `capture`, which does have one. A `probe` that read a
+new surface rather than a repair; **v0.5.0 did not add one**, and no release has committed
+to adding one. Until one does, a script that has to branch on a bad export should use
+`capture`, which does have an exit contract. A `probe` that read a
 file and found nothing in it stays silent, because that is an answer about the session
 rather than a fault of the run. A partial export carrying tool calls and
 timing but no token metric yields those two `present` and `tokens` `unknown` with a
@@ -181,8 +182,9 @@ refused rather than resolved one way — the other series in the file still coun
 series survives, `tokens` is `unknown` and the reason names the refusal; when a healthy
 series survives beside it, `tokens` is `present` with a total the refused series is missing
 from, and **schema v1 has no field that can say so** — a `present` result carries no
-reason. Surfacing that, with the count of skipped data points it belongs beside, is
-tracked for 0.5.0. Delta temporality — Claude Code's default — is unaffected throughout:
+reason. Surfacing that, with the count of skipped data points it belongs beside, needs a
+caveat channel schema v1 has not got; **v0.5.0 did not add one** and the schema is still
+v1. Delta temporality — Claude Code's default — is unaffected throughout:
 increments add up whatever series they are on.
 
 `capture` exits **2** when nothing was read and at least one signal came back `error` — a
@@ -208,8 +210,12 @@ marks the skill active *for that request*. One skill used across five requests c
 five times, and those records are stamped with flush and request times rather than with
 the time the skill was invoked. Reading them as activations would report a count and a set
 of times the harness never recorded, so an export carrying the attribute and no
-`skill_activated` event reports `skill_activation: none`, and the reason names the event
-that was looked for.
+`skill_activated` event reports `skill_activation: "none"` in the **capability report** and
+`skill_activation: {"state": "unknown", "reason": …}` in the **profile**, with the reason
+naming the event that was looked for. Those are the two different vocabularies this file
+uses throughout: `none`/`otel` is what a capability can say, `unknown`/`present`/`error` is
+what a signal can say, and a value supplied but unreadable is an `error` in the second
+vocabulary and a `none` in the first.
 
 Redaction differs between the two, which is the other reason not to pool them: on the
 request-scoped signals, built-in, bundled, user-defined and official-marketplace skill
@@ -219,9 +225,11 @@ skills read as `"custom_skill"` unless `OTEL_LOG_TOOL_DETAILS=1`. Names are repo
 exactly as the export spelled them — un-redacting one would be inventing a name nobody
 recorded.
 
-`attribution` is the signal that is still always `none`, and for a different reason
-entirely: it has no source at all, because nothing in the telemetry maps an output back to
-the skill that produced it.
+`attribution` is the signal whose capability is still always `none` and whose profile entry
+is therefore always `unknown` with a reason, and for a different reason entirely from the
+above: it has no source at all, because nothing in the telemetry maps an output back to
+the skill that produced it. Checked against every distinct attribute key on a live export:
+nothing does.
 
 ### Capturing an OTel export
 
@@ -241,6 +249,11 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 export OTEL_METRIC_EXPORT_INTERVAL=2000   # default 60000 — too slow for a short run
 export OTEL_LOGS_EXPORT_INTERVAL=1000     # default 5000
+
+# Uncomment to have skill_activation carry the skill's real name instead of
+# "custom_skill". It also widens the export — see the tradeoff below.
+# export OTEL_LOG_TOOL_DETAILS=1
+
 claude -p "…"
 ```
 
@@ -310,15 +323,34 @@ partial last line and retry.
 not the whole of it, and read the file before you share it. `prompt` and `response` are
 `<REDACTED>` by default, and the recipe above does nothing to change that.
 
-Leave `OTEL_LOG_TOOL_DETAILS` unset. It is not needed — this adapter reads nothing it
-adds — and setting it widens the export to what Anthropic's docs list for it: tool
-parameters and input, Bash commands, MCP server and tool names, skill names, and
-user-authored workflow names, plus the custom, plugin and MCP command names on
-`user_prompt` events that are otherwise collapsed. Those docs suggest it for other
-purposes; for capturing a profile it only puts more of your session in a file you may
-end up pasting somewhere.
+**`OTEL_LOG_TOOL_DETAILS` decides whether the profile can name your skill, so this is a
+real tradeoff rather than a flag to leave alone.** Since v0.5.0 this adapter reads
+`skill.name` off `claude_code.skill_activated`, and Claude Code logs that attribute as the
+placeholder `custom_skill` for a user-defined or third-party plugin skill unless the flag is
+set. Measured on 2.1.221, two captures identical but for that one variable:
 
-A bundled receiver subcommand is 0.5.0; `--otel-file` is the only input today.
+| `OTEL_LOG_TOOL_DETAILS` | wire `skill.name` | profile `skill_activation.value[].skill_name` |
+|---|---|---|
+| unset | `custom_skill` | `custom_skill` |
+| `=1` | the skill's real name | the skill's real name |
+
+The activation count and the invocation times are the same either way; only the identity
+differs. **If you are profiling a skill you wrote — which is the case this tool exists
+for — set it**, because otherwise every user-authored skill reports as `custom_skill` and
+two such profiles cannot be told apart. Names are reported exactly as the export spelled
+them; un-redacting one here would invent a name nobody recorded.
+
+What setting it widens, from Anthropic's docs: tool parameters and input, Bash commands,
+MCP server and tool names, skill names, and user-authored workflow names, plus the custom,
+plugin and MCP command names on `user_prompt` events that are otherwise collapsed. None of
+that is read by this adapter — `skill.name` is the one attribute the flag gates that this
+adapter does read — so if you would rather not have the rest of it in a file you may end up
+pasting somewhere, leave the flag off and accept `custom_skill`. That is the tradeoff, and
+it is yours. (Earlier releases of this file said the flag "is not needed" because "this
+adapter reads nothing it adds." That was true before v0.5.0 and is false now.)
+
+There is no bundled receiver subcommand — **v0.5.0 did not add one** — so `--otel-file` is
+still the only input.
 
 `capture` also declares `--export-file`, for adapters that read a non-OTel session export
 such as Devin's ATIF. No shipped adapter reads it, so passing it fails rather than
@@ -471,20 +503,51 @@ echo "$CURSOR_HOOK_PAYLOAD" | ./profiler ingest --strict
 ./profiler hooks uninstall
 ```
 
-**This is capture only, and this release reads nothing back out of it.** There
-is no Cursor adapter: `profiler capture --harness cursor` does not exist, and no
-profile is produced from a spool. What the spool does is put on disk what it was
-handed, so a reader written later works from files that already exist.
+**This is capture only, and no profile is produced from a spool.** There is no
+Cursor adapter: `profiler capture --harness cursor` does not exist. What can be
+read back out is what the files contain, not a measurement of the session —
+[`analyze`](#reading-a-spool-back) counts the lines, the envelope fields and the
+payload keys. The sentence saying a spool yields no measurement is in
+[`doctor`](#what-can-this-machine-measure)'s output, under
+`observed.spool.yields`, and not in `analyze`'s — `analyze` has sixteen fields and
+none of them is that sentence, so if you are pasting a summary somewhere the
+caveat does not travel with it. What the spool does is put on disk what it was
+handed, minus a credential, so a reader written later works from files that
+already exist.
 
 **None of it has been checked against a running Cursor.** No Cursor install was
-reachable here, so that `~/.cursor/hooks.json` is the file Cursor reads, that
-the 21 event names are the ones it invokes, and that a payload arrives as one
-JSON object carrying `hook_event_name`, `cursor_version`, `cwd` and
-`conversation_id` are all Cursor's documentation rather than ours. If any of
-that is wrong, `hooks install` writes a file Cursor ignores and the spool stays
-empty, or lines arrive with blank envelope fields. **We cannot tell you it
-works.** What we can tell you is what it does with what it is given, and that is
-tested:
+reachable here, so **we cannot tell you it works.** What has been checked is
+Cursor's own published hooks reference, field for field, which rules out the
+documentation having drifted since this code was written but not Cursor
+behaving differently from its docs:
+
+- **Confirmed.** `~/.cursor/hooks.json` is the User-scope location — there are
+  Enterprise, Team and Project scopes above it, and this tool writes none of
+  them. The 21 event names this registers are exactly the documented set, with
+  no twenty-second. And the top-level `"version"` the reference marks required
+  is written on install.
+- **Corrected.** `cwd` is **not** a field every payload carries. The reference's
+  "Input (all hooks)" block lists `conversation_id`, `generation_id`, `model`,
+  `model_id`, `model_params`, `hook_event_name`, `cursor_version`,
+  `workspace_roots`, `user_email` and `transcript_path` — no `cwd`. It appears in
+  **four** per-event payloads: `preToolUse`, `postToolUse`,
+  `postToolUseFailure` and `beforeShellExecution`, three of which this build
+  registers. The field carried on every payload for workspace location is
+  `workspace_roots`, which this build does not promote. So `cwd` is promoted
+  **when present**, and when it is absent the spooled line has **no `cwd` key at
+  all** — not an empty one — so you can tell "the payload carried none" from
+  "the payload carried an empty string". A payload that really does send
+  `"cwd": ""` spools the same way, since the field is `omitempty`. `raw` keeps
+  whatever arrived either way.
+- **Still documentary.** That a hook is invoked with one JSON document on stdin,
+  and every payload shape for the tool-call events: `preToolUse` and
+  `postToolUse` were registered on a live hook emitter here and never fired.
+
+If the documentary half is wrong, `hooks install` writes a file Cursor ignores
+and the spool stays empty, or lines arrive with blank envelope fields. What we
+can tell you is what it does with what it is given, and that is tested — plus
+one live exercise of the whole path, `ingest` → spool → `analyze` → `doctor`,
+driven by a real hook emitter that was not Cursor:
 
 - **One line per invocation**, appended, never replacing. Directory `0700` and
   file `0600`, because a line can carry prompt text and paths.
@@ -501,15 +564,46 @@ tested:
 - **`hooks install` is idempotent and additive.** Running it twice leaves one
   entry and rewrites nothing. Hooks you or another tool registered survive, so
   do events we do not register and top-level fields we have never heard of. The
-  file is backed up before any write — install *and* uninstall — and one this
-  build cannot parse is refused with its path named rather than replaced.
+  file is backed up before it is **overwritten** — on install and on uninstall
+  alike — and one this build cannot parse is refused with its path named rather
+  than replaced. Read that as written rather than as "backed up before any
+  write": the **first** install on a machine with no `hooks.json` writes one and
+  takes no backup, because there was no file to preserve. A plain re-run writes
+  nothing and so backs up nothing either. The
+  backup suffix is second-resolution, so an install and an uninstall inside one
+  second leave a single backup holding the post-install state rather than the
+  file you started with.
+- **`uninstall` does not leave a virgin machine as it found it.** On a home with
+  no `.cursor` directory, install-then-uninstall leaves the directory, a
+  `hooks.json` containing `{"hooks": {}, "version": 1}` — schema-valid, so it
+  will not break hooks you add by hand later — and the timestamped backup, which
+  still carries our absolute binary path in all 21 entries. Delete all three if
+  you want the machine back.
 - **`ingest` prints nothing on success**, because a capture tool that echoes the
   payload back is one you can see in the thing it is capturing. It exits 1 and
   says why if the spool cannot be written.
 
-The registered command is this binary's absolute path plus `ingest || true`:
-absolute because `PATH` inside a hook's environment is not ours to assume, and
-`|| true` so a failure of ours cannot take your Cursor session down.
+The registered command is this binary's absolute path plus
+`ingest --spool-dir <home>/.skill-architect/spool || true`: absolute because
+`PATH` inside a hook's environment is not ours to assume, `--spool-dir` because
+`$HOME` inside a hook's environment is not ours to assume either — that is what
+makes `--home /tmp/try-it` above relocate the *capture* and not only the
+registration, so the `analyze --spool-dir /tmp/try-it/…` below reads the lines
+back — and `|| true` so a failure of ours cannot take your Cursor session down.
+
+**`--strict` is not registered, and there is no environment variable for it.**
+If you want the metadata-only mode on a registered hook rather than on a
+hand-piped `ingest`, write the command yourself:
+
+```bash
+./profiler hooks install --home /tmp/try-it \
+  --command '/absolute/path/to/profiler ingest --strict --spool-dir /tmp/try-it/.skill-architect/spool || true'
+```
+
+And know what `--strict` does not do: it replaces content fields with their
+sizes, and it does not remove identity. Cursor documents `user_email` on every
+hook payload; it is not a content field and not a credential, so it reaches disk
+in both modes.
 
 ### Reading a spool back
 
@@ -545,7 +639,12 @@ printing an empty summary: "nothing was captured" and "there is nothing to read"
 are different answers.
 
 For bigger questions there is [`profiler/queries/`](profiler/queries/) — DuckDB
-SQL over the same files, no ETL. Start with `payload_keys.sql`.
+SQL over the same files, no ETL. Start with `payload_keys.sql`. These need
+`duckdb` on your `PATH`, which is **not** one of the ten tools under
+[Prerequisites](#prerequisites) — those are the skills' preconditions, and
+nothing in the plugin shells out to `duckdb`. No test and no CI step runs these
+queries either; all eight were run by hand against a real spool on DuckDB
+v1.5.5 and all eight returned rows.
 
 ### What can this machine measure?
 
@@ -704,11 +803,12 @@ claude plugin marketplace add Okja-Engineering/skill-architect
 claude plugin install skill-architect@skill-architect
 ```
 
-`claude plugin list` then shows `skill-architect@skill-architect` at version 0.4.3.
+`claude plugin list` then shows `skill-architect@skill-architect` at version 0.5.0.
 
-Every row below carries the status of the route as **executed in this release**, not as
-described by a vendor's documentation. Routes marked verified were run against a clean
-install on this release's tree. Where a route says "not verified" the row says why — nobody
+Every row below carries the status of the route as **executed in 0.4.3**, the release that
+ran them, not as described by a vendor's documentation. 0.5.0 did not re-run them; it changed
+no install or update route. Routes marked verified were run against a clean install on that
+release's tree. Where a route says "not verified" the row says why — nobody
 here could run it, or running it would have changed something that is not ours to change —
 and it is a pointer to the vendor's own docs rather than a claim of ours; if it turns out
 wrong, the manual copy under "Manual standalone copy" works everywhere.
@@ -829,8 +929,8 @@ claim:
   root, from `~/.agents/skills/`, and from `/etc/codex/skills/`, per its
   [skills docs](https://learn.chatgpt.com/docs/build-skills). Both are real; they are
   different locations, not competing accounts of one. Read off those two vendor artifacts,
-  not from a placement run here: for Codex the route this release actually executed is the
-  plugin one above.
+  not from a placement run here: for Codex the route that was actually executed, in 0.4.3,
+  is the plugin one above.
 - **Cursor** — `.cursor/skills/` or `.agents/skills/` in a repository, `~/.cursor/skills/`
   or `~/.agents/skills/` globally, per Cursor's [skills docs](https://cursor.com/docs/skills)
   — which is a different page from the plugins docs cited above. **Not verified here**: no

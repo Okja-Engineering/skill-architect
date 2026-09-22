@@ -85,11 +85,11 @@ Four destinations it refuses, and it refuses them before it runs the audit, so a
 - **A directory.** Name the file to write, not the folder to write it in.
 - **A symbolic link.** A redirect follows the link and truncates what is on the other end, so where the draft would go is not where you named it. Give the path the link points at.
 - **A `SKILL.md`.** A rewrite draft is not a skill. This is the mechanism behind the Constraints section's "do not overwrite the original `SKILL.md`": until `-o` existed there was no way to reach that mistake, and now that there is, the drafter refuses it rather than trusting you not to make it.
-- **Anywhere inside a live agent configuration directory.** An agent reads its skills directory as skills, so a draft left in one is not a stray file but a document that may be loaded as instructions.
+- **Anywhere inside a live agent configuration directory, or inside a directory an agent reads skills from.** An agent reads a skills directory as skills, so a draft left in one is not a stray file but a document that may be loaded as instructions. The list is every `$HOME`-relative directory this repository's README documents an agent reading skills from — including `$HOME/.agents`, which belongs to no single harness and is read by more than one.
 
-Protected destinations: `$HOME/.claude`, `$HOME/.cursor`, `$HOME/.codex`, `$HOME/.devin`, `$HOME/.config`.
+Protected destinations: `$HOME/.claude`, `$HOME/.cursor`, `$HOME/.codex`, `$HOME/.devin`, `$HOME/.config`, `$HOME/.agents`.
 
-Each of those is decided **after the path is resolved**, which is the part worth knowing if you are writing the destination in a script. `$HOME/drafts/x.md` where `drafts` is a symlink into `~/.claude/skills` is refused, though nothing in its spelling looks wrong; `$HOME/.claude-notes/x.md` is accepted, though `$HOME/.claude` is a prefix of it. And a destination whose path the drafter cannot resolve at all — a directory it may not traverse — is refused as an execution error, exit 3, rather than being let through: "I could not tell where this would land" is not "go ahead".
+The last of those is decided by **which directory the write lands in, not by how you spell it**, which is the part worth knowing if you are writing the destination in a script. `$HOME/drafts/x.md` where `drafts` is a symlink into `~/.claude/skills` is refused, though nothing in its spelling looks wrong; `$HOME/.claude-notes/x.md` is accepted, though `$HOME/.claude` is a prefix of it. On a case-insensitive volume `$HOME/.CLAUDE/skills/x.md` is the same directory as `$HOME/.claude/skills/x.md` and is refused too, as is a destination spelled in a different Unicode normalisation from the one on disk: the comparison is device and inode, so no spelling of a protected directory gets past it. And a destination whose landing place the drafter cannot determine — a directory it may not traverse, a symlink chain that does not end, or a protected directory that does not exist yet named in a spelling that is not the one this script holds — is refused as an execution error, exit 3, rather than being let through: "I could not tell where this would land" is not "go ahead".
 
 Anywhere else you can write, it will write. The refusals are a short list, not a sandbox.
 
@@ -116,7 +116,7 @@ Above them, a `# Rewrite draft: <target>` title. What each holds:
 
 **What the drafter does not do**, and what Stage 3 is therefore for. It does not copy or correct the target's frontmatter. It writes no template for `Deterministic actions`, `Orchestration`, `AI judgment` or `Constraints`. That is four of the six sections its own `Proposed structure` requires. `Action items` is a five-item review checklist, not a mapping of the audit's findings: it is the same text for a skill that audits clean and one that fails, and the drafter never reads the evaluation matrix. Scoring the dimensions and turning them into fixes is Stage 1 and Stage 3 work, done by the reader.
 
-`tests/test_rewrite.sh` compares the list above against the headings a run actually writes, so neither side can change without the other.
+`tests/test_rewrite.sh` compares the list above against the headings a run actually writes, so neither side can change without the other, and it pins each of the four gaps above as an absence — so if the drafter ever learns to close one, the suite goes red rather than leaving this section describing a draft that no longer exists.
 
 ### Stage 3: Produce rewrite plan
 

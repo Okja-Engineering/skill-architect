@@ -220,21 +220,46 @@ skill_name="${skill_name##*/}"
 #      file: an agent reads `~/.claude/skills/` as skills, so a draft dropped in
 #      it is a document that may be loaded as instructions.
 #
-# **Every one of those is decided after the path is resolved, never from the
-# shape of the string**, for the two reasons profiler/internal/homesafe sets out
-# for the same decision on the Go side:
+# **The third of those is decided by identity and never by any name**, for the
+# reasons profiler/internal/homesafe sets out for the same decision on the Go
+# side. Three spellings got past it before it was, each defeating the repair
+# before:
 #
-#   - A symlink into a protected directory is outside by every string test and
-#     inside in fact. `$HOME/drafts/x.md` is a path whose spelling says nothing
-#     and whose resolution says everything.
-#   - A sibling sharing a name prefix is the reverse. `$HOME/.claude-notes` has
-#     `$HOME/.claude` as a string prefix and is not inside it, so a
-#     `HasPrefix`-style test refuses a destination that is perfectly fine.
+#   - A symlink into a protected directory is outside by every comparison of
+#     *unresolved* names and inside in fact. `$HOME/drafts/x.md` is a path whose
+#     spelling says nothing and whose resolution says everything — and a sibling
+#     sharing a name prefix is the reverse, `$HOME/.claude-notes` having
+#     `$HOME/.claude` as a string prefix while being nowhere inside it.
+#   - A `..` folded textually is folded against the *link's own name* rather
+#     than against its target, so resolution has to happen during the walk and
+#     not before or after it. `$HOME/aside/../x.md`, with `aside` a link into
+#     `$HOME/.claude/skills`, folded to `$HOME/x.md` — outside every protected
+#     root — while the redirect went through the kernel, which resolves `aside`
+#     first, and wrote the draft into `$HOME/.claude`.
+#   - And a comparison of *resolved* names is wrong too, which is the half that
+#     is easy to miss because the fix for the first two looks complete. This
+#     volume is case-insensitive and APFS is normalisation-insensitive, so
+#     `.CLAUDE` and an NFD spelling of an NFC home are other names for the same
+#     directory; bash's builtin `pwd -P` returns the caller's spelling rather
+#     than the kernel's stored name, so a resolved path is only as canonical as
+#     the way it was asked for; and a resolved path carried back through `$( )`
+#     loses its trailing newlines, so the destination that was *decided* and the
+#     destination that was *written* were two different entries. All six
+#     protected roots were writable by spelling their names in capitals.
 #
-# And the third property from the same place: **a path that cannot be resolved
-# counts as protected.** "I could not tell where this would land" must not read
-# as "go ahead", so it is not exit 1 — the caller's command line is not what was
-# wrong — but cannot_compute and exit 3.
+# So the decision is `path_target_is_inside`, which compares device and inode
+# and never a path. See the barrier block below.
+#
+# And the other property from the same place: **a path whose landing place
+# cannot be determined counts as protected.** "I could not tell where this would
+# land" must not read as "go ahead", so it is not exit 1 — the caller's command
+# line is not what was wrong — but cannot_compute and exit 3. What counts as
+# undetermined is narrow, and it used to be far too wide: while resolution ended
+# in one `cd -P` over the deepest existing ancestor, every destination that
+# already existed as a *regular file* came back unresolvable, because you cannot
+# `cd` into a file. That was an undocumented fifth refusal, it made `-o` unable
+# to re-run over its own output, and it stood in front of the leaf-symlink rule
+# so that rule never ran at all.
 #
 # The decision lives here rather than in verdict-guard.sh because the guard's
 # primitives are about computing a verdict over a skill, and this is about where
@@ -242,121 +267,335 @@ skill_name="${skill_name##*/}"
 # to decide: the sibling checks read a directory and print to stdout. If a
 # second one ever takes a destination, this moves to the guard rather than being
 # copied.
-
-# path_absolute <path> — absolute against the caller's working directory, with
-# `.` and `..` folded away textually.
 #
-# Textually, because the destination is a file this script is about to create and
-# need not exist yet, so there is nothing to ask the kernel about. `..` stops at
-# the root the way the kernel stops it, which is what makes a climb with an
-# absolute tail resolve to that tail rather than to nonsense. awk's status is
-# read here, where awk is called, and an empty answer is a failure: awk exiting 0
-# having printed nothing would leave every comparison below against the empty
-# string.
-path_absolute() {
-  local p
-  local folded
-  local status
-  p="$1"
-  case "$p" in
-    /*) ;;
-    *) p="$PWD/$p" ;;
-  esac
-  status=0
-  folded="$(printf '%s\n' "$p" | awk '
-    {
-      n = split($0, part, "/")
-      out = ""
-      depth = 0
-      for (i = 1; i <= n; i++) {
-        s = part[i]
-        if (s == "" || s == ".") continue
-        if (s == "..") {
-          if (depth > 0) { sub(/\/[^\/]*$/, "", out); depth-- }
-          continue
-        }
-        out = out "/" s
-        depth++
-      }
-      if (out == "") out = "/"
-      print out
-    }
-  ')" || status=$?
-  [[ $status -eq 0 && -n "$folded" ]] || return 1
-  printf '%s\n' "$folded"
+# It is, however, the same text as the copy in tests/test_install.sh, and that
+# suite asserts that the two are byte-identical. The previous round said in prose
+# that the copies were one walk and they were not: they disagreed about a leaf
+# symlink, about an empty path, and about a root that resolves to `/`. Whether
+# the shared walk should move into verdict-guard.sh or into tests/lib/ — neither
+# of which both callers can reach today — is recorded for 0.6.0.
+
+# --- BEGIN THE PATH CONTAINMENT BARRIER --------------------------------------
+#
+# Byte-identical in skills/skill-rewrite/scripts/draft-rewrite.sh and in
+# tests/test_install.sh, between these two markers, and tests/test_install.sh
+# asserts that it is byte-identical rather than trusting that it stayed so. The
+# previous round's claim that "all three are now the same walk" was false in
+# three places — the leaf symlink, the empty path, and a root that resolves to
+# `/` — and every one of them was a divergence between two copies nobody could
+# diff. Prose cannot hold two copies together; a diff can.
+
+# __path_link_target <path> — the bytes a symlink holds, exactly, in
+# __path_target.
+#
+# Two separate things would lose those bytes, and both are the defect this whole
+# block replaces, one level down: a target decided on one spelling while the
+# kernel follows another.
+#
+# Command substitution strips every trailing newline, so `$(readlink …)` on a
+# target ending in one hands back a name that is a different entry. The
+# `printf X` carries them through: the last character of the captured output is
+# an X, so there is nothing trailing for the substitution to remove, and `%X`
+# takes the guard off again.
+#
+# And `readlink`'s own terminator is not portable. GNU readlink writes the
+# target followed by a newline; the BSD readlink on macOS writes the target and
+# nothing else — measured, not assumed. So stripping "one trailing character"
+# is right on one platform and eats a byte of the target on the other, which is
+# how this function was first written and what the generated bound caught. `-n`
+# is the flag both of them have for "no terminator", so with it there is nothing
+# to strip and no platform to be right about.
+__path_link_target() {
+  local raw
+  raw="$(readlink -n -- "$1"; printf X)" || return 1
+  __path_target="${raw%X}"
+  return 0
 }
 
-# path_resolved <path> — the same path with every directory component's symlinks
-# followed, through the part of it that exists.
+# __path_max_links bounds a symlink chain so that a cycle terminates. It is not
+# the kernel's limit and does not claim to be — macOS refuses a chain at 32 and
+# Linux at 40 — and it does not need to be: a chain the kernel refuses produces
+# no write at all, so such a path has no object for a verdict to be about, and
+# refusing is the safe answer for it. What the counter is actually for is a
+# cycle, where `readlink` succeeds for ever.
+__path_max_links=32
+
+# __path_max_climb bounds the climb from a directory to the filesystem root.
+# The climb already stops by identity, because `..` at the root is the root;
+# this is the second stop, for a filesystem on which it is not.
+__path_max_climb=1024
+
+# __path_walk <spelled> — chdir to the deepest directory the kernel would reach
+# while resolving <spelled>, and set __path_tail to the components after it,
+# each preceded by `/`, or to the empty string.
 #
-# Not a plain `cd -P` on the whole path, for two reasons: the leaf need not exist
-# yet, and on macOS a scratch directory arrives through /var and lives at
-# /private/var, so comparing unresolved strings answers "outside" for a path that
-# is in fact inside. The deepest existing ancestor is resolved and the remainder
-# appended — the place the path *would* be created, which is what the decision is
-# about.
+# # Why it moves instead of building a string
 #
-# A symlink at the leaf is deliberately left unfollowed. It is not this
-# function's to chase: following it would need another tool and another bounded
-# loop for cycles, and the decision below refuses a leaf symlink outright, which
-# closes the same hole with less machinery. `CDPATH=` and `--` for the reason
-# verdict-guard.sh sets out at length.
+# Each of the three copies of this barrier used to build a *name* for the
+# destination and compare it against a name built for the root. A name is not an
+# identity, and on this platform three separate mechanisms make it not one. The
+# volume is case-insensitive, so `.CLAUDE` and `.claude` are one directory with
+# two names. APFS is normalisation-insensitive, so an NFC and an NFD spelling
+# are one directory with two names. And bash's *builtin* `pwd -P` hands back the
+# caller's own spelling rather than the kernel's stored name, so even a fully
+# resolved path is only as canonical as the way it was asked for. All three were
+# live escapes: every one of the six protected roots could be written into by
+# spelling its name in capitals, and the exact spelling was refused while the
+# capitalised one was not.
 #
-# The loop climbs only while a component **does not exist at all**, which is not
-# the same as "is not a directory" and the difference is the whole of whether
-# this function can be relied on. Written as `! -d`, a component that exists and
-# cannot be entered — a directory with no execute bit, a symlink cycle — was
-# indistinguishable from one nobody has created yet, so it was climbed past and
-# the path came back "resolved" with the unresolvable part still in it. That is
-# the second of the two properties homesafe states — a path that cannot be
-# resolved must not read as resolved — and it was quietly missing here until a
-# mutation over the caller found it. `-e` is paired with `-L` for the reason
-# tests/lib/masked-path.sh pairs them: `-e` alone is false for a broken symlink
-# and for a cycle, which are exactly the entries this has to stop on rather than
-# step over.
-path_resolved() {
-  local abs
-  local head
-  local tail
-  abs="$(path_absolute "$1")" || return 1
-  head="$abs"
-  tail=""
-  while [[ "$head" != / ]] && [[ ! -e "$head" && ! -L "$head" ]]; do
-    if [[ -n "$tail" ]]; then
-      tail="${head##*/}/$tail"
-    else
-      tail="${head##*/}"
+# So nothing here is decided by comparing paths. The walk performs the kernel's
+# own resolution as a sequence of chdirs, which cannot be spelled around because
+# it is not reading a spelling — it is moving. What comes out is the process's
+# working directory, and the comparison in path_target_is_inside is `-ef`:
+# device and inode, the one handle no spelling can change.
+#
+# # The rule, once, for every component
+#
+# A component that **is a directory** is entered, which follows a link, a chain
+# of links, a relative target and the platform's own aliasing in a single step —
+# on macOS a scratch directory arrives through /var and lives at /private/var,
+# so a comparison of unresolved names answers "outside" for a path that is in
+# fact inside.
+#
+# A component that **is a symlink** and is not a directory has its target walked
+# in its place, exactly as the kernel splices it in, **including at the leaf**.
+# `: > "$dest"` follows a leaf symlink, so a leaf link into a protected
+# directory is a write into that directory; appending the leaf as named is how
+# both shell copies of this came to disagree with the Go one, and it was a hole
+# standing behind two accidents rather than behind a rule.
+#
+# A component that **does not exist** begins the tail. From there on there is
+# nothing with an identity, which is why the tail is the only thing this barrier
+# ever compares as text — and it compares it byte for byte or not at all, for
+# the reason path_target_is_inside sets out.
+#
+# A component that exists, is not a directory and is not the last has **no
+# answer**: the kernel answers ENOTDIR, so no write happens, and no answer is a
+# refusal rather than a guess. So is a directory that cannot be entered, and so
+# is a chain that does not end.
+#
+# A `..` inside the tail folds against the tail and, past its start, climbs the
+# resolved prefix — which is correct precisely because that prefix holds no link
+# and no `..` any more. The kernel answers ENOENT for a `..` that follows a
+# component which does not exist, so no write happens on such a path either way;
+# folding is the conservative reading of it, and it keeps `a/b/../c` meaning
+# `a/c` when `a` exists and `b` does not.
+#
+# An empty path is not a path and has no answer. It used to return the working
+# directory at status 0 in both shell copies while the Go one refused, which is
+# the sort of divergence two copies held together by prose produce.
+__path_walk() {
+  local spelled remaining name links
+  spelled="$1"
+  __path_tail=""
+  links=0
+  [ -n "$spelled" ] || return 1
+  case "$spelled" in
+    /*) cd -P -- / 2>/dev/null || return 1 ;;
+  esac
+  remaining="$spelled"
+  while [ -n "$remaining" ]; do
+    case "$remaining" in
+      */*) name="${remaining%%/*}"; remaining="${remaining#*/}" ;;
+      *)   name="$remaining"; remaining="" ;;
+    esac
+    if [ -z "$name" ] || [ "$name" = "." ]; then
+      continue
     fi
-    head="${head%/*}"
-    [[ -n "$head" ]] || head=/
+    if [ -n "$__path_tail" ]; then
+      if [ "$name" = ".." ]; then
+        __path_tail="${__path_tail%/*}"
+      else
+        __path_tail="$__path_tail/$name"
+      fi
+      continue
+    fi
+    if [ "$name" = ".." ]; then
+      cd -P -- .. 2>/dev/null || return 1
+      continue
+    fi
+    if [ -d "$name" ]; then
+      cd -P -- "$name" 2>/dev/null || return 1
+      continue
+    fi
+    if [ -L "$name" ]; then
+      links=$((links + 1))
+      [ "$links" -le "$__path_max_links" ] || return 1
+      __path_link_target "$name" || return 1
+      [ -n "$__path_target" ] || return 1
+      case "$__path_target" in
+        /*) cd -P -- / 2>/dev/null || return 1 ;;
+      esac
+      if [ -n "$remaining" ]; then
+        remaining="$__path_target/$remaining"
+      else
+        remaining="$__path_target"
+      fi
+      continue
+    fi
+    if [ -e "$name" ] && [ -n "${remaining//\//}" ]; then
+      return 1
+    fi
+    __path_tail="/$name"
   done
-  head="$(CDPATH= cd -P -- "$head" 2>/dev/null && pwd -P)" || return 1
-  if [[ -n "$tail" ]]; then
-    printf '%s\n' "${head%/}/$tail"
-  else
-    printf '%s\n' "$head"
-  fi
+  return 0
 }
 
-# path_inside <parent> <child> — child is parent, or something under it. Both
-# arguments are already resolved.
-#
-# The separator in the pattern is the whole of the difference between this and
-# the broken prefix test: without it, `$HOME/.claude` is a prefix of
-# `$HOME/.claude-notes` and the sibling is called part of the parent. With it,
-# the comparison is the same question `..`-relative arithmetic answers, and on
-# two resolved, normalised, absolute paths it is the same answer.
-path_inside() {
-  local parent
-  local child
-  parent="${1%/}"
-  child="$2"
-  [[ "$child" == "$1" || "$child" == "$parent" ]] && return 0
-  case "$child" in
-    "$parent"/*) return 0 ;;
-  esac
-  return 1
+# path_target_is_resolvable <spelled> — there is an answer to where a write on
+# <spelled> would land. 0 there is, 1 there is not.
+path_target_is_resolvable() {
+  ( CDPATH= ; __path_walk "$1" ) >/dev/null 2>&1
 }
+
+# path_target_is_inside <spelled> <root> <mode> — does a write on <spelled>
+# create-or-truncate an object that is <root>, or one reachable from <root>
+# without leaving it?
+#
+# `or-equal` counts <root> itself as inside; `strictly` does not.
+#
+# 0 inside, 1 outside, 3 there is no answer — which every caller turns into a
+# refusal and never into a pass.
+#
+# The third status is 3 and not 2 because 3 is the status the drafter's own
+# header registers for "no verdict was reached", and this is the same statement
+# one layer down: the two numbers would have meant one thing, and a second
+# number for it is a second thing to keep in agreement. It also keeps the static
+# check in tests/test_rewrite.sh honest — it reads this file for `exit N` and
+# cannot see that these are a subshell's exits, so every number spelled here has
+# to be a number the script is allowed to exit with, which is a good discipline
+# for the block rather than a concession to the checker.
+#
+# The verdict is decided by identity for every component that exists, and by
+# name only for components that do not exist yet. That is the whole invariant,
+# and it reduces to a single question: the object a write creates or truncates
+# lives in the deepest directory the kernel reaches while resolving the
+# spelling, so the verdict is whether *that directory* is the root or is under
+# it — asked with `-ef`, which compares device and inode and therefore gives
+# the same answer however either side is spelled, and asked by climbing with
+# `cd -P -- ..`, which is the kernel answering "reachable without leaving it"
+# rather than this file computing it. The tail is compared as text only when the
+# root itself does not exist yet, where there is no identity on either side and
+# the answer may be that there is no answer.
+#
+# The whole of it happens in a subshell, so the chdirs are the subshell's and
+# the caller's working directory is untouched; and no path is ever carried back
+# out through a command substitution, which is the mechanism that made the
+# previous round's barrier decide on one path and write on another.
+path_target_is_inside() {
+  (
+    CDPATH=
+    local spelled root mode here root_dir root_tail dest_tail climb dest_head dest_rest root_rest
+    spelled="$1"
+    root="$2"
+    mode="$3"
+    here="$PWD"
+    __path_walk "$root" 2>/dev/null || exit 3
+    root_dir="$PWD"
+    root_tail="$__path_tail"
+    cd -P -- "$here" 2>/dev/null || exit 3
+    __path_walk "$spelled" 2>/dev/null || exit 3
+    dest_tail="$__path_tail"
+
+    if [ -n "$root_tail" ]; then
+      # The root does not exist yet. Nothing can exist below a directory that
+      # does not exist, so the destination's own deepest directory has to be
+      # the same object as the root's, and what is left over is the name
+      # comparison the invariant allows for names that are not yet anything.
+      [ . -ef "$root_dir" ] || exit 1
+      # Three answers and not two, which is the whole of what makes this branch
+      # honest.
+      #
+      # **The same bytes** are the same name on every filesystem, so a byte
+      # match is an answer anywhere: inside.
+      #
+      # **Names that could not be one name however the volume compares them**
+      # are an answer too: outside. This is the common case by far and it has to
+      # stay cheap and definite — on a machine where `~/.devin` does not exist,
+      # every `-o` the drafter is ever given reaches this line against it, and
+      # answering "I cannot tell" there would turn the whole flag into exit 3.
+      # Two names are definitely different when both are ASCII and they differ
+      # by more than case, because ASCII case is the only folding a filesystem
+      # applies to an ASCII name.
+      #
+      # **Anything left is undecidable, and it says so.** Two ASCII names that
+      # differ only in case are one directory on this volume and two on a
+      # case-sensitive one; two names either of which carries a byte at or above
+      # 0x80 may be an NFC and an NFD spelling of one name, and normalising
+      # Unicode needs tables this file has no business carrying. The temptation
+      # is to guess, and the guess was written twice before this comment was. It
+      # cannot be right: "this name may be the root's name" is a *refusal* for a
+      # fence that protects the root and a *pass* for a fence that keeps writes
+      # inside it, and this one walk serves one of each — the drafter refuses a
+      # destination inside a protected directory, while tests/test_install.sh
+      # runs a documented block only if it stays inside a scratch root. No guess
+      # is fail-closed for both. `exit 3` is, because no answer is a refusal in
+      # both.
+      #
+      # `LC_ALL=C` is what makes the byte range below a range of bytes, and it
+      # is also what keeps `nocasematch` to ASCII case, which is the only case
+      # this comparison claims to know about.
+      if [ "$dest_tail" = "$root_tail" ]; then
+        [ "$mode" = or-equal ] || exit 1
+        exit 0
+      fi
+      # The destination's tail down to the root's own depth, taken a component
+      # at a time so that the comparison below is the same comparison the
+      # kernel would make component by component.
+      dest_head=""
+      dest_rest="$dest_tail"
+      root_rest="$root_tail"
+      while [ -n "$root_rest" ]; do
+        [ -n "$dest_rest" ] || exit 1
+        root_rest="${root_rest#/}"
+        case "$root_rest" in
+          */*) root_rest="/${root_rest#*/}" ;;
+          *)   root_rest="" ;;
+        esac
+        dest_rest="${dest_rest#/}"
+        case "$dest_rest" in
+          */*) dest_head="$dest_head/${dest_rest%%/*}"; dest_rest="/${dest_rest#*/}" ;;
+          *)   dest_head="$dest_head/$dest_rest"; dest_rest="" ;;
+        esac
+      done
+      if [ "$dest_head" = "$root_tail" ]; then
+        exit 0
+      fi
+      (
+        LC_ALL=C
+        case "$dest_head$root_tail" in
+          *[$'\200'-$'\377']*) exit 3 ;;
+        esac
+        shopt -s nocasematch
+        if [[ "$dest_head" == "$root_tail" ]]; then
+          exit 3
+        fi
+        exit 1
+      )
+      exit $?
+    fi
+
+    # The root exists, so the question is pure identity: climb from the
+    # destination's own directory towards the filesystem root, and the
+    # destination is inside iff the root is one of the directories passed on
+    # the way. A root that resolves to `/` therefore contains everything, which
+    # is the true answer for it and not the fail-open half of the two opposite
+    # answers the two copies of this used to give.
+    climb=0
+    while :; do
+      if [ . -ef "$root_dir" ]; then
+        if [ "$climb" -eq 0 ] && [ -z "$dest_tail" ] && [ "$mode" != or-equal ]; then
+          exit 1
+        fi
+        exit 0
+      fi
+      [ . -ef / ] && exit 1
+      cd -P -- .. 2>/dev/null || exit 1
+      climb=$((climb + 1))
+      [ "$climb" -le "$__path_max_climb" ] || exit 3
+    done
+  )
+}
+# --- END THE PATH CONTAINMENT BARRIER ----------------------------------------
 
 # The live agent configuration directories, relative to the caller's own home.
 #
@@ -370,10 +609,18 @@ path_inside() {
 # statement from "a path that could not be resolved", which is why it accepts
 # rather than refusing: there is nothing here that could not be determined.
 #
-# One physical line per root, and the list is compared against the one
-# skills/skill-rewrite/SKILL.md gives a reader, so neither side can grow without
-# the other.
-protected_home_dirs=".claude .cursor .codex .devin .config"
+# One physical line per root, and the list is compared against two documents:
+# the one skills/skill-rewrite/SKILL.md gives a reader, and every `$HOME`-relative
+# skills path the README spells. Neither side can grow without the others.
+#
+# `.agents` is not any one harness's configuration directory — it is the shared
+# skills directory Codex and Cursor both read, which the README documents at
+# `~/.agents/skills/` for each of them. A list assembled from harness names
+# missed it for that reason, and the miss was the whole list failing its own
+# stated rationale: the refusal is about what an agent reads as instructions,
+# not about whose dot-directory it is. Reproduced before it was added — rc=0,
+# draft written into `$HOME/.agents/skills/`.
+protected_home_dirs=".claude .cursor .codex .devin .config .agents"
 
 # output_is_permitted <spelled> — decide the destination named with -o.
 #
@@ -382,11 +629,32 @@ protected_home_dirs=".claude .cursor .codex .devin .config"
 # *cannot decide* is cannot_compute's to report, and an `exit 3` inside a command
 # substitution exits the subshell: the script would carry on and write the
 # draft. The same reason skill_body answers in `$section`.
+#
+# Every question below is asked about `$spelled` — the caller's own bytes, the
+# ones the redirect at the bottom of this script will be performed on. Not about
+# a resolved copy of them, and that is the whole of the repair rather than a
+# detail of it: the previous version resolved the destination into a string,
+# carried that string back through `$( )`, and asked its questions about *that*.
+# Command substitution strips trailing newlines, so for a destination whose name
+# ends in one the questions were answered about a different entry from the one
+# the write went to — a leaf link named `notes.md\n` pointing into
+# `~/.claude/skills` was accepted at exit 0 and the draft landed there. There is
+# no resolved path in this function now, so there is nothing for a substitution
+# to truncate. `-L` and `-d` on the spelling are lstat and stat on exactly those
+# bytes; the containment question is answered by identity inside
+# path_target_is_inside and the answer it hands back is a status, not a path.
+#
+# The leaf name is taken from the spelling for the same reason, and it is the
+# spelling's own last component because a leaf symlink is already refused above
+# it: with no link at the leaf, the name the kernel writes under is the name the
+# caller wrote. A spelling that ends in `/`, `.` or `..` names a directory, which
+# the rule above this one refuses when it exists and the redirect refuses when it
+# does not.
 output_is_permitted() {
   local spelled
-  local resolved
+  local leaf
   local root
-  local resolved_root
+  local verdict
   spelled="$1"
   output_refusal=""
 
@@ -395,30 +663,47 @@ output_is_permitted() {
     return 1
   fi
 
-  resolved="$(path_resolved "$spelled")" \
+  path_target_is_resolvable "$spelled" \
     || cannot_compute DEP002 "the destination $spelled could not be resolved, so where the draft would be written is unknown; no draft was written" false
 
-  if [[ -L "$resolved" ]]; then
+  if [[ -L "$spelled" ]]; then
     output_refusal="$spelled is a symbolic link, so where the draft would be written is not where it is named; give the path it points at"
     return 1
   fi
-  if [[ -d "$resolved" ]]; then
+  if [[ -d "$spelled" ]]; then
     output_refusal="$spelled is a directory, and the draft is a file; name the file to write"
     return 1
   fi
-  if [[ "${resolved##*/}" == SKILL.md ]]; then
-    output_refusal="$spelled resolves to $resolved, which is a SKILL.md: a rewrite draft is not a skill, and this script does not overwrite one"
+  leaf="$spelled"
+  while [[ "$leaf" == */ ]]; do
+    leaf="${leaf%/}"
+  done
+  leaf="${leaf##*/}"
+  if [[ "$leaf" == SKILL.md ]]; then
+    output_refusal="$spelled names a SKILL.md: a rewrite draft is not a skill, and this script does not overwrite one"
     return 1
   fi
 
   if [[ -n "${HOME:-}" ]]; then
     for root in $protected_home_dirs; do
-      resolved_root="$(path_resolved "$HOME/$root")" \
-        || cannot_compute DEP002 "the live configuration directory $HOME/$root could not be resolved, so $spelled cannot be shown to be outside it; no draft was written" false
-      if path_inside "$resolved_root" "$resolved"; then
-        output_refusal="$spelled resolves to $resolved, which is inside the live configuration directory $HOME/$root; the draft would be read as configuration"
-        return 1
-      fi
+      # `|| verdict=$?` and not a bare call followed by `case $?`: errexit fires
+      # on a simple command whose status is not being tested, so a bare call
+      # here made the *script* exit 2 for every destination the barrier could
+      # not decide — a status its own header does not register, reported as a
+      # crash rather than as the refusal it is. Caught by the registry
+      # assertion in tests/test_rewrite.sh.
+      verdict=0
+      path_target_is_inside "$spelled" "$HOME/$root" or-equal || verdict=$?
+      case "$verdict" in
+        0)
+          output_refusal="a write on $spelled lands in the live configuration directory $HOME/$root, whatever it is spelled; the draft would be read as configuration"
+          return 1
+          ;;
+        1) ;;
+        *)
+          cannot_compute DEP002 "the destination $spelled cannot be shown to be outside the live configuration directory $HOME/$root, so where the draft would be written is unknown; no draft was written" false
+          ;;
+      esac
     done
   fi
 

@@ -38,7 +38,7 @@ HARNESS=tests/lib/harness.sh
 
 # audit_accepts <file>... — the audit finds nothing to refuse.
 audit_accepts() {
-  quietly "$AUDIT" "$@"
+  quietly "$AUDIT" --harness "$HARNESS" "$@"
 }
 
 # audit_rejects <file>... — the audit finds one, and says where.
@@ -48,7 +48,7 @@ audit_accepts() {
 # silently stopped firing has to be able to say so.
 audit_rejects() {
   local out
-  if out="$("$AUDIT" "$@" 2>&1)"; then
+  if out="$("$AUDIT" --harness "$HARNESS" "$@" 2>&1)"; then
     printf 'expected a rejection, got acceptance:\n%s\n' "$out" >&2
     return 1
   fi
@@ -73,18 +73,141 @@ lacks_dir() {
   return 0
 }
 
-# sites_counted <file>... — how many assertion call sites the audit examined.
+# audit_field <name> <file> — one of the audit's per-file figures for <file>.
+#
+# Read from the audit's own `read=<path> …` line and not from its total, for two
+# reasons. The audit now reads the **closure under `source`** — four of the
+# seven suites get their code from tests/lib/, and a definition there is as live
+# as one in the suite — so a total is a sum over more files than the one being
+# asked about. And per file is the only shape in which "one file went
+# unexamined" is visible at all, which is the case that actually happened.
 #
 # The audit's nonzero exit means "it found something", which is not a failure to
 # count, so it is read for its tally either way.
-sites_counted() {
+audit_field() {
+  local field="$1"
+  local file="$2"
   local out
-  out="$("$AUDIT" "$@" 2>/dev/null)" || true
+  out="$("$AUDIT" --harness "$HARNESS" "$file" 2>/dev/null)" || true
+  printf '%s\n' "$out" | awk -v f="$file" -v k="$field" '
+    $1 == "read=" f {
+      for (i = 2; i <= NF; i++) { split($i, kv, "="); if (kv[1] == k) print kv[2] }
+    }'
+}
+
+# sites_counted <file> — how many assertion call sites the audit examined in it.
+sites_counted() {
+  audit_field sites "$1"
+}
+
+# sites_total <file>... — the audit's tally over a set of files together.
+sites_total() {
+  local out
+  out="$("$AUDIT" --harness "$HARNESS" "$@" 2>/dev/null)" || true
   printf '%s\n' "$out" | sed -n 's/^sites=\([0-9]*\).*/\1/p'
+}
+
+# lines_read <file> — how many input lines the audit's reader saw in it.
+lines_read() {
+  audit_field lines "$1"
+}
+
+# lines_accounted <file> — how many the walk actually disposed of. Every
+# record leaves the audit's main rule through one of four paths and each one
+# counts itself, so this is lines_read unless something skipped a record without
+# saying so.
+lines_accounted() {
+  audit_field accounted "$1"
+}
+
+# audited_closure <file>... — every file the audit reads, following `source`.
+audited_closure() {
+  "$AUDIT" --harness "$HARNESS" --closure "$@" 2>/dev/null || true
+}
+
+# audit_read_whole_file <file> — the audit read every line there is.
+#
+# This is the derived denominator, and it replaces a floor. The site count used
+# to be asserted `-ge 200` against a real 740, which is the shape this file
+# already refused sixty lines below and then left standing here: a hand-written
+# bound cannot say how much of the surface was examined, only that it was not
+# none. Measured — injecting `FNR > 400 { next }` into the audit dropped the
+# examined sites from 727 to 234 with test_install.sh audited at *zero*, and all
+# seven suites stayed green at exactly their published totals on both shells.
+# 68% of the audited surface gone and nothing fired. This audit is the only
+# thing standing behind non-vacuity for the assert_value sites
+# tests/lib/harness.sh says rest on it.
+#
+# The other side of the count is a second program counting the same thing over
+# the same file, compared for equality. It is asked per file rather than in
+# total, because a total can be made up: one suite going unexamined is the case
+# that happened, and it is invisible in a sum. There is no number in this file
+# for the next assertion to make wrong.
+#
+# `grep -ac ''` and not `wc -l`, for the reason
+# tests/lib/forward-promise-check.sh's own record count states: a file whose
+# last line has no newline holds one more *record* than `wc -l` reports, and
+# awk — which is what the audit reads with — sees that record. Two files in
+# this repository are already written that way, so the condition is reachable
+# here and not hypothetical; it is only the closure that happens to exclude
+# them today. Measured: appending `: ;` with no trailing newline to
+# tests/lib/masked-path.sh made this check report "the audit read 90 lines of
+# tests/lib/masked-path.sh, which has 89" and redden both shells — the audit
+# being right and its own denominator being wrong. A guard that refuses a legal
+# file is a guard somebody turns off, and this one is the whole replacement for
+# the `-ge 200` floor.
+#
+# Two comparisons and not one, because there are two ends to introduce a limit
+# at. `lines` against the second count catches a reader that stopped.
+# `accounted` against `lines` catches a walk that stopped while the reader went
+# on — which is what the measured regression was: a rule above the walk, with
+# awk still reading every record and reporting so.
+audit_read_whole_file() {
+  local suite="$1"
+  local read_lines
+  local walked_lines
+  local file_lines
+  read_lines="$(lines_read "$suite")"
+  walked_lines="$(lines_accounted "$suite")"
+  file_lines="$(grep -ac '' "$suite" | tr -d '[:space:]')"
+  if [ "${read_lines:-0}" != "$file_lines" ]; then
+    printf 'the audit read %s lines of %s, which has %s: a check over a file it did not finish reading says nothing about the rest of it\n' \
+      "${read_lines:-0}" "$suite" "$file_lines" >&2
+    return 1
+  fi
+  if [ "${walked_lines:-0}" != "$read_lines" ]; then
+    printf 'the audit read %s lines of %s and accounted for %s: %s lines went past the walk without being examined or deliberately skipped\n' \
+      "$read_lines" "$suite" "${walked_lines:-0}" "$((read_lines - ${walked_lines:-0}))" >&2
+    return 1
+  fi
+  return 0
+}
+
+# <audit script> <file> — the line check's verdict over another audit. A
+# subshell, so the override cannot leak into the checks below.
+read_check_over() {
+  ( AUDIT="$1"; shift; audit_read_whole_file "$@" )
+}
+
+# <audit script> <file> — that audit does not read the whole file, and the check
+# says so. Written as the inverse rather than as `! read_check_over`, because
+# the expected diagnostic of a firing control is noise on a passing run.
+read_check_rejects() {
+  if read_check_over "$@" 2>/dev/null; then
+    printf 'the line check accepted an audit that stops reading at line 400, so it cannot refuse one\n' >&2
+    return 1
+  fi
+  return 0
 }
 
 fixtures="$harness_scratch/fixtures"
 mkdir -p "$fixtures"
+# A copy of a real suite resolves its harness from its own directory, by the
+# idiom every suite opens with. So the fixture directory is given the same
+# `lib` the real one has, and a copied suite loads the real harness rather
+# than being refused for a `source` that cannot be resolved — which would be a
+# refusal about the fixture and not about what the case is testing.
+ln -sfn "$PWD/tests/lib" "$fixtures/lib"
 
 # --- The suites, enumerated rather than named ---------------------------------
 
@@ -201,14 +324,128 @@ for suite in $suites; do
     grep -qF -- "$suite" "$WORKFLOW"
   assert "$suite is in the README's list of the tests to run" \
     listed_in_the_readme "$suite"
+  assert "the audit found an assertion call site in $suite at all" \
+    test "$(sites_counted "$suite")" -gt 0
 done
 
-# The audit ran over something. A tokenizer that matched nothing would report no
-# violations, and every per-suite check above would pass on an empty reading.
-examined="$(sites_counted $suites)"
+# --- The audited set is the closure under `source`, not the list of suites ----
+#
+# The list of files used to be whatever a caller passed, and the caller passed
+# the glob. Four of these seven suites source a library out of tests/lib/, and a
+# definition in a library is as live as one in the suite — measured: one line
+# appended to tests/lib/masked-path.sh redefined `assert_value`, and
+# tests/test_f01.sh reported its exact published 1886 passed, 0 failed over a
+# tree whose skills/skill-audit/SKILL.md had been replaced with the word BROKEN,
+# with the audit green at `sites=767 files=7`.
+#
+# So the audit computes the closure itself, following every `source` it can
+# resolve and refusing every one it cannot, and this file reads that closure
+# rather than restating it. There is no list of libraries here, and a suite that
+# starts sourcing a new one covers it the day it lands.
+#
+# Held two ways, because a derivation with one side is a list with extra steps:
+#
+#   - by a **second reader** below — a line-oriented grep for a literal
+#     tests/lib path on a `.`/`source` line, which over-approximates because it
+#     sees heredocs too, so every one of its hits must be in the closure; and
+#   - by **bash**, in tests/lib/harness.sh itself, where `harness_closure_covers`
+#     holds the files bash says defined the live functions against this same
+#     closure, at every suite's summary. That side cannot be fooled by any
+#     spelling, and it is why a library loaded by a route no reader can follow
+#     fails rather than passing.
+audit_closure="$(audited_closure $suites)"
+echo "  files the audit reads: $(printf '%s' "$audit_closure" | tr '\n' ' ')"
+
+require "the audit names the files it read, so this file has a set to hold" \
+  test -n "$audit_closure"
+
+for suite in $suites; do
+  assert "$suite is in the set of files the audit reads" \
+    quietly grep -qxF -- "$suite" <<CLOSURE_HAS
+$audit_closure
+CLOSURE_HAS
+done
+
+# The second reader, and only one direction of it is asserted: every library it
+# sees sourced has to be in the closure, because a library the audit did not
+# read is the hole.
+#
+# Not the other direction, and the reason is measured rather than assumed. It
+# was written here that `grep` "finds at least as much as the audit's tokenizer
+# does", since it cannot tell a `source` in a heredoc from a real one — and that
+# is false: it also finds *less*. It matches only a literal path on the
+# directive, so `. "$mutation_runner"` at the bottom of this file is invisible
+# to it while the tokenizer resolves the variable and reads the library. Today
+# grep sees one library and the closure holds two. The claim this side can carry
+# is the containment, not the equality, which is what is asserted.
+sourced_by_grep() {
+  grep -hoE '(^|[^a-zA-Z])(\.|source)[[:space:]]+"?tests/lib/[A-Za-z0-9_-]+\.sh' $suites \
+    | grep -oE 'tests/lib/[A-Za-z0-9_-]+\.sh' | sort -u || :
+}
+echo "  libraries a second reader finds sourced: $(sourced_by_grep | tr '\n' ' ')"
+require "the second reader finds a library sourced at all, so its side is not empty" \
+  test -n "$(sourced_by_grep)"
+while IFS= read -r grep_lib; do
+  [ -n "$grep_lib" ] || continue
+  assert "$grep_lib, which a second reader sees sourced, is a file the audit reads" \
+    quietly grep -qxF -- "$grep_lib" <<CLOSURE_HAS_LIB
+$audit_closure
+CLOSURE_HAS_LIB
+done <<GREP_LIBS
+$(sourced_by_grep)
+GREP_LIBS
+
+# And the denominator of the audit itself, per file in the closure.
+# `audit_accepts` above can only ever say "no violation found", and it says
+# exactly that over a file it stopped reading and over one it never opened.
+for read_file in $audit_closure; do
+  assert "the audit read every line of $read_file, not a prefix of it" \
+    audit_read_whole_file "$read_file"
+done
+
+# And the tally over the suites together is the tally over each of them, so the
+# figure this file prints — the one the release notes quote — is the sum of the
+# per-suite figures the checks above hold, rather than a number produced by a
+# run nothing else saw.
+examined="$(sites_total $suites)"
+per_file_total=0
+for read_file in $audit_closure; do
+  per_file_total=$((per_file_total + $(sites_counted "$read_file")))
+done
 echo "  assertion call sites examined: $examined"
-assert "the audit examined every suite's assertions, not an empty reading" \
-  test "${examined:-0}" -ge 200
+echo "  per-file: $(for read_file in $audit_closure; do printf '%s=%s ' "${read_file##*/}" "$(sites_counted "$read_file")"; done)"
+assert "the audit's tally over the closure together is the sum of its tallies over each file in it" \
+  test "${examined:-0}" -eq "$per_file_total"
+
+# --- Control: the denominator above can say a file was not finished -----------
+#
+# The check that matters most here can only ever say "it read all of it", and a
+# check that cannot say the opposite is the defect this whole file is about. So
+# it is handed the regression that was used to prove the floor it replaced:
+# `FNR > 400 { next }` inside the audit's own awk program, which is what a
+# plausible limit or an off-by-one in a bound looks like from the outside.
+#
+# The audit is copied and the rule inserted rather than the real one edited, so
+# nothing about this control can reach the checks above — and it is driven over
+# a real suite rather than a fixture, because a four-line fixture is under 400
+# lines and a control that cannot reach the limit it is testing is the shape
+# being refused.
+truncating_audit="$fixtures/audit-that-stops-reading.sh"
+awk '/^FNR == 1 \{$/ { print "FNR > 400 { next }" } { print }' "$AUDIT" \
+  > "$truncating_audit"
+chmod +x "$truncating_audit"
+
+assert "the injected control really is a different program from the audit" \
+  quietly grep -qF 'FNR > 400' "$truncating_audit"
+assert "an audit that stops reading at line 400 is refused by the line count" \
+  read_check_rejects "$truncating_audit" tests/test_install.sh
+# And the other direction, over the same copied program with the rule taken back
+# out, so the refusal above is the injected rule's doing and not the copy's.
+untruncated_audit="$fixtures/audit-that-reads-it-all.sh"
+grep -v '^FNR > 400 { next }$' "$truncating_audit" > "$untruncated_audit"
+chmod +x "$untruncated_audit"
+assert "the same audit without the rule reads the whole file, so the copy is not what was refused" \
+  read_check_over "$untruncated_audit" tests/test_install.sh
 
 # --- Controls: the audit rejects each shape of a verdict that cannot fail -----
 
@@ -338,6 +575,467 @@ EOF
 assert "the audit leaves a trap that is not the exit handler alone" \
   audit_accepts "$fixtures/other-trap.sh"
 
+# --- bash is the other side, because a list of spellings is not a denominator -
+#
+# Every fixture above is a spelling somebody thought of, and that is exactly the
+# defect: four of the audit's sides were hand-enumerated literals — the harness
+# names, the definition spellings, the EXIT-trap spellings, and the set of files
+# read — and not one of them was held against an independent derivation. Each of
+# the four was a live fail-open. `assert ( ) {` defines the function on 3.2.57
+# and on 5.3.15 and the reader accepted it; a suite shadowed that way reported
+# 20 passed, 0 failed where the real harness reported 18 passed, 2 failed.
+#
+# So the sides are derived and held against the one authority that cannot have
+# a short list: **bash**. Each sweep below generates a product and asks bash what
+# it did, and the reader has to agree. No case names an expected verdict, and
+# the refusal the audit must return is computed from the oracle rather than
+# written beside the case — which is what keeps a wrong repair from passing
+# against its own patch.
+#
+# What is still enumerated, stated plainly: the **operators**. A new spelling
+# mechanism is a line somebody has to write. That is a much smaller and much
+# more reviewable question than "did the author remember every spelling of every
+# name", and it is not zero.
+
+# The names the harness provides, from the two sides that must agree: the text
+# reader that decides what a suite may not shadow, and bash's own record of what
+# this file defined. Held for **equality**, with no number in it — the shape
+# tests/test_f01.sh already holds verdict-guard.sh's primitives to, and the one
+# that was not applied to the list the same audit reads.
+harness_names_derived="$("$AUDIT" --names "$HARNESS" 2>/dev/null | sort -u | tr '\n' ' ')"
+harness_names_loaded="$(printf '%s\n' $harness_provides | grep -E '^[A-Za-z_]' | sort -u | tr '\n' ' ')"
+echo "  harness names the reader derives: $harness_names_derived"
+echo "  harness names bash says it loaded: $harness_names_loaded"
+require "the reader found names in the harness at all, so the comparison has a side" \
+  test -n "$harness_names_derived"
+require "bash recorded the names the harness loaded, so the comparison has a second side" \
+  test -n "$harness_names_loaded"
+assert "every name the reader says the harness defines is one bash loaded from it, and none it did not" \
+  test "$harness_names_derived" = "$harness_names_loaded"
+
+# --- Control: the derivation refuses to come back empty ----------------------
+#
+# The precondition above says this file will not compare an empty set, and that
+# is this file's own protection. The audit is run by tests/lib/harness.sh at
+# every summary of every suite as well, and there the derivation had no floor
+# under it at all: handed a harness that defines no function, it read a suite
+# whose first line was `assert() {` and reported nothing about it, because an
+# empty name set makes the shadowing half of the reader unconditionally silent.
+# A derived side that can be emptied from outside and says nothing is a short
+# list with the list taken out, which is not the repair.
+#
+# So the script refuses it, and this is the control that makes it say so. Both
+# directions, because "it exited nonzero" is also what a found violation looks
+# like: the refusal has to be the usage status and it has to name the harness.
+empty_harness="$fixtures/a-harness-that-defines-nothing.sh"
+printf '# A harness with no function definition in it.\npass=0\nfail=0\n' \
+  > "$empty_harness"
+shadowing_suite="$fixtures/shadows-the-shared-assert.sh"
+printf 'assert() {\n  echo "PASS: $1"\n}\n' > "$shadowing_suite"
+
+audit_refuses_as_unusable() {
+  local out
+  local code=0
+  out="$("$AUDIT" --harness "$1" "$2" 2>&1)" || code=$?
+  if [ "$code" -ne 2 ]; then
+    printf 'expected the usage status 2, got %s:\n%s\n' "$code" "$out" >&2
+    return 1
+  fi
+  printf '%s\n' "$out" | grep -q 'no function definition was found in the harness'
+}
+
+assert "an audit whose harness defines nothing refuses rather than reading a suite against an empty set" \
+  audit_refuses_as_unusable "$empty_harness" "$shadowing_suite"
+assert "the same suite against the real harness is refused for the shadow itself, so the case is about the harness" \
+  audit_rejects "$shadowing_suite"
+
+# What bash itself says a file defines. The oracle.
+name_oracle="$fixtures/what-bash-defines.sh"
+cat > "$name_oracle" <<'EOF'
+#!/usr/bin/env bash
+# Source the file and let bash answer. `declare -F` is not a reading of the
+# text; it is the shell's own record of which names it bound.
+. "$1" >/dev/null 2>&1 || true
+declare -F | awk '{ print $NF }' | sort -u
+EOF
+chmod +x "$name_oracle"
+
+bash_defines_in() {
+  "$BASH" "$name_oracle" "$1" 2>/dev/null | tr '\n' ' '
+}
+
+reader_agrees_with_bash_about_definitions() {
+  local fix="$1"
+  local from_bash
+  local from_reader
+  from_bash="$(bash_defines_in "$fix")"
+  from_reader="$("$AUDIT" --names "$fix" 2>/dev/null | sort -u | tr '\n' ' ')"
+  if [ "$from_bash" = "$from_reader" ]; then
+    return 0
+  fi
+  printf 'bash defines [%s]\nthe reader says [%s]\n' "$from_bash" "$from_reader" >&2
+  return 1
+}
+
+# The verdict the audit must return, computed from the oracle rather than
+# written down: a file that defines a harness name is refused, and one that does
+# not is accepted. A repair that made everything a redefinition would pass the
+# first half and fail this.
+audit_verdict_follows_bash() {
+  local fix="$1"
+  local defined
+  local nm
+  defined=" $(bash_defines_in "$fix")"
+  for nm in $harness_provides; do
+    case "$defined" in
+      *" $nm "*) audit_rejects "$fix"; return $? ;;
+    esac
+  done
+  audit_accepts "$fix"
+}
+
+spellings="$fixtures/spellings"
+mkdir -p "$spellings"
+spelling_n=0
+spelling_shadowing=0
+spelling_innocent=0
+while IFS= read -r spelling_template; do
+  [ -n "$spelling_template" ] || continue
+  spelling_n=$((spelling_n + 1))
+  spelling_fix="$spellings/case-$spelling_n.sh"
+  : > "$spelling_fix"
+  for spelling_name in $harness_provides definitely_not_a_harness_name; do
+    printf '%s\n' "$spelling_template" | sed "s/@N/$spelling_name/g" >> "$spelling_fix"
+  done
+  case " $(bash_defines_in "$spelling_fix")" in
+    *" assert "*) spelling_shadowing=$((spelling_shadowing + 1)) ;;
+    *)            spelling_innocent=$((spelling_innocent + 1)) ;;
+  esac
+  assert "the reader and bash agree about what \`$spelling_template\` defines" \
+    reader_agrees_with_bash_about_definitions "$spelling_fix"
+  assert "the audit's verdict on \`$spelling_template\` follows what bash defined" \
+    audit_verdict_follows_bash "$spelling_fix"
+done <<'DEFINITION_SPELLINGS'
+@N() { :; }
+@N () { :; }
+@N  ()  { :; }
+@N ( ) { :; }
+@N (  ) { :; }
+@N(){ :; }
+function @N { :; }
+function @N() { :; }
+function @N () { :; }
+function @N ( ) { :; }
+function @N(){ :; }
+@N() { :; }  # with a trailing comment
+echo "@N ( ) {"
+: @N
+DEFINITION_SPELLINGS
+
+echo "  definition spellings driven: $spelling_n ($spelling_shadowing defining, $spelling_innocent not)"
+# Both directions have to have happened, or the sweep passed by never reaching
+# the condition it tests — which is the shape this file refuses elsewhere and
+# the shape the release gate found in tests/test_skill.sh's own controls.
+assert "the spelling sweep drove a spelling bash treats as a definition" \
+  test "$spelling_shadowing" -gt 0
+assert "the spelling sweep drove one bash does not, so the refusal is not unconditional" \
+  test "$spelling_innocent" -gt 0
+
+# --- The EXIT trap, held against whether the guard is still there -------------
+#
+# The reader used to look for the word EXIT, and `trap cleanup 0` and `trap
+# cleanup exit` install exactly the handler `trap cleanup EXIT` installs —
+# verified by firing all three on both shells. `trap - EXIT` and `trap '' EXIT`
+# remove it while naming no handler at all, so "does a handler fire" is the
+# wrong oracle too. The invariant is whether the **harness's own** guard is
+# still the EXIT trap afterwards, and that is what is asked.
+trap_oracle="$fixtures/does-the-abort-guard-survive.sh"
+cat > "$trap_oracle" <<'EOF'
+#!/usr/bin/env bash
+# Install a guard the way harness_init does, run the line under test, and let
+# the guard say whether it is still installed. $1 is the marker, $2 the fixture.
+guard() { printf 'SURVIVED\n' >> "$MARKER"; }
+MARKER="$1"
+export MARKER
+trap guard EXIT
+. "$2" >/dev/null 2>&1 || true
+exit 0
+EOF
+chmod +x "$trap_oracle"
+
+abort_guard_survives() {
+  local marker="$1"
+  local fix="$2"
+  : > "$marker"
+  "$BASH" "$trap_oracle" "$marker" "$fix" >/dev/null 2>&1 || true
+  [ -s "$marker" ]
+}
+
+audit_verdict_follows_the_guard() {
+  local fix="$1"
+  local marker="$2"
+  if abort_guard_survives "$marker" "$fix"; then
+    audit_accepts "$fix"
+  else
+    audit_rejects "$fix"
+  fi
+}
+
+traps="$fixtures/traps"
+mkdir -p "$traps"
+trap_n=0
+trap_displacing=0
+trap_harmless=0
+while IFS= read -r trap_template; do
+  [ -n "$trap_template" ] || continue
+  trap_n=$((trap_n + 1))
+  trap_fix="$traps/case-$trap_n.sh"
+  printf 'cleanup() { :; }\n%s\n' "$trap_template" > "$trap_fix"
+  trap_marker="$traps/marker-$trap_n"
+  if abort_guard_survives "$trap_marker" "$trap_fix"; then
+    trap_harmless=$((trap_harmless + 1))
+  else
+    trap_displacing=$((trap_displacing + 1))
+  fi
+  assert "the audit's verdict on \`$trap_template\` follows whether the abort guard survived it" \
+    audit_verdict_follows_the_guard "$trap_fix" "$trap_marker"
+done <<'TRAP_SPELLINGS'
+trap cleanup EXIT
+trap 'cleanup' EXIT
+trap "cleanup" EXIT
+trap cleanup 0
+trap cleanup exit
+trap cleanup Exit
+trap -- cleanup EXIT
+trap cleanup INT EXIT
+trap - EXIT
+trap '' EXIT
+trap cleanup INT
+trap 'echo interrupted' INT
+trap -p EXIT
+TRAP_SPELLINGS
+
+echo "  EXIT-trap spellings driven: $trap_n ($trap_displacing displacing the guard, $trap_harmless leaving it)"
+assert "the trap sweep drove a spelling that displaces the abort guard" \
+  test "$trap_displacing" -gt 0
+assert "the trap sweep drove one that leaves it, so the refusal is not unconditional" \
+  test "$trap_harmless" -gt 0
+
+# --- The library a suite sources is part of the suite ------------------------
+#
+# The set of files was the one side with no derivation at all, and it is the one
+# that cost the most: four of the seven suites source a library out of
+# tests/lib/, the audit read only what a caller passed, and one line appended to
+# tests/lib/masked-path.sh redefined `assert_value` while the audit reported
+# `sites=767 files=7` and exit 0. tests/test_f01.sh printed its exact published
+# 1886 passed, 0 failed over a tree with skills/skill-audit/SKILL.md replaced by
+# the word BROKEN.
+shadow_lib="$fixtures/library-with-a-private-assert.sh"
+cat > "$shadow_lib" <<'EOF'
+# A library, not a suite. Every suite that sources it gets this instead of the
+# shared harness, and no repair to the shared one reaches it.
+assert_value() { echo "PASS: $1"; }
+EOF
+clean_lib="$fixtures/library-with-nothing-private.sh"
+cat > "$clean_lib" <<'EOF'
+a_helper_that_shadows_nothing() { echo hello; }
+EOF
+
+printf 'source %s\nassert "a check the repository decides" test -d tests\n' \
+  "$shadow_lib" > "$fixtures/sources-a-shadow.sh"
+printf 'source %s\nassert "a check the repository decides" test -d tests\n' \
+  "$clean_lib" > "$fixtures/sources-a-clean-library.sh"
+
+assert "the audit follows a source into a library and finds the private copy there" \
+  audit_rejects "$fixtures/sources-a-shadow.sh"
+assert "the audit leaves a suite whose library shadows nothing, so the refusal is the shadow's doing" \
+  audit_accepts "$fixtures/sources-a-clean-library.sh"
+assert "the file a suite sources is in the set the audit reads" \
+  quietly grep -qxF -- "$clean_lib" <<CLEAN_LIB_CLOSURE
+$(audited_closure "$fixtures/sources-a-clean-library.sh")
+CLEAN_LIB_CLOSURE
+
+# And the direction that makes the derivation total rather than smaller: a
+# `source` this cannot resolve is a file whose text would be part of the suite
+# and would not be read, so it is refused rather than shrugged at. A derivation
+# that quietly returns a smaller world is the list it replaced.
+printf '. "$A_PATH_NOTHING_IN_THIS_TREE_CAN_RESOLVE"\nassert "a check" test -d tests\n' \
+  > "$fixtures/sources-something-unresolvable.sh"
+assert "the audit refuses a source directive it cannot resolve to a file" \
+  audit_rejects "$fixtures/sources-something-unresolvable.sh"
+
+# --- The runaway heredoc, in the suite it was walked through -----------------
+#
+# The reproduction, kept: one legal, non-vacuous assertion whose **quoted**
+# argument contains `<<INSTALL_ROUTE`. The old reader ran a greedy `sub` over
+# the raw line, did not know it was inside quotes, and read the rest of the file
+# as heredoc body — `sites=1 files=1 lines=2846 accounted=2846` with `wc -l` at
+# 2846, so both sides of the two-sided count agreed and the audit exited 0 with
+# two vacuous assertions in the swallowed region.
+#
+# Driven over a copy of a real suite and not over a short fixture, because the
+# defect is about swallowing the rest of a file and a four-line fixture has no
+# rest to swallow — a control that cannot reach the condition it tests is the
+# shape this file refuses.
+quoted_opener_line='  quietly grep -qv '"'"'<<INSTALL_ROUTE'"'"' tests/test_install.sh'
+walked_suite="$fixtures/suite-with-a-quoted-heredoc-opener.sh"
+{
+  head -n 20 tests/test_install.sh
+  printf 'assert "the install route writes no heredoc terminator of its own" \\\n%s\n' "$quoted_opener_line"
+  tail -n +21 tests/test_install.sh
+  printf 'assert "the destination is contained" true\n'
+  printf 'assert_value "the copy landed" true\n'
+} > "$walked_suite"
+
+# The same file with the two vacuous assertions left off, so the refusal above
+# is theirs and not the quoted opener's — the quoted word is legal and must not
+# be a finding of its own.
+innocent_opener_suite="$fixtures/suite-with-only-the-quoted-opener.sh"
+{
+  head -n 20 tests/test_install.sh
+  printf 'assert "the install route writes no heredoc terminator of its own" \\\n%s\n' "$quoted_opener_line"
+  tail -n +21 tests/test_install.sh
+} > "$innocent_opener_suite"
+
+assert "a quoted <<WORD does not swallow the file, so the vacuous assertions after it are still found" \
+  audit_rejects "$walked_suite"
+assert "the quoted <<WORD is not itself a finding, so the refusal above is the vacuous assertions'" \
+  audit_accepts "$innocent_opener_suite"
+
+# A heredoc that never closes is the whole class, whatever opened it, and it is
+# refused with no counter: a runaway heredoc is by definition one that reaches
+# the end of the file without its terminator.
+printf 'cat > /dev/null <<A_TERMINATOR_NEVER_WRITTEN\nsome body\nassert "swallowed and unexamined" true\n' \
+  > "$fixtures/runaway-heredoc.sh"
+printf 'cat > /dev/null <<A_TERMINATOR\nsome body\nA_TERMINATOR\nassert "a real check" test -d tests\n' \
+  > "$fixtures/closed-heredoc.sh"
+assert "the audit refuses a file whose heredoc is never terminated" \
+  audit_rejects "$fixtures/runaway-heredoc.sh"
+assert "the audit accepts a heredoc that closes, so the refusal is the runaway's doing" \
+  audit_accepts "$fixtures/closed-heredoc.sh"
+
+# --- The harness's own runtime guards, made to fire --------------------------
+#
+# tests/lib/harness.sh asks bash three questions at every summary, and all three
+# can only ever say nothing. So each is handed the thing it watches for.
+#
+# Every fixture below is run with `"$BASH"` — the interpreter this suite is
+# itself running under — and not with a bare `bash`, which is whichever one is
+# first on PATH. That is the same reason `bash_defines_in` and
+# `abort_guard_survives` already do it, applied to the rest of the file: with a
+# bare `bash` these controls ran under 5.3.15 whichever shell drove the suite,
+# so "the abort guard fires on both shells" was a claim about one of them and a
+# 3.2-only fail-open in any of these three guards had no control that could
+# reach it. Driven under 3.2.57 for the first time, all nine pass — including
+# `declare -F` under `extdebug` naming the file that defined a function, which
+# every one of the shadowing checks rests on.
+shadow_after_load="$fixtures/shadows-after-loading.sh"
+cat > "$shadow_after_load" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+. "$HARNESS_LIB"
+harness_init
+assert "control: a check the repository decides" test -d tests
+assert_value() { echo "PASS: $1"; }
+harness_summary
+EOF
+shadow_out="$harness_scratch/shadows-after-loading.out"
+shadow_code=0
+HARNESS_LIB="$PWD/$HARNESS" "$BASH" "$shadow_after_load" > "$shadow_out" 2>&1 \
+  || shadow_code=$?
+assert "a suite that redefines a harness name after loading is told whose copy is live" \
+  grep -q 'is running a private copy of the harness' "$shadow_out"
+assert "a suite that redefines a harness name after loading fails" \
+  test "$shadow_code" -ne 0
+
+# The census: an assertion that ran at a line the reader never examined. The
+# audit is copied and crippled rather than the real one edited, and the fixture
+# points the harness at the copy the same way read_check_over points this file's
+# helpers at one.
+crippled_audit="$fixtures/audit-that-stops-at-line-5.sh"
+awk '/^FNR == 1 \{$/ { print "FNR > 5 { next }" } { print }' "$AUDIT" > "$crippled_audit"
+chmod +x "$crippled_audit"
+assert "the crippled audit really is a different program" \
+  quietly grep -qF 'FNR > 5' "$crippled_audit"
+
+census_fixture="$fixtures/runs-a-site-the-reader-missed.sh"
+cat > "$census_fixture" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+. "$HARNESS_LIB"
+harness_init
+assert "control: a check the reader can see" test -d tests
+assert "control: a check past where the reader stopped" test -d skills
+harness_audit="$CRIPPLED_AUDIT"
+harness_summary
+EOF
+census_out="$harness_scratch/census.out"
+census_code=0
+HARNESS_LIB="$PWD/$HARNESS" CRIPPLED_AUDIT="$crippled_audit" \
+  "$BASH" "$census_fixture" > "$census_out" 2>&1 || census_code=$?
+assert "a suite that ran an assertion the reader never examined says which line" \
+  grep -q 'ran an assertion at a line the audit never examined' "$census_out"
+assert "a suite that ran an assertion the reader never examined fails" \
+  test "$census_code" -ne 0
+# The other direction, over the same fixture pointed at the real audit, so the
+# refusal above is the crippling and not the fixture.
+census_ok_out="$harness_scratch/census-ok.out"
+census_ok_code=0
+HARNESS_LIB="$PWD/$HARNESS" CRIPPLED_AUDIT="$PWD/$AUDIT" \
+  "$BASH" "$census_fixture" > "$census_ok_out" 2>&1 || census_ok_code=$?
+assert "the same fixture against the real audit passes, so the census refuses the crippling" \
+  test "$census_ok_code" -eq 0
+
+# The closure: code loaded by a route no reader can follow. `eval` is that
+# route, and it is the honest limit of any text reader — which is why the check
+# is bash's and not the reader's.
+smuggled_lib="$fixtures/loaded-without-a-readable-directive.sh"
+cat > "$smuggled_lib" <<'EOF'
+a_function_no_reader_saw_arrive() { echo hello; }
+EOF
+smuggle_fixture="$fixtures/loads-code-the-reader-cannot-see.sh"
+cat > "$smuggle_fixture" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+. "$HARNESS_LIB"
+harness_init
+eval ". \"$SMUGGLED_LIB\""
+assert "control: a check the repository decides" test -d tests
+harness_summary
+EOF
+smuggle_out="$harness_scratch/smuggled.out"
+smuggle_code=0
+HARNESS_LIB="$PWD/$HARNESS" SMUGGLED_LIB="$smuggled_lib" \
+  "$BASH" "$smuggle_fixture" > "$smuggle_out" 2>&1 || smuggle_code=$?
+assert "a suite running code the audit never read is told which file" \
+  grep -q 'running code from a file the assertion audit never read' "$smuggle_out"
+assert "a suite running code the audit never read fails" \
+  test "$smuggle_code" -ne 0
+
+# --- A path named in prose is a path that exists -----------------------------
+#
+# Four sentences in tests/lib/harness.sh named a sibling of this cluster,
+# `audit-assertions.sh`, under the lib directory — including the one asserting
+# that the non-vacuity of every `assert_value` "rests on" it. No file of that
+# name has ever existed; the file is `audit-suites.sh`. One of those sentences
+# is load-bearing documentation of the mechanism this whole cluster is, and a
+# reader who went looking found nothing. Nothing read it, which is why it
+# survived four releases — so something reads it now. This check is why the
+# sentence above spells that name without a directory in front of it.
+lib_paths_named_in() {
+  grep -hoE 'tests/lib/[A-Za-z0-9_-]+\.sh' "$@" | sort -u || :
+}
+echo "  tests/lib paths named in the audited files: $(lib_paths_named_in $audit_closure "$HARNESS" "$AUDIT" | tr '\n' ' ')"
+require "a tests/lib path is named somewhere in these files, so this has a set to walk" \
+  test -n "$(lib_paths_named_in $audit_closure "$HARNESS" "$AUDIT")"
+while IFS= read -r named_path; do
+  [ -n "$named_path" ] || continue
+  assert "$named_path, named in the harness cluster, is a file that exists" \
+    test -f "$named_path"
+done <<NAMED_LIB_PATHS
+$(lib_paths_named_in $audit_closure "$HARNESS" "$AUDIT")
+NAMED_LIB_PATHS
+
 # --- Controls: the harness reports, and says so when it cannot ---------------
 
 # A failing check prints its own label, reaches the summary, and exits nonzero.
@@ -354,7 +1052,7 @@ EOF
 
 failing_out="$harness_scratch/one-failure.out"
 failing_code=0
-HARNESS_LIB="$PWD/$HARNESS" bash "$fixtures/one-failure.sh" > "$failing_out" 2>&1 \
+HARNESS_LIB="$PWD/$HARNESS" "$BASH" "$fixtures/one-failure.sh" > "$failing_out" 2>&1 \
   || failing_code=$?
 
 assert "a failing check prints FAIL against its own label" \
@@ -378,7 +1076,7 @@ EOF
 
 abort_out="$harness_scratch/aborts.out"
 abort_code=0
-HARNESS_LIB="$PWD/$HARNESS" bash "$fixtures/aborts.sh" > "$abort_out" 2>&1 \
+HARNESS_LIB="$PWD/$HARNESS" "$BASH" "$fixtures/aborts.sh" > "$abort_out" 2>&1 \
   || abort_code=$?
 
 assert "a suite that dies before its summary says it aborted" \
@@ -418,7 +1116,7 @@ refuse_out="$harness_scratch/refuses.out"
 refuse_code=0
 side_effect="$harness_scratch/the-step-the-precondition-guards"
 HARNESS_LIB="$PWD/$HARNESS" SIDE_EFFECT="$side_effect" \
-  bash "$fixtures/refuses.sh" > "$refuse_out" 2>&1 || refuse_code=$?
+  "$BASH" "$fixtures/refuses.sh" > "$refuse_out" 2>&1 || refuse_code=$?
 
 assert "a failed precondition prints FAIL against its own label" \
   grep -q '^FAIL: control: a precondition the repository fails$' "$refuse_out"
@@ -447,7 +1145,7 @@ EOF
 
 met_out="$harness_scratch/requires-met.out"
 met_code=0
-HARNESS_LIB="$PWD/$HARNESS" bash "$fixtures/requires-met.sh" > "$met_out" 2>&1 \
+HARNESS_LIB="$PWD/$HARNESS" "$BASH" "$fixtures/requires-met.sh" > "$met_out" 2>&1 \
   || met_code=$?
 
 assert "a met precondition lets the suite run on" \
@@ -476,7 +1174,7 @@ EOF
 
 stuck_out="$harness_scratch/cleanup-fails.out"
 stuck_code=0
-HARNESS_LIB="$PWD/$HARNESS" bash "$fixtures/cleanup-fails.sh" > "$stuck_out" 2>&1 \
+HARNESS_LIB="$PWD/$HARNESS" "$BASH" "$fixtures/cleanup-fails.sh" > "$stuck_out" 2>&1 \
   || stuck_code=$?
 
 assert "the abort diagnostic survives a cleanup step that fails" \

@@ -115,7 +115,10 @@ func cmdProbe(args []string) {
 	// The exit status stays 0. README documents no exit codes for `probe` at
 	// all, so a script wrapping it today can only be relying on 0, and giving
 	// `probe` an exit contract is new surface rather than a repair. Making the
-	// failure audible is the repair; making it branchable is 0.5.0.
+	// failure audible is the repair; making it branchable is new surface, and
+	// 0.5.0 did not add it. docs/profiler-spec.md says the same, in the same
+	// words: a caller that must branch on a bad export uses `capture`, which
+	// does have an exit contract.
 	for _, d := range diags {
 		fmt.Fprintf(os.Stderr, "probe: %s\n", d)
 	}
@@ -503,11 +506,12 @@ func cmdHooksUninstall(args []string) {
 // configuration.
 func hooksFlags(sub string, args []string) (home, command string) {
 	fs := flag.NewFlagSet("hooks "+sub, flag.ContinueOnError)
-	homeFlag := fs.String("home", "", "home directory holding .cursor/hooks.json (default: the current user's)")
+	homeFlag := fs.String("home", "", "home directory holding .cursor/hooks.json and the spool (default: the current user's)")
 	commandFlag := fs.String("command", "", "the hook command to register (default: this binary's own `ingest`)")
 	parseFlags(fs, args)
 
-	return resolveHome("hooks "+sub, *homeFlag), resolveHookCommand("hooks "+sub, *commandFlag)
+	home = resolveHome("hooks "+sub, *homeFlag)
+	return home, resolveHookCommand("hooks "+sub, *commandFlag, home)
 }
 
 // resolveHome is the home a command operates on: the flag, or the current
@@ -538,7 +542,21 @@ func resolveHome(command, flagValue string) string {
 // user's session down with it. Both spellings have to be the same string or
 // `doctor` reports that nothing is registered on a machine `hooks install` has
 // just configured — so there is one of them.
-func resolveHookCommand(command, flagValue string) string {
+//
+// It names the spool for the same reason it names the binary: a hook runs in an
+// environment this tool does not control, and everything the registration needs
+// has to be in the registration. It used to be just `<binary> ingest || true`,
+// so at hook time `ingest` resolved the spool from whatever `$HOME` was then —
+// which for `--home X` is not X. `--home` scoped the registration and not the
+// capture: `doctor --home X` reported `X`'s spool, the hook wrote to the real
+// one, and the README's own try-it example pointed the reader at an empty
+// directory. The home is a parameter rather than something resolved again here,
+// so the command and the file it goes into cannot come to disagree about which
+// machine they describe.
+//
+// A caller who passes `--command` is naming the whole command, including its
+// spool, and gets exactly what they named.
+func resolveHookCommand(command, flagValue, home string) string {
 	if flagValue != "" {
 		return flagValue
 	}
@@ -547,7 +565,7 @@ func resolveHookCommand(command, flagValue string) string {
 		fmt.Fprintf(os.Stderr, "%s error: cannot resolve this binary's path, pass --command: %v\n", command, err)
 		os.Exit(1)
 	}
-	return self + " ingest || true"
+	return self + " ingest --spool-dir " + profiler.SpoolDirIn(home) + " || true"
 }
 
 // resolveSpoolDir is the spool a command reads or writes: the flag, or the one
@@ -603,10 +621,15 @@ func cmdDoctor(args []string) {
 	otelFile := fs.String("otel-file", "", "an export to probe, which is the only way a measurement surface is reported")
 	parseFlags(fs, args)
 
+	// One home, resolved once and used for both halves. The registration
+	// `doctor` looks for is the one `hooks install` writes for this same home,
+	// so the command is derived from it rather than resolved a second time.
+	resolvedHome := resolveHome("doctor", *home)
+
 	printJSON(profiler.DetectEnvironment(profiler.EnvironmentQuery{
-		Home:        resolveHome("doctor", *home),
+		Home:        resolvedHome,
 		SpoolDir:    *spoolDir,
-		HookCommand: resolveHookCommand("doctor", *command),
+		HookCommand: resolveHookCommand("doctor", *command, resolvedHome),
 		Harness:     *harness,
 		ExportFile:  *otelFile,
 	}))

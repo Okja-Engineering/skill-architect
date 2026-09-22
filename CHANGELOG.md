@@ -4,6 +4,894 @@ All notable changes to `skill-architect`.
 
 ## Unreleased
 
+## 0.5.0 — 2026-09-21
+
+Six new profiler subcommands, a contract that fails the build when one of them claims more
+than it read, and one flag on `skill-rewrite`'s drafter. The subject is 0.4.3's carried onto
+new surface instead of onto old prose: a capability is what a probe read and nothing else,
+and this release adds the machinery that refuses to let a new adapter say otherwise.
+**Four things were deliberately not shipped** rather than shipped in a form that does not
+work — the three unlanded harness adapters (Cursor, Codex *and* Devin, not one), three
+`doctor` environment tiers, a time limit on `experiment run`, and a spool-to-profile
+projection — and each is named below with the reason it was declined.
+
+**No Cursor, Codex or Devin adapter ships, and none ever has.** Three adapter drafts existed
+as unlanded work, and the audit of them is why none landed. Measured at this release by
+copying each draft **alone** into `profiler/` at head and running `go build ./...`, one file
+at a time: **`cursor.go` and `codex.go` do not compile, and `devin.go` compiles cleanly.**
+The earlier measurement added all three at once, which makes Go stop at
+`./codex.go:224:15: too many errors`, and the conclusion was generalised past the point the
+compiler had reached. Both of the two read `otelMetric`, `otelLog`, `toInt` and `parseTime`,
+which v0.4.1's OTLP rewrite removed — all four declared at `541af3e:profiler/claude_code.go`
+(`:144`, `:150`, `:222`, `:244`), still declared at `30f374c`, and none of them declared at
+`v0.4.1` — and `cursor.go` reads a **fifth** undefined name, `getBool`. That one has a
+different history, and an earlier version of this entry had it backwards by saying it was
+never declared here at all: `getBool` **is** declared, at
+`0a83615:profiler/claude_code.go:521`, the same ref these citations resolve against. `git log
+--all -S"func getBool" -- profiler/claude_code.go` names `1e4e845` — the commit that added
+the three drafts — so it arrived with them, as the helper for `cursor.go:228` and read by
+nothing else. It is undefined at this head for a reason that is not a removal: `1e4e845` is
+not an ancestor of this release (`git merge-base 0a83615 <head>` is `30f374c`, which predates
+it), so the only branch that ever declared `getBool` is the one that did not land. v0.4.1's
+rewrite accounts for the other four and cannot account for this one, which postdates the
+fork. `devin.go` reads none of the five.
+Worse than stale, and this rather than the compile failure is why none of them lands — two
+of them advertise what they cannot deliver, which is the one thing the contract below exists
+to refuse. `cursor.go:60` sets `caps[MetricTokens] = SourceSQLite` whenever no OTel source
+supplied tokens and the `--export-file` it was given can be `stat`ed, and `cursor.go:150`
+answers that same capability with
+`UnknownTokenResult("Cursor SQLite token schema not yet verified")`; `devin.go:37` reports
+`tokens` from `session_data`, and `devin.go` never returns a count on any path —
+`UnknownTokenResult` at `:75` and `:114`, `ErrorTokenResult` at `:88`, `:98` and `:107`.
+There is no input for which either delivers what it advertised, so landing them was never a
+porting job. **Those `file:line` citations resolve against `0a83615`**, currently the tip of
+`origin/wip/0.5.0-profiler`; none of the three files exists at this release's head, so a
+reader of this changelog needs the ref to open them. `README.md`'s harness
+table said "Planned" for all three before this release and says it after. **The Cursor work
+that is real does ship** — the hook spool, `analyze` and `doctor` — as capture
+infrastructure rather than as an adapter, and the harness row draws that distinction.
+
+**Added**
+
+- **An adapter contract, enforced as a table that fails the build.** Three obligations, each
+  asserted in the direction it fails: a capture names one session and refuses an empty id; a
+  count that was not read has no key in the profile rather than a zero; and **AC9 in both
+  directions** — a capability a probe advertised must be `present` in the profile from the
+  source it named, and a value the profile carries must have been advertised. The checks are
+  a function returning violations rather than assertions calling `t.Errorf`, so the table's
+  own ability to fail is under test (`TestTheContractTableCanFail`), and the registry the CLI
+  resolves `--harness` through is the same list the table walks — with a scan that fails when
+  an adapter is constructed in `cmd/` and escapes it.
+- **`profiler compare --baseline --candidate`** — the paired comparison, with the refusal
+  that is the reason it can be trusted: two profiles whose `capability.adapter_version`
+  differ are **refused, not reconciled**, because the difference between them may be the
+  reader rather than the skill. The refusal is upstream of every subtraction, not a flag set
+  afterwards, and both versions reach the report. Two differing `snapshot_hash`es are a
+  **note and never a refusal** — comparing a skill before and after a change is the whole
+  purpose. **`adapter_version` is the only identity mismatch that refuses**, and the other
+  three are notes: a differing `snapshot_hash`, a differing `harness` and a differing
+  `skill_dir` each emit a note, exit 0, and the subtraction happens. `snapshot_hash` is
+  deliberate; the other two are a decision with a shelf life, named here so nobody reads
+  the refusal as protection against subtracting two different meters. `compare` exits **2**
+  when it ran and nothing was comparable — a new scriptable status, as is `experiment run`'s
+  own 2 for the same condition.
+- **`profiler experiment {design,plan,run}`** — a paired with-skill/without-skill run.
+  Refusals at **four** times, and the design check is a table of rules rather than a list:
+  a design may declare only what the runner actually does (`ordering: blocked`,
+  `analysis_method: difference`, `stopping_rule: fixed`, `$PROFILE` in each command, every
+  identifying field non-empty, and **both conditions naming the same harness**, ordered
+  ahead of the registration check so it survives the day a second adapter is registered);
+  a **plan document** given to `run --plan` is refused for no runs, a step with no command,
+  a step with no profile path, or two steps writing the same path; a **run** stamps the
+  profile path before and after the command, so a step that exits 0 and writes nothing is
+  refused rather than compared as this run's numbers; and each profile is **read back** and
+  checked against the step's declared `harness`, `snapshot_hash` and `skill_dir`. `run`
+  calls the same comparison, so there is one copy of the adapter-version rule. The
+  freshness stamp is `(exists, size, modTime)`, which catches a step that wrote nothing and
+  does **not** catch a step that re-touches a byte-identical profile an earlier run left
+  there.
+- **`profiler ingest` and `profiler hooks {install,uninstall}`** — a Cursor hook spool. This
+  is **capture only**: the payload is written as it arrived, so a reader written later works
+  from files that already exist. Numbers survive the round trip exactly — the decoder uses
+  `json.Decoder.UseNumber()`, because decoding through `map[string]any` puts every number
+  through `float64` and a nanosecond epoch is about 1.8×10¹⁸ — the fixtures carry
+  `1789332594304000000`, against the 2⁵³ ≈ 9.007×10¹⁵ a `float64` holds exactly. "No field
+  is dropped and no value is changed" is the claim, and it has **three** named exceptions:
+  object key order, a duplicate key, and **credential redaction, which is always on**.
+  **The redaction split, stated the right way round** — an earlier draft of this entry had
+  it inverted. `redactSecrets` runs in **both** modes: a field whose normalized name is
+  `auth`, `authorization`, `credential` or `credentials`, or ends in `token`, `secret`,
+  `password`, `passwd`, `apikey`, `privatekey`, `accesskey` or `sessionkey`, is replaced
+  wholesale, and a credential-shaped substring inside a string (bearer, `sk-`, `AKIA`,
+  `ghp_`, a PEM header) is replaced in place. `stripContent` runs **only under `--strict`**
+  and replaces the fourteen content keys — `prompt`, `command`, `tool_input`, `tool_output`
+  and their ten neighbours — with `{"_stripped_bytes": N}`, N being the JSON-encoded size.
+  So **prompts, commands and tool I/O are written verbatim by default**, because on this
+  tool they are the data, and `docs/profiler-spec.md`'s five-bullet contract is the
+  statement of record. Two consequences named rather than left implied: `hooks install`
+  registers no `--strict` and there is no environment variable, so metadata-only mode is
+  reachable only by hand-writing `--command`; and `--strict` is not anonymity — Cursor
+  documents `user_email` on every payload, it matches neither set, and it reaches disk in
+  both modes. Installation merges into an existing `~/.cursor/hooks.json`, writes the
+  `"version": 1` Cursor's schema marks required, and removes only our own entries.
+- **`profiler analyze`** — summarises a spool in sixteen fields: file, line and byte counts,
+  envelope fields, a census of payload keys, and how many lines were unreadable. It
+  describes the **files**, not the session, and it makes no inference about tokens or tool
+  calls — the guard is the type, not the prose. One of the sixteen is a **census of key
+  values**: `payload_key_values` quotes the value of every key that is neither a content
+  field nor numeric, up to 64 characters, unbounded in cardinality — so absolute working
+  directories, conversation ids and any field not on the redaction list appear in it
+  verbatim. It carries the same "read it before you publish it" caution as an experiment
+  result, which this entry previously gave only to the experiment result.
+- **`profiler doctor`** — what this machine can and cannot measure. **Two tiers, `none` and
+  `export`**, and a tier is only ever what a probe read from a real file. The function that
+  decides a tier takes a harness name and a path and cannot see the home, the spool or the
+  environment, so there is nothing available to it from which a tier could be raised.
+- **`profiler/queries/`** — eight independently runnable DuckDB queries over a spool, with
+  the column list derived from the event type by reflection so a query that falls behind the
+  schema turns a test red. "Independently runnable" is a **manual** claim standing beside
+  automated ones, and the asymmetry is named rather than hidden: `duckdb` is a new external
+  tool, it is not one of the ten the skills require, no Go test, shell suite or CI step
+  invokes it — the tests read the `.sql` files as text — and the verification is that all
+  eight were run by hand against a seeded spool on DuckDB v1.5.5 and all eight returned
+  rows.
+- **The Claude Code adapter reads skill activation.** The source is
+  `claude_code.skill_activated`, **the event and not the `skill.name` attribute**. The event
+  is logged when a skill is invoked and only then, so one record is one activation and its
+  timestamp is an invocation time. The attribute also rides along on `token.usage`,
+  `cost.usage`, `api_request`, `api_error` and `api_refusal`, where it marks a skill active
+  *for that request* — a skill used across five requests carries it five times, at flush and
+  request times. Reading those as activations would report a count and a set of times the
+  harness never recorded, so an export thick with the attribute and carrying no event is
+  `skill_activation: unknown`, and `profiler/testdata/otlp/skill_name_present.json` is the
+  negative control that pins it.
+- **`skill-rewrite`'s `draft-rewrite.sh` takes `-o|--output`.** It writes anywhere the caller
+  can write, **except four destinations**: an existing directory (the redirect fails on its
+  own and reports "could not open" when the truth is you named a folder), a symbolic link
+  (`: >` follows it and truncates the far end, so the name and the landing place are two
+  different places), any `SKILL.md` (a draft is not a skill, and written over one it destroys
+  the document it was built by reading), and anything inside
+  `$HOME/{.claude,.cursor,.codex,.devin,.config,.agents}` — **six** roots — because an agent
+  reads `~/.claude/skills/` **as skills**, so a draft dropped in one is not a stray file but
+  a document that may be loaded as instructions. `.agents` is in that list because the
+  rationale demands it: `README.md` documents `~/.agents/skills/` as a global skills
+  directory for Codex and for Cursor, a draft written there is read as instructions by the
+  same argument, and the list is now compared against that README table as well as against
+  `skills/skill-rewrite/SKILL.md` — the two used to agree with each other and both disagree
+  with the document that says where an agent reads skills from. **The bound is decided after
+  resolving the path, not from its spelling**: `$HOME/drafts/x.md` where `drafts` links into
+  `.claude/skills` is refused, and `$HOME/.claude-notes/x.md` is accepted though
+  `$HOME/.claude` is a string prefix of it. A path that cannot be resolved counts as
+  protected and exits 3 — "I could not tell where this would land" is not "go ahead". Inside
+  the bound `-o` is an ordinary redirect: it **overwrites an existing file and is
+  idempotent**, so it re-runs over its own output the way the default destination always
+  has. The four refusals apply to the destination `-o` names and not to the default, which
+  still writes beside the target's own `SKILL.md` — and `-o ""` falls through to that
+  default rather than refusing, so a caller passing an unset variable writes into the target
+  skill's own directory, which is the outcome `-o` exists to avoid. No new exit status,
+  and both of the two the header registers are reachable here: a destination this script
+  **refuses** is the `1` it registers for a usage or target error, and one it **cannot
+  resolve** is the `3` it registers for an execution error.
+- **`tests/lib/mutation-runner.sh`** — the mutation runner, in the test library instead of
+  rebuilt by hand in slice after slice. (No numeral here: the earlier drafts said five, and
+  the thing being counted was uncommitted worker state rather than anything derivable from
+  this tree — `tests/lib/mutation-runner.sh` landed once, in S9.) Seven verdicts, each with its own exit status
+  and its reason on the same line: KILLED, SURVIVED, DID NOT BUILD, SKIPPED, DID NOT END,
+  DID NOT RUN, NOT APPLIED. **The absence of a verdict is a verdict and never a pass** — the
+  readers ask whether the suite reported a tally at all, rather than searching its output for
+  a failure line, which asks "did anything fail" of a suite that may never have started. The
+  restore is unconditional, verified by byte comparison, and is `cp` from a backup rather
+  than any git operation.
+
+**Changed**
+
+- **`AdapterVersion` is `0.5.0`, and it is deliberately not held equal to the plugin
+  version.** It tracks what a profile contains and moves as soon as that changes, which is
+  inside a release rather than at the end of one; the five plugin manifests move when the
+  release is cut. `tests/test_skill.sh` asserts both and asserts them separately.
+  **The upgrade consequence, which this entry previously left for a reader to assemble from
+  two bullets:** because `compare` refuses a pair whose `adapter_version` differ, **every
+  profile captured with 0.4.x is refused by `compare` at this release.** Driven: a stored
+  0.4.3 profile beside a fresh 0.5.0 one exits **2**, with the refusal naming both versions
+  and every metric `comparable: false` upstream of any subtraction. That is the refusal
+  doing its job, and it means a stored profile library has to be re-captured before it
+  compares against anything from this release. 0.4.3 made the same disclosure for its own
+  bump, in the release notes; this one is stated in both documents.
+- **The profile schema stays `skill-architect/profile/v1`.** The rule is written down: v1
+  stays while a v1 reader is merely *ignorant* of a new key, and v2 is required when a v1
+  reader would be *wrong*. Set-diffing the profile's `json:` tags against `v0.4.3` gives
+  **nine** added keys, and this entry used to name eight of them: `error_type`, `count` and
+  `id` on a tool call; `category`, `detail`, `operation_name` and `confidence` on an
+  attribution; `estimated_context_tokens`; and **`total`** inside it, which is the one added
+  key without `omitempty` of its own. Each is optional and absent when it was not read —
+  `total`'s predicate holds through its parent, since `*EstimatedTokens` is a pointer with
+  `omitempty`, so a profile that estimated nothing carries no key at all.
+  `estimated_context_tokens` is a **pointer** for exactly that reason: as a value
+  type with `omitempty` it would emit `{"state":""}` on every profile, a state outside the
+  vocabulary a v1 reader walks, and would have forced a v2 nobody wanted.
+  **The rule's own hard case is in this release, and it is a value rather than a key.**
+  `skill_activation` gained an `error` state (`ErrorActivationResult`), where v0.4.3 had
+  `{present, unknown}` as the complete domain and said so in `types.go` — *"and has no Error
+  constructor: skill activation is a property of the harness and of this adapter, not of any
+  export, so no export can fail it"* (`v0.4.3:profiler/types.go:212`, quoted whole; an
+  earlier version of this entry shortened it inside the quote marks). A supplied export that
+  cannot be read now yields
+  `skill_activation: error` alongside the other three. A v1 reader ignorant of the value
+  still skips it; a v1 reader that **switched** on the two documented values is wrong about
+  that one case. The schema stays v1 in this release, and the decision is recorded here
+  rather than made silently, because by the rule quoted two sentences up this is the
+  closest call in the release.
+  **One key is neither optional nor absent, and it is in the capability report:** that
+  report went from five keys at v0.4.3 to six, because `claude_code.go` sets
+  `MetricEstimatedContextTokens: SourceNone` unconditionally. It is always present and
+  always `none` — a signal reported as unavailable rather than a key nobody wrote — and it
+  is in `capture`'s stored output as well as in `probe`'s, where `compare` reads it.
+- **`doctor`'s `hooks`, `server_api` and `enterprise` tiers are gone, and the reason is the
+  point.** A preview of this command reported a `hooks` tier when `~/.cursor/hooks.json`
+  carried our entry, a `server_api` tier when `CURSOR_ADMIN_API_KEY` was set, and an
+  `enterprise` tier when `OTEL_EXPORTER_OTLP_ENDPOINT` was. **None of the three is a
+  measurement.** There is no Admin API client in this repository; an OTLP endpoint is where a
+  harness *sends* telemetry, not a file this tool can read; and no adapter in this build
+  reads a spool, so a registered hook is a capture waiting for a reader. A user upgrading
+  from that preview will notice they are gone — they were removed because a tier is a claim
+  about what can be measured, and each of those three raised one on the strength of a file
+  existing or a variable being set. The `getenv` parameter went with them: nothing else read
+  it. What the machine actually has is still reported, under `observed`, with counts.
+- **`profiler/spool_profile.go` is now `profiler/spool_read.go`** (and its test with it).
+  Internal, unexported, same package, no API change; nothing shipped the old name.
+- `AGENTS.md` gains an Operating principles section, and `.gitignore` gains the boundary
+  entries — `go.work`, `go.work.sum`, `skillgate/`, `skills/skill-gate/`, `.scuba/`, and
+  `.venv/` widened to `.venv*/` — each with a comment saying why, checked in both directions
+  so an over-broad pattern cannot silently make a shipped path unstageable.
+- `tests/lib/out-of-scope-check.sh` is the out-of-scope barrier as a runnable script rather
+  than a convention, held in both directions by `tests/test_harness.sh` over fixture
+  repositories plus clean-index and near-miss controls.
+
+**Fixed**
+
+- **Four false documentation claims, found by sweeping rather than by trusting a list.**
+  `README.md`'s "the comparison engine is not yet built" and "the integration point for
+  **future** paired comparisons (F04)" were both falsified by `compare` landing.
+  `.out-of-scope.md`'s F04 bullet now says what is genuinely out of scope — the plugin never
+  launches a model or spends tokens of its own. And `docs/profiler-spec.md`'s "F04 is
+  expected to compare only profiles carrying the same `snapshot_hash`" was false and **must
+  stay false**: comparing a skill before and after a change is the paired comparison's
+  entire purpose, so two snapshot ids are a note.
+- **The coverage figure for `profiler/cmd` was an artifact, and the measurement is fixed
+  rather than the number quoted.** Every CLI test runs the binary as a *subprocess*, and
+  `go test` counts only statements executed in the test process — so adding a subcommand
+  exercised end to end made the reported percentage *fall*. The test binary is now built
+  with `-cover` when `GOCOVERDIR` is set, so the subprocess writes its counters into the same
+  directory. `go test -cover ./...` at this release: **97.9%** for `profiler`, **94.7%** for
+  `profiler/cmd`, **95.9%** for `profiler/internal/homesafe`. The ledger's recorded 12.6%
+  for `profiler/cmd` was that artifact. Note the command: the `./cmd` figure holds under
+  `go test -cover`, and `go test -race -cover ./...` reports a fraction of it, because
+  `-race` breaks the `GOCOVERDIR` propagation the subprocess coverage depends on. The two
+  only functions in `internal/homesafe` short of 100% are `PathContains` at **87.5%** and
+  `resolve` at **95.8%**, by `go tool cover -func`. That package's figure went **down** over
+  this release, from the 97.0% an earlier draft of this entry published, and the fall is the
+  containment rewrite below rather than a regression in what is tested: the walk that
+  replaced the string comparison asks the kernel more questions, so it has more error arms.
+  Exactly **five** statements in the package are uncovered and every one of them is an error
+  return — three from `os.Stat` on a component the walk has already reached
+  (`homesafe.go:189`, `:199`, `:215`), one from `os.Getwd`, one from `os.Readlink` after an
+  `Lstat` has already reported a symlink — so reaching them needs the filesystem to change
+  underneath a decision that is already in progress. Reported rather than chased, because
+  restructuring working code to move a percentage is the kind of change this release exists
+  to refuse. And measured, so that nobody reports a
+  false regression: `go test -race -cover ./cmd` gives **3.4%**.
+- **Containment is decided by filesystem identity, not by comparing paths, in all three
+  implementations of that decision.** Every one of them used to fold `.` and `..` textually
+  over the whole string and only then resolve symlinks over the deepest existing ancestor,
+  so a `..` that crossed a symlink was folded against the *link's own name* rather than
+  against its target, and a destination that resolved **into** a protected directory was
+  judged outside it. An earlier draft of this entry named resolution order as the repair —
+  symlinks resolved before any `..` is folded — and that was the first fix rather than the
+  property the barrier now rests on, because ordering the string operations correctly still
+  leaves a string comparison, and **two more escapes lived in the comparison itself**: on a
+  case-insensitive volume `~/.CLAUDE` is another name for `~/.claude`, and on APFS an NFD
+  spelling is another name for an NFC one, so both resolved to strings that did not match
+  and the write landed inside anyway. What ships instead compares the one handle no spelling
+  can change: the shell halves walk the kernel's own resolution as a sequence of `cd -P` and
+  ask `[ . -ef "$root_dir" ]`, device and inode; the Go half returns the directory the walk
+  reached and asks `os.SameFile`. `filepath.Clean`, `Abs`, `Join`, `Rel`, `Dir`,
+  `EvalSymlinks` and `strings.HasPrefix` appear in `homesafe.go` only inside comments
+  explaining their absence, and `path_resolved`, `path_absolute` and `path_normalized` are
+  gone from `tests/`, `skills/` and `docs/` entirely — the textual folders are **deleted**
+  rather than left sitting in a file whose one invariant forbids them. Driven at this
+  release, on the shipped drafter: with `drafts` a link into `$HOME/.claude/skills`, the
+  destination `$HOME/drafts/../skills/x.md` is **refused** (exit 1, "lands in the live
+  configuration directory … whatever it is spelled"), while `$HOME/.claude-notes/x.md` is
+  accepted and written though `$HOME/.claude` is a string prefix of it — both directions,
+  because a repair that closes only the hole costs a legitimate destination. **A name is
+  compared in exactly one place, and there it is three-valued:** a root that does not exist
+  yet has no identity, so the same bytes are inside, two all-ASCII names differing by more
+  than case are outside, and anything else has **no answer**, which every caller turns into
+  a refusal. Folding the case or normalising would each be a guess, and neither is
+  fail-closed for both consumers — the drafter keeps writes *out* of a protected directory
+  while the install suite keeps them *in* a scratch root, so "this may be the root's name"
+  has to refuse rather than decide. The tests are pinned to the invariant and not to the
+  patch: no case names an expected verdict, each spelling is performed twice over two trees
+  — once as a real write, so the **filesystem** says where the bytes landed, and once
+  through the barrier — and the two must agree
+  (`TestPathContains_AgreesWithWhereTheWriteLands`,
+  `TestPathContains_DecidesAfterResolution`). The case set is **generated** from the
+  protected-root list crossed with a set of mutation operators rather than enumerated, which
+  is what produced the case-folding and normalisation rows the hand-written table had none
+  of. A path that cannot be resolved counts as
+  protected. `profiler/internal/homesafe` is the Go half, one package rather than three
+  copies. The
+  suites that install hooks, write spools and run the CLI redirect `HOME` into a scratch
+  directory, and the `$HOME` anchoring is itself asserted — a barrier that resolved a literal
+  home would pass every refusal assertion on the machine that wrote it and would be reading a
+  live configuration directory to do it.
+- `doctor` looks for the command `hooks install` actually registers — not a literal written
+  out here, which is how this entry came to name the pre-`--spool-dir` build while the
+  `--home` bullet below stated the real one; it is built in one place in `main.go` and read
+  through the same reader and the same match the installer and uninstaller use — instead of
+  string-matching `hooks.json` for `"profiler ingest"`, which
+  would have missed every real registration and counted a foreign hook that merely mentioned
+  us. A mutation dropping the `|| true` survived the whole suite while both halves stayed
+  self-consistent, so the shared call is now derived from `main.go` with a control.
+- **`--home` scopes the capture as well as the registration.** The registered command
+  carried no `--spool-dir`, so at hook time `ingest` resolved a spool from whatever `$HOME`
+  was when the hook fired, while `doctor --home X` reported `X/.skill-architect/spool` — a
+  directory the installed hook never wrote to, reported as the spool with every count in it
+  zero, which made the README's own try-it-somewhere-else example point the reader at an
+  empty directory. `hooks install` now registers
+  `<absolute binary> ingest --spool-dir <home>/.skill-architect/spool || true`, and the
+  layout is `profiler.SpoolDirIn(home)` in one place instead of written out three times and
+  held together by a comment. Driven end to end: the registered command, run through a
+  shell with `HOME` pointed somewhere else entirely, writes into the `--home` spool, and
+  `analyze --spool-dir <home>/.skill-architect/spool` reads the line back.
+- A corrupted line in a spool is skipped by the reader and counted, rather than costing the
+  file.
+- **`MetricSource`'s five unproducible values say so, and a guard holds them.** `hooks`,
+  `hooks_estimated`, `session_data`, `server_api` and `sqlite` are legal values of a
+  profile's `source` key that no shipped capture can produce, and none of them carried a
+  comment, so the claim was made silently by the declaration — a reader seeing `sqlite` in
+  the enumeration concludes some capture reads a SQLite database, and `server_api` is one of
+  the three `doctor` tiers this release removed for advertising a surface nothing reads.
+  Each now carries the note, and a test reads the constants **and their doc comments** out
+  of `types.go` by AST, reads every non-test file in both packages for references, and
+  requires each value to be either produced or annotated — in both directions, so a note
+  left on a value that has *gained* a producer is also a failure. The values stay: they are
+  the profile schema's documented `source` vocabulary.
+
+**Documentation**
+
+- `docs/profiler-spec.md` gains the adapter contract, the comparison contract, the experiment
+  contract, the hook spool contract, and sections on summarising a spool and on reporting
+  what a machine can measure. `README.md` gains "Comparing two profiles", "Running a paired
+  experiment", "Capturing Cursor hooks to a spool", "Reading a spool back" and "What can this
+  machine measure?".
+- **Every marker in the tree that read "0.5.0" as an assignment is re-pointed, and a check
+  holds that instead of a count.** This entry used to publish a number — four — and then
+  enumerate three, and the real figure depended on whether you were counting lines or
+  subjects; the class had by then been found and repaired in five rounds, each round in a
+  place the previous round's reader did not look. So there is no number here.
+  `tests/lib/forward-promise-check.sh`, driven from `tests/test_skill.sh`, reads **every
+  tracked file** — the denominator is `git ls-files`, because two of the last round's
+  markers lived in `tests/` and `skills/`, which the previous readers' roots (`.`,
+  `../docs`, `../README.md`) do not reach — and fails the build on a line that *assigns*
+  work to the release being cut, while leaving a line that records history alone: "0.5.0 did
+  not add one" passes, and `tracked for <the version being cut>` does not. It reads a closed vocabulary of
+  deferral verbs rather than the version string, and the reason is the ratio:
+  `git grep -o '0\.5\.0' | wc -l` against `git grep -n '0\.5\.0' | wc -l` puts the version on
+  far more lines than this release has promises, the check reports no findings, so **every
+  one of them is correct** and a check on the string alone would fire on all of them.
+  (An earlier draft of this entry said "about seventy … about sixty of those are correct",
+  which undercounted the total and, worse, implied a third of them were wrong. The two
+  places that carried a variant of it — the reader's own header comment and
+  `tests/test_skill.sh` — publish **no numeral at all**: a figure in a comment that nothing
+  re-derives is stale by the next release, and the argument does not rest on it. **This
+  sentence published one for the same quantity four lines above that claim, and it does not
+  now.** Its corpus was the whole tracked tree, which contains this document and the release
+  notes, and those two hold about a third of the occurrences — so a reflow that changes no
+  word moves it, nothing in the repository re-derives it, and the census was doing no work
+  that the ratio does not do. It went stale exactly that way while this round was being
+  written: three occurrences and two lines left the tree through prose edits alone, before
+  anyone recounted. The commands stay, because a reader can take the measurement; the output
+  goes, because it cannot stay true.)
+
+  **That vocabulary is a set of verbs, and this release is where it stopped being a set of
+  spellings.** The matcher tested the raw record, so every alternative in its own closed set
+  was in effect a lowercase spelling, and a capitalised member of the set went past it
+  silently — at a sentence start, at a bullet start, or inside a bolded lead-in, which is
+  this repository's commonest prose shape. All 18 of the reader's fixture cases were
+  lowercase, so no control held that half. The repair is not seven more alternatives in the
+  list. The record is **case-folded once**, at the single point it reaches the shape tests,
+  and the tests are left unanchored: capitalisation, ALL CAPS and mixed case become one
+  `tolower`, and a leading `-`, `*` or `**`, indentation, a colon or an em dash before the
+  verb stop being forms to enumerate at all, because a position was never a shape. All five
+  shapes are now matched in any case and in any position in the record. (The caught form is
+  still deliberately not spelled out here, because writing it into this section would be
+  writing the thing the check refuses — and the check does refuse it: it fired on this
+  reader's own header comment while this entry was being written, and that is the check
+  working, not a false positive.)
+
+  **How far a shape reaches, because "in any position" is not "in any form".** A shape is
+  the span from the verb to the version, and markup *around* that span is a position: a
+  list marker, indentation, a colon or an em dash in front, emphasis opening before the
+  verb and closing after the version. **Inside the span it is the other way round.** The
+  pattern interiors are letters and spaces, with one literal space in front of the version
+  and the version itself bare, so the phrase is missed whenever something interrupts it
+  between the verb and the version — emphasis closed around the verb alone instead of
+  around the whole phrase, which is the near neighbour of the reader's own worked example
+  and the lead-in style this repository actually writes; the version set in inline code,
+  written as a link label, or quoted; a comma, a colon, a bracketed aside or a digit
+  between the verb and its preposition; a tab or a doubled space where one space is
+  wanted. Trailing punctuation and a `v` prefix are both fine: the gap is on the left of
+  the version, not the right. This is **pre-existing** — the interiors are byte-identical
+  to what they were before the case repair, which neither opened nor closed it — and it is
+  **named here as 0.6.0 surface rather than repaired**, alongside the `macos-latest` job
+  below, for the same kind of reason: widening the interiors is a false-positive budget and
+  not a regex. This tree is documentation-heavy and both release documents describe this
+  reader, so a wider matcher starts reading prose *about* the check as the check —
+  measured, a crude widening of the other three shapes lands on a sentence in the release
+  notes that is describing this very reader, while the same treatment of the deferral shape
+  alone adds nothing on this tree. That is a decision to take with evidence in front of it,
+  not a tightening to slip in at a release gate. **No sentence in this release claims this
+  class is closed.**
+
+  **And the verb and the version no longer have to share a line.** Each record is examined
+  joined to the one before it, which is the same join a prose reflow performs, and a finding
+  seen only that way prints `across a line break` in its shape. This was live rather than
+  theoretical: this section's own earlier copy of this paragraph escaped the reader only
+  because a break happened to fall between the verb and the version, so re-wrapping a
+  paragraph nobody had edited would have reddened CI later. The join resets at a file
+  boundary, at a section heading and at a blank line — none of those is a wrap — and
+  sentence-ending punctuation blocks it, so a sentence merely ending in a deferral verb
+  before the next begins with the version is not a finding.
+
+  **The controls, because the previous ones could not reach this.** All 18 cases ran one
+  line in a file of one line. There are **42** single-line cases now — 30 refusals covering
+  each member of the case class, each of the five shapes capitalised, and the version word
+  on the record but away from the `is`; and 12 acceptances holding the other side of the
+  fold, each of which fails against a reader with no exemption at all. **That last property
+  is not decoration.** The acceptance that stood for this boundary before did not have it:
+  it ran on past the version into words the shape does not admit, so it never reached the
+  exemption and passed identically whether the exemption was correct, widened or deleted —
+  which is how the widening below shipped under a green suite. An acceptance nothing can
+  make fail is not a control. On top of them the class is driven over a **real multi-line
+  document** with the
+  texture the reader actually meets: headings, bulleted lists with bolded lead-ins, wrapped
+  paragraphs, an indented line and a fenced block, five promises planted in it and eight
+  innocent lines naming the version planted beside them. The assertion is on the **set of
+  line numbers the reader names**, written out as literals and checked against the
+  document's own length, so a reader blind to a planted shape and a reader firing on an
+  innocent line both fail it — an exit-status check would have passed on four of the five.
+  The wrapped promise is asserted by the shape the reader reports, and driven both inverse
+  ways: with the wrap closed up it must still be refused and no longer attributed to a
+  break, and with the promise taken out those two lines must go quiet while the other four
+  still fire.
+
+  **What it still does not do, stated rather than left to be found.** The window is two
+  records, so the verb and the version have to land on records next to each other; a promise
+  spread wider than that is not seen. (An earlier wording here said "with neither the verb
+  nor the version adjacent to the join", which reads as though a verb next to a break were
+  enough. Driven, it is not: no single join carries both.) And a version
+  surface standing beside the `is` exempts that occurrence of the bare `is <version>`
+  shape. `CHANGELOG.md` and
+  `RELEASE_NOTES.md` are
+  scoped to the section for the release being cut, because 0.4.3's section saying what 0.4.3
+  deferred is history and stays byte-identical — **and that scope now fails closed, which it
+  did not when this entry was first written.** The section was found by an exact heading
+  match, so a heading written any of several ordinary ways was not a narrower scope but no
+  scope: every record left through the skip counter, the accounting added up perfectly, and
+  the reader exited 0 over a document it had not read a line of. Driven end to end, an
+  assignment planted inside the section went unreported that way. The repair is not a list
+  of tolerated heading spellings, which would leave the next one — the probe folds case like
+  everything else here, and a scoped file that never entered its section is a **finding**,
+  named as one. The controls for it are new too, and they are the first in this file to
+  exercise section scoping at all: every fixture case runs the reader in its one-file mode,
+  which applies no scoping and no exemption, so the two halves of the reader that decide
+  what it reads at all had nothing holding them. **Its own counts have other sides, and no
+  numeral is published for any of them:** the files it opened are compared for equality
+  against the tracked files that have a record in them (not against `git ls-files` outright —
+  awk's per-file counter cannot fire for a zero-byte file, and
+  `profiler/testdata/otlp/empty.json` is deliberately one, which is why an earlier draft's
+  "162 of them" sat beside a `git ls-files` of 163); the records it read are compared against
+  `grep -ac ''` over those same files, a different program counting the same thing rather
+  than `wc -l`, which is short by one on each of the two files with no final newline; and the
+  reader itself refuses `examined + skipped != lines`, so a limit inserted anywhere in the
+  walk is caught by the reader on its own terms. What the markers were waiting for is still
+  waiting: `probe` has no documented exit contract; there is no bundled receiver subcommand
+  and `--otel-file` is still the only input; and schema v1 still has no field in which a
+  `present` result can say what it did not count. The marker that *closed* is skill
+  activation, which this release reads. The version-surface exemption named above is there
+  because `AdapterVersion is` and "building it is" the same version are the same three
+  words doing opposite jobs, and what it asks is a **relation, not a word count**: the
+  subject standing beside *that* `is`, through any markup, has to be the surface, and each
+  occurrence on the record is asked separately — so a record carrying an exempt clause and
+  an assignment at once is still refused. It was a substring over the whole record until
+  this round, and that was two holes rather than one: one exempt word anywhere excused every
+  occurrence of the shape on that record, and the discrimination that remained was carried
+  entirely by capitalisation, so **case-folding the record for the shape tests folded the
+  exemption with it** and five assignments this reader had been refusing stopped being
+  refused — caught here by a driven comparison against the previous head, not by the suite,
+  because the accept case standing for that boundary turned out to pass against a reader
+  with the exemption deleted outright. It is now six refusals and two acceptances, each of
+  which fails against a reader with no exemption. What still gets past is a subject that
+  genuinely is a version surface in a sentence that is nonetheless assigning work, which
+  needs the sentence parsed.
+- **The two release documents are now a guarded version surface.** Deleting the entire
+  0.5.0 section from both of them used to leave every shell assertion green and
+  byte-identical, and nothing in `tests/` mentioned either file — the lesson
+  `tests/test_skill.sh` had already learned for `marketplace.json` was never applied to the
+  two documents that *are* the release. The version is read from
+  `.claude-plugin/plugin.json`; each document must carry a section for it; each section must
+  have a non-blank line under it, because a heading with nothing beneath it is the same
+  deletion one line later; and the two documents must name the **same set** of releases,
+  derived from both and compared for equality, which fires whichever file a section went
+  missing from.
+- `README.md`'s signal summary and its Claude Code harness row name `skill_activation`. They
+  read "tokens, tool calls, timing" and were one release stale.
+- `README.md`'s statement that the install and update rows were executed "in this release"
+  now names 0.4.3, the release that ran them. This release did not re-run them.
+- The sentence that the hook spool section had — "this release reads nothing back out of it"
+  — was falsified inside this same release by `analyze`, and now says the thing that is true:
+  no profile is produced from a spool.
+
+**Verification**
+
+- **3152 assertions across seven shell suites, 0 failed, identical under bash 3.2.57 and
+  bash 5.3.15**: `test_f01` 1912, `test_f02` 350, `test_harness` 276, `test_rewrite` 401,
+  `test_skill` 141, `test_install` 52, `test_walk` 20. Against 0.4.3's 2499 across the same
+  seven, re-measured from the `v0.4.3` tag rather than quoted — 1868 / 350 / 75 / 85 / 53 /
+  48 / 20. Every figure here is each suite's own last line under
+  `for s in tests/test_*.sh; do "$B" "$s" | tail -1; done` run once per shell; the three
+  suites that moved most late in the release are the ones whose case sets became generated
+  products rather than hand-written tables.
+- **286 top-level Go test functions, of which 285 pass and one skips by design, and 1014
+  subtests pass under `-race`** — 239 top-level in `profiler`, 35 in `profiler/cmd`, 12 in
+  `profiler/internal/homesafe`; of the subtests, `profiler`'s 579 are 546 direct and 33
+  nested one deeper, with 87 in `profiler/cmd` and 348 in `profiler/internal/homesafe`, of
+  which 320 are nested one deeper because that package's bound is generated on two axes.
+  Against 0.4.3's 93 and 452, measured the same way from the tag. The skip is
+  `TestHomeBarrierChild`, whose body a parent test runs in a child process; it is named here
+  because "286 pass" would be one short of true. 64 OTLP fixtures, against 59.
+- Dogfooding, with `skillscore@2.0.2` and `skill-validator v1.6.1`: `skill-audit` **92.5
+  (A-)**, `skill-rewrite` **89.5 (B+)**. Both validate with zero errors and zero warnings,
+  asserted by `tests/test_skill.sh`.
+- Every slice in this release proved its own checks by mutation — reverting each check and
+  watching it redden — and the runner prints a verdict in every direction rather than
+  treating the absence of a failure line as a pass. **Two of this release's own non-vacuity
+  checks could not redden, and they were the checks standing behind everything else**, so
+  they are now derived denominators compared for **equality** instead of hand-written
+  floors — and by the end of the release the same treatment had been applied to everything
+  in the file that stood behind a number somebody chose. Earlier drafts of this entry
+  described the repair as it stood mid-release, with a floor of `examined -ge 200` against a
+  real 761 and a reader taught the third of bash's function-definition spellings. Both
+  sentences are about mechanisms that no longer exist, so here is what ships.
+  **The assertion audit reads the closure under `source`, not the files it was handed.**
+  Four of the seven suites get their code from `tests/lib/`, so one line added to a library
+  could make a whole suite's assertions vacuous with the audit green; the set of files is now
+  computed from the `source` directives, and a `source` whose path cannot be resolved is a
+  violation rather than a shrug. At this head that closure is **nine** files — the seven
+  suites plus `tests/lib/masked-path.sh` and `tests/lib/mutation-runner.sh` — reporting
+  `sites=837 files=9 lines=12059 accounted=12059`. (The base this work started from measured
+  `sites=767 files=7 lines=10288`; the 761/9397 pair an earlier draft published was an
+  earlier commit still, which is exactly why the figure is given with its command rather than
+  carried forward.) **Each counter has a second reader rather than a floor.** `lines` is held
+  against `grep -ac ''` and deliberately not `wc -l`, because awk counts *records* and a file
+  whose last line has no newline holds one more of them than `wc -l` reports. `accounted` is
+  held against `lines`: every record leaves the walk through one of four paths and each
+  increments it. And `sites` gets an other side from **outside the file entirely** —
+  `tests/lib/harness.sh` records the line of every assertion it actually runs and holds that
+  set against `--sites`, so a call site this reader never reached reddens the suite that ran
+  it. bash is the other side. That pair was not sufficient on its own, and the way it failed
+  is worth the sentence: `accounted` counts **disposal, not examination**, so one legal
+  assertion whose *quoted* argument contained `<<WORD` was read as opening a heredoc, the
+  rest of the file was consumed as its body, all three counters agreed, and two vacuous
+  assertions sat in the swallowed region with the audit green. A heredoc is now detected from
+  the **tokens** rather than from a regex over the raw line, and one that reaches end-of-file
+  without its terminator is itself a violation — which refuses the whole class with no number
+  in it. **There is no longer a list of function-definition spellings.** The reader reads the
+  grammar — an optional `function`, a name, an optional parenthesis pair that may have
+  whitespace in it — because `assert ( ) {` is legal on every bash this project supports and
+  no list of three contained it; `tests/test_harness.sh` generates 14 spellings, sources each
+  into a real shell, and holds the reader against what **bash** says each one defined. The
+  EXIT-trap reader went the same way: any operand naming the exit pseudo-signal is read, in
+  any case, including `0`, where a single `EXIT` literal let `trap cleanup 0` displace the
+  abort guard silently. And the harness-name list is derived by reading the harness with the
+  same reader that finds a shadow, held against the set bash reports having loaded (14 = 14),
+  as is the guard-primitive set (16 = 16) — so neither carries a numeral at all.
+  **All four floors are gone**, replaced by `-gt 0` beside a derived other side, or by an
+  equality against the findings the same payload reports — the policy-failure count, for
+  instance, is now held equal to the `PL`-prefixed failures the same report carries, with a
+  `-gt 0` beside it so the equality cannot be satisfied by two zeroes. An earlier draft said
+  the blanket exemption had become "an enumeration naming which floors remain"; that
+  enumeration went stale inside the same release that wrote it, which is the argument
+  against enumerations and not for a better one, so what stands in its place is a rule about
+  shapes rather than a list of lines.
+  **One residual is named rather than claimed away:** one
+  assertion's *label* promises slightly more than its command decides; the mutation that
+  matters kills through the load-bearing half, so it is a labelling defect and not a hole,
+  and it is recorded in the slice record that found it.
+
+**Known past changes, recorded late**
+
+- **`skill-audit`'s quality score fell from 94 (A) to 92.5 (A-) in 0.4.3, and the 0.4.3 entry
+  does not record it.** Measured here under one pinned `skillscore@2.0.2` across three trees,
+  so the drop is content and not a tool version: v0.4.1 scores 94, v0.4.3 scores 92.5, and
+  head scores 92.5. The category is `clarity`, 9/10 down to 8/10, on a
+  `1 synonym pair(s) used interchangeably` warning against a `SKILL.md` that release rewrote.
+  0.5.0 does not touch `skills/skill-audit/` and does not change the number. The 0.4.1 and
+  0.4.3 entries are left as written; this is the record.
+- **0.4.3's own entry about the install rows was false when it was written, and this file
+  and `RELEASE_NOTES.md` both still carry it.** The 0.4.3 section below says *"`README.md`
+  marks the Devin, Codex and Cursor install rows 'not verified in this release'"*, and
+  `RELEASE_NOTES.md`'s v0.4.3 section says *"The Devin, Codex and Cursor install rows are
+  marked unverified."* **`README.md` marked the Codex row verified at v0.4.3 and still
+  does**, naming `codex-cli 0.153.4`, the `CODEX_HOME` isolation, the two commands and the
+  `codex plugin list` result — and the row at this head is byte-identical to
+  `v0.4.3:README.md:436`, so the contradiction was inside the v0.4.3 tree and not introduced
+  since. It is the README that is right; the Codex route was run. Neither released section is
+  edited, because a released section is a record of what was said, so the correction is here,
+  where a reader who reaches the 0.4.3 entries has already passed it. The wider claim also
+  reached the deferred ledger's install row, which has read "Devin / Codex / Cursor" since
+  0.4.1; that row is not a published document (`.gitignore` excludes `.scuba/`, and
+  `git ls-files | grep -c '^\.scuba'` is 0), so citing it was accurate reporting rather than
+  part of the contradiction. What needed correcting was these two files, and this is that
+  correction. **Devin and Cursor remain genuinely unverified**, each for a stated reason, and
+  the 0.5.0 enumeration above names those two and not Codex.
+
+**Known limits shipping with this release**
+
+- **`experiment run` has no time limit. There is no cap of any kind.** It shells out to the
+  command each step declares, in a loop, and waits. A step that never terminates never
+  terminates. A draft of this command declared a `Budget{MaxTokens, MaxTimeMs}` that nothing
+  read, and it was **dropped rather than shipped as a cap that does not cap** — a token cap
+  in particular cannot prevent the spend it names, because the count is only known after the
+  step. This release does prove a portable bash-3.2-safe deadline in
+  `tests/lib/mutation-runner.sh` (`mutation_bounded`: background job, `kill -0` poll, TERM
+  then KILL, no `wait -n`, no external `timeout`), and the Go standard library offers
+  `exec.CommandContext`. **Neither softens the sentence above**: the first is a test library
+  and nothing in `experiment run` sources it, and the second is not called. Run an experiment
+  under a time limit you impose yourself.
+- **No line in this repository was produced by a running Cursor, and nothing here can tell
+  you the spool works against Cursor.** Cursor is not installed on the machine this was
+  written and verified on. What is different from the earlier draft of this entry is that
+  the documentary half was checked against Cursor's own current published hooks reference
+  rather than left as an assumption, and it moved in both directions. **Confirmed:**
+  `~/.cursor/hooks.json` is the User-scope location (below Enterprise, Team and Project
+  scopes, which this tool does not write); the 21 names in `CursorHookEvents` are exactly
+  the documented event set, with no twenty-second; and the top-level `"version"` the
+  reference marks required — *"Config schema version. Must be a positive integer (use
+  1)"* — is now written, where an earlier build of `hooks install` omitted it and left a
+  file that would most likely have been ignored while `doctor` reported all 21 events
+  registered. **Contradicted:** `cwd` is **not** a common payload field. The reference's
+  "Input (all hooks)" block names `conversation_id`, `generation_id`, `model`, `model_id`,
+  `model_params`, `hook_event_name`, `cursor_version`, `workspace_roots`, `user_email` and
+  `transcript_path`, and `cwd` is in none of them; it appears in **four** per-event payload
+  blocks — `preToolUse`, `postToolUse`, `postToolUseFailure` and `beforeShellExecution` —
+  three of which are events this build registers. (An earlier version of this sentence said
+  those first two and `beforeShellExecution` "only", which dropped `postToolUseFailure`
+  inside a sentence claiming the reference had been read field for field; it was checked
+  again here against the live page.) The field carried on every payload for workspace
+  location is `workspace_roots`, which this build does not promote — so the older version
+  still, which listed `cwd` among the four fields "a payload" carries, was not merely
+  unverified but wrong. What the promotion does with an absent `cwd` is emit **no `cwd` key
+  at all**, not `""`: the field is `json:"cwd,omitempty"`, and driven at this head a payload
+  with no `cwd` spools
+  `{"ts":…,"event":"sessionStart","schema_version":…,"conversation_id":"c1","raw":{…}}` with
+  no `cwd` member, and a payload carrying `"cwd":""` spools the same way. That is the right
+  behaviour and a reader cannot mistake "Cursor sent nothing" for "Cursor sent an empty
+  string"; `raw` keeps whatever arrived, either way.
+  **Still unverified:** that a hook is invoked with one JSON document on stdin, and every
+  tool-call payload shape — `preToolUse` and `postToolUse` were registered on a live emitter
+  and never fired, because a nested `claude -p` could not authenticate here. What *was*
+  exercised live is the lifecycle half and the whole read-back path, against a real hook
+  emitter (Claude Code, not Cursor), with `analyze`'s and `doctor`'s every count checked
+  against the raw file by hand.
+- **`AppendSpool` takes no lock, and this was measured rather than reasoned about.**
+  Concurrent invocation is the normal case, not an edge one: Cursor's reference lists Tab
+  hooks (`beforeTabFileRead`, `afterTabFileEdit`) as a class separate from its agent hooks.
+  Driven at this release: **40 concurrent `ingest` processes** appending to one daily file
+  at 100 B and at 200 KB, and **16 at 8 MB** — a file of about 128 MB. Every round wrote
+  **exactly one line per writer**, every line parsed, and in the 8 MB round all sixteen
+  lines shared **one** distinct length: not one was split, truncated or interleaved. Those
+  are the results that hold, and they hold structurally rather than by luck — each record is
+  a **single `write(2)` under `O_APPEND`** with the newline in the same buffer, and each
+  call opens its own descriptor, so in-process goroutines get the same protection.
+  Earlier drafts of this entry published the absolute byte figures (a 128,003,312-byte file,
+  every line 8,000,206 bytes). They are **dropped rather than corrected**, because nothing
+  in this repository pins the payload they were measured over — no test, script or fixture
+  produces it — so a reader cannot regenerate them, and re-running the round here with a
+  payload of our own gives a different pair on the same structure (sixteen lines, one
+  distinct length, a file exactly sixteen times one line plus its newline). A published byte
+  count needs its generator in the tree; the structural result needs only the reasoning
+  above, and that is what is claimed. **The residual risk, named
+  rather than implied: `O_APPEND` atomicity is not guaranteed on a network filesystem**, so
+  a spool under an NFS or SMB home is outside everything above and was **not tested** — no
+  network mount was available here. A hook killed mid-write still leaves a truncated last
+  line, which the reader skips and counts as unreadable rather than losing the file.
+- **`hooks uninstall` does not return a virgin machine to as-found.** On a home with no
+  `.cursor` directory, install-then-uninstall leaves the directory, a `hooks.json`
+  containing `{"hooks": {}, "version": 1}`, and a timestamped backup carrying our absolute
+  binary path in all 21 entries. The leftover file is schema-**valid** now that install
+  writes `version`, so it will not break a hook config added by hand later; it is still not
+  the machine as found, and the reasoning `hooks_install.go` applies to an empty event
+  registration — *"a trace of us in a file we are meant to have left as we found it"* —
+  applies one level up and is not applied there.
+- **The activation fixtures' provenance is thinner than the disclosure covering them, and
+  the disclosure names the wrong attribute.** `profiler/testdata/otlp/README.md` labels
+  `skill.name` `[DOCS]` — and `skill.name` is exactly the attribute this release **rejected**
+  as the source. What shipped keys on the *event*, and neither `claude_code.skill_activated`
+  nor `invocation_trigger`, `skill.source` or `skill.kind` appears in either labelled
+  paragraph: five new activation fixtures landed and the provenance ledger was not extended
+  for the identifier the whole signal turns on. Both labelled paragraphs are byte-identical
+  to `v0.4.3`. Checked against Anthropic's monitoring reference, three fixture attribute
+  **values** are outside the documented sets, and the fixture counts below are `grep -l`
+  over `profiler/testdata/otlp/` rather than a tally anyone kept:
+  `invocation_trigger` is documented as
+  `"user-slash"`, `"claude-proactive"` or `"nested-skill"`, and `slash_command` appears in
+  **six** fixtures while `skill_tool` appears in **three** of those same six; `skill.kind`
+  is documented as `"workflow"` when the
+  skill is a workflow skill and **absent otherwise**, and two fixtures carry `"skill"`;
+  `skill.source` is given as `"bundled"`, `"userSettings"`, `"projectSettings"` or
+  `"plugin"` — introduced there with "for example", so calling it a closed set is slightly
+  stronger than the source supports — and **two** fixtures carry `"user"`. **No number
+  moves**: the extractor reads
+  `skill.name`, passes `invocation_trigger` through as an opaque string, and reads neither
+  `skill.source` nor `skill.kind`. It does mean the fixtures assert an emitter shape the
+  vendor does not document, and rewriting fixture values is not release-gate work, so it is
+  named here for the maintainer. Two attribute facts *improved*: `tool_name`, `success` and
+  `decision` are now **observed** on a real Claude Code 2.1.221 export — `"Read"`, `"true"`
+  and `"accept"`, each as a `stringValue`, which is what the fixtures assume — and the
+  reference confirms `skill.name`'s redaction to `"custom_skill"` for a user-defined or
+  third-party plugin skill without `OTEL_LOG_TOOL_DETAILS=1`, which a live capture also
+  showed both ways. The envelope, the timestamp encodings and the scope names remain
+  `[OBSERVED]`.
+- **Every profile key this release adds is written by nothing that ships — all nine.** This
+  entry used to say three while the schema entry above enumerated eight, and the answer is
+  the whole set: `error_type`, `count` and `id` on a tool call; `category`, `detail`,
+  `operation_name` and `confidence` on an attribution; and `estimated_context_tokens` with
+  its `total`. The only place shipped code builds a tool-call entry sets `name`, `timestamp`
+  and `success` and nothing else, so a rejected tool call and a failed one are still both
+  `success: false` with no classification between them; no shipped code constructs an
+  `AttributionData` at all, and `PresentAttributionResult` has no non-test caller; no
+  shipped adapter produces an estimate. They are `omitempty` and absent, and the adapter
+  contract forbids advertising them, so no profile claims otherwise; the channel landed and
+  the distinction did not.
+- **`attribution` is `unknown` for every profile this release can produce**, because Claude
+  Code's telemetry carries no output-to-skill mapping at all, and
+  `estimated_context_tokens` is never produced by any shipped adapter. Both are honest
+  `unknown`s that the contract table holds to AC9 in both directions.
+- **An experiment result embeds the whole normalized design, including both commands.** That
+  is deliberate — a stored result must say what it ran — and it means a secret spelled
+  literally into a command travels with the document. Read a result before you publish it.
+- **`doctor` exits 0 whatever it finds.** "Nothing here measures anything" is the answer for
+  most machines today and a status that called it a failure would make the command useless in
+  the situation it exists for, so a script asking "can this machine measure?" has to parse
+  the JSON.
+- **CI runs one job on `ubuntu-latest`, and two of this release's own invariants are only
+  exercised off it. This is an accepted risk, and it is load-bearing rather than
+  procedural.** `.github/workflows/ci.yml` has one job, one runner, one bash, so **every
+  "green on CI" claim in this release is a bash-5, Linux claim.** Two things follow, and the
+  second is new in this release.
+  **The shell half.** bash 3.2 exempts `[[ ]]` from `errexit` while bash 5 does not, which
+  was 0.4.3's headline defect: a whole suite reported PASS for failing checks on the older of
+  the two shells this project supports. Every suite here was therefore run locally under
+  both, and returns the same count and the same per-suite split under each.
+  **The filesystem half, and this one is sharper.** The containment barrier decides by
+  filesystem identity, and two of the three escapes it closes are **case-folding and
+  Unicode normalization** — `~/.CLAUDE` naming `~/.claude`, and an NFD spelling naming an
+  NFC one. Those are properties of the *volume*, not of the code: on the macOS APFS home
+  this was written on, `[ ROOT -ef root ]` is true and an NFD path is the same object as its
+  NFC spelling, so the barrier must refuse a destination that a string comparison calls
+  outside. **`ubuntu-latest` is case-sensitive and normalization-sensitive**, so on CI those
+  same spellings genuinely name *different* objects, and the generated case set — which
+  takes its expected verdict from where a real write lands rather than from a table — quite
+  correctly asserts the opposite answer there and stays green. That is the generator working,
+  and it also means **the macOS half of the invariant is never exercised by CI at all**: it
+  runs on a developer machine, and a regression in it reddens there and nowhere else. So the
+  local both-shells, macOS run is not a belt-and-braces step in the release checklist; for
+  these cases it is the only place the assertion exists. Closing it means a second CI job on
+  `macos-latest` — new CI surface rather than a gap in what shipped, named here as 0.6.0
+  surface and deliberately not added in this release, because adding an untried runner to
+  the workflow that gates the release is not a change to make at a release gate.
+
+**Known limits, carried past this release**
+
+- **The deferred ledger has 15 rows that name 0.5.0 as their home and are marked open**
+  (`.scuba/teams/gap-audit-0.4.3/deferred-ledger.md`, audited at `5c847e1`, before 0.4.3
+  shipped). Re-walked at this release: two are closed — the composite-attribute identity
+  defect, closed by 0.4.3, and the `profiler/cmd` coverage figure, whose artifact is fixed
+  above — and **the remaining 13 are open and this release closes none of them**. They are:
+  per-finding `jq` re-invocation in both `--json` writers; `isMonotonic` unread; a data
+  point's `flags` unread; a `--json` exit 3 with no payload on three caller-error paths;
+  schema v1 having no channel for a refused series; the whole-export slurp; a truncated final
+  line costing the whole capture; rejected-versus-failed tool calls being indistinguishable;
+  the not-a-count reason's upper bound being a hair generous; the **Devin and Cursor**
+  install rows being unverified; cumulative temporality never having been seen on real
+  output; the tool attribute names being `[DOCS]` rather than `[OBSERVED]`; and
+  `CaptureOpts.APIKey` being read by nothing. **Two of those rows are narrower than the
+  ledger's own wording, and the 0.5.0 enumeration above states the narrow version.** The
+  install
+  row reads "Devin / Codex / Cursor" and has since 0.4.1, but `README.md`'s Codex row
+  records that route as **verified** — both steps run against `codex-cli 0.153.4` with
+  `CODEX_HOME` pointed at a scratch directory, `codex plugin list` then reporting the plugin
+  installed and enabled — and has recorded it since 0.4.3, byte-identically. The row's
+  narrative was already false about Codex against the tree it was audited over; the row
+  stays open on Devin and Cursor, which genuinely are unverified and say why. **That
+  narrowing is true of this section and not of this file**: the 0.4.3 section below carries
+  the wider claim, and because a released section is never edited here, it still does. See
+  "Known past changes, recorded late" above, where that is recorded as the past error it is.
+  And the tool
+  attribute row is narrower too: `tool_name`, `success` and `decision` are now observed on a
+  live export, so what remains documentary there is the activation attribute set and
+  cumulative temporality.
+- **A `present` result still has no field in which to say what it did not count.** A refused
+  mixed-temporality series, a skipped unreadable record, and records the provenance
+  projection removed while others survived are all invisible inside a `present` total. It is
+  a schema gap rather than a counting one, and it needs the caveat channel v1 does not have.
+- **`probe` still has no documented exit contract.** It exits 0 in every case, including one
+  where the export it was given could not be read; the reason goes to stderr and stdout
+  carries the same report shape a caller already parses. Stated precisely, because an
+  earlier draft of this line escalated "same shape" into "byte-identical either way", which
+  is false: a readable export and an unreadable one differ on stdout in the capabilities
+  they name, `otel` against `none`. What **is** byte-identical is every way of reading
+  nothing — all **six** of a nonexistent path, a non-JSON file, an empty file, a file
+  truncated mid-object, a `chmod 000` file, and no `--otel-file` at all produce **one**
+  distinct stdout report between them, apart from `probed_at` — every capability `none`, no
+  reason anywhere, nothing naming which of the six it was — so the only differentiator
+  between "no telemetry was
+  configured" and "your export is broken" is whether stderr is empty. A caller that must
+  branch on a bad export uses `capture`, which exits 2.
+- **There is still no bundled receiver subcommand.** `--otel-file` is the only input.
+- **Two `hooks.json` backups taken in the same second collide**, the suffix being
+  second-resolution. Reaching it needs **two** runs inside one second, not the three this
+  entry used to claim: `hooks install` followed by `hooks uninstall` each take a backup, and
+  driven inside one second they leave a single `.bak-<stamp>` file holding the
+  post-install state — so the file the user started with is not recoverable from it. A plain
+  re-run of `install` takes no backup at all, which is why it takes two runs rather than one.
+  **And the first install on a machine with no `hooks.json` takes no backup either** — driven
+  at this head, `hooks install --home <fresh>` reports `events_registered: 21` and
+  `schema_version_added: true`, and the `.cursor` directory afterwards holds `hooks.json` and
+  nothing else. A backup names a file that was replaced, and on a virgin home there was none;
+  the reason the result has a `schema_version_added` field at all is that "wrote something,
+  backed up nothing" has to be sayable. Worth stating plainly because "backed up before any
+  write" is the natural shorthand and is false here: what is true is *backed up before any
+  file is overwritten*.
+- **No spool-to-profile projection ships**, and that was a choice rather than an omission.
+  The draft of one set `tool_calls` to `present` from `hooks` on the strength of guessed
+  field names — a capability claim **in the data rather than in the prose**, which no
+  documented limit can reach, because a stored profile is subtracted by `compare`, aggregated
+  by `experiment` and read months later by callers who never see the source. What landed
+  instead is the read that is true whether or not the guesses are right.
+
+**Deferred, with reasons**
+
+- **The skill `metadata.version` fields are not bumped, and whether they move is an open
+  decision for the maintainer rather than something to do quietly.**
+  `skills/skill-audit/SKILL.md` declares `0.2.0` and `skills/skill-rewrite/SKILL.md` declares
+  `0.1.0`, while the five plugin manifests go to `0.5.0`. **The skill versions are
+  independent of the plugin version by design** — nothing asserts a relationship between
+  them, and nothing in this release adds one. It is more conspicuous than it was: this
+  release changed `skill-rewrite`'s documented interface by adding a flag to it, and that
+  skill still declares `0.1.0`. Named here rather than moved, and no assert pins them.
+- **The shell containment primitive now exists three times** — in `tests/test_install.sh`, in
+  `profiler/internal/homesafe`, and in `draft-rewrite.sh`. They are not copies of one library
+  and cannot be: one is a test suite, one is a Go package, and one is a shipped script that
+  may depend only on its sibling skill. They are three implementations of one decision, and
+  the drift is real rather than theoretical — the first shell version written from the Go one
+  was weaker than its source. Named as a decision for a later release rather than started
+  here.
+- **`draft-rewrite.sh` can still exit 7**, from a failing `rm` in its EXIT trap, outside the
+  `{0, 1, 3}` its header states. Unchanged from 0.4.3 and recorded there in full.
+- **The forward-promise reader matches the verb-to-version span, and markup *inside* that
+  span defeats it.** Stated in full where the reader is described above and in its own
+  header: emphasis closed around the verb alone, a version set in inline code or as a link
+  label, punctuation or a digit between the verb and its preposition, a tab or a doubled
+  space. Markup *around* the span is a position and is handled; this is the interior. It is
+  pre-existing, unchanged by this release either way, and it is **0.6.0 surface** — the same
+  shelf as the `macos-latest` job — because widening the interiors is a false-positive
+  budget on a documentation-heavy tree whose release documents describe the reader, and
+  measured, a crude widening fires on one of those descriptions. Whoever takes it should
+  re-drive both documents and not only the fixtures.
+
 ## 0.4.3 — 2026-09-20
 
 Nine clusters, one release, one subject: claims that asserted more than the code delivered.

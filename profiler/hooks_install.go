@@ -9,13 +9,23 @@
 // # What is assumed, and what has been observed
 //
 // That Cursor reads ~/.cursor/hooks.json, that its `hooks` member is keyed by
-// event name, that an entry is an object with a `command` string, and that the
-// names in CursorHookEvents are the events Cursor invokes — all of it is taken
-// from Cursor's published hooks documentation and none of it has been observed
-// against a running Cursor, which was not installed on the machine where this
-// was written. If the format is wrong, `hooks install` writes a file Cursor
-// ignores and nothing is captured; the merge is written so that being wrong
-// still cannot cost the user what was already in the file.
+// event name, that an entry is an object with a `command` string, that the
+// top-level `version` is required, and that the names in CursorHookEvents are
+// the events Cursor invokes — all of it is taken from Cursor's published hooks
+// documentation and none of it has been observed against a running Cursor,
+// which was not installed on the machine where this was written. If the format
+// is wrong, `hooks install` writes a file Cursor ignores and nothing is
+// captured; the merge is written so that being wrong still cannot cost the user
+// what was already in the file.
+//
+// The `version` was missing until the release gate, and that omission is the
+// shape of failure this comment is about. It is documented required, so a file
+// without it fails validation and the likeliest outcome is Cursor ignoring the
+// whole file — leaving the spool permanently empty while `doctor` reports all
+// 21 events registered, which is the compounding harm: the only diagnostic a
+// user has tells them it is configured. Thirty-one hook tests missed it because
+// every one of them tested `version` as a field to *preserve* and none asked
+// what a machine with no hooks.json ends up with.
 //
 // The home directory is a parameter, never read here. A caller that has one
 // passes it; only DefaultSpoolDir consults the real user's home, and only to
@@ -56,10 +66,18 @@ type HookInstallResult struct {
 	Backup           string `json:"backup,omitempty"`
 	EventsRegistered int    `json:"events_registered"`
 	EventsRemoved    int    `json:"events_removed"`
+
+	// SchemaVersionAdded says the required top-level `version` was not in the
+	// file and this run supplied it. It exists because that on its own is a
+	// reason to write, so without it a run can report zero events registered
+	// beside a backup it took and name nothing it did. Omitted when false,
+	// which is every run over a file that already conforms.
+	SchemaVersionAdded bool `json:"schema_version_added,omitempty"`
 }
 
 // InstallHooks merges command into every event in CursorHookEvents in
-// <home>/.cursor/hooks.json. Re-running adds nothing and writes nothing.
+// <home>/.cursor/hooks.json, and makes sure the file carries the schema version
+// Cursor documents as required. Re-running adds nothing and writes nothing.
 func InstallHooks(home, command string) (HookInstallResult, error) {
 	path := hooksJSONIn(home)
 	res := HookInstallResult{HooksJSON: path}
@@ -78,7 +96,13 @@ func InstallHooks(home, command string) (HookInstallResult, error) {
 		hooks[event] = append(entries, map[string]any{"command": command})
 		res.EventsRegistered++
 	}
-	if res.EventsRegistered == 0 {
+	res.SchemaVersionAdded = ensureSchemaVersion(doc.root)
+
+	// Two reasons to write, and either alone is one. A file already carrying
+	// every registration but no version is what every build before this one
+	// left behind, and re-running the install is the only instruction a user
+	// has, so that run has to be the one that repairs it.
+	if res.EventsRegistered == 0 && !res.SchemaVersionAdded {
 		return res, nil
 	}
 
@@ -181,6 +205,31 @@ func saveHooksDoc(doc hooksDoc, path string) (backup string, err error) {
 	}
 	// Owner-only: the file names a command that runs on this machine.
 	return backup, os.WriteFile(path, append(out, '\n'), 0o600)
+}
+
+// hooksSchemaVersion is the value a file this build creates declares.
+//
+// Cursor's configuration reference: "Config schema version. Must be a positive
+// integer (use 1)." It is a constant rather than a parameter because there is
+// nothing for a caller to decide — a file we create declares the version of the
+// schema we wrote it to — and it is only ever a default for a file that has no
+// version, never a correction of one somebody set.
+const hooksSchemaVersion = 1
+
+// ensureSchemaVersion supplies the required top-level `version` when the file
+// does not have one, and reports whether it had to. A value already there is
+// left exactly as it is, whatever it is: a newer Cursor may use 2, and this
+// build is a guest.
+//
+// It is called from InstallHooks and deliberately not from saveHooksDoc, which
+// uninstall shares. A field added on the way out would be something of ours
+// left behind in a file we are meant to have vacated.
+func ensureSchemaVersion(root map[string]any) bool {
+	if _, present := root["version"]; present {
+		return false
+	}
+	root["version"] = hooksSchemaVersion
+	return true
 }
 
 // hooksTable returns doc["hooks"] as a mutable map, creating it if absent.

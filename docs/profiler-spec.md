@@ -1,10 +1,14 @@
 # Profiler adapter interface spec (F03)
 
-**Status:** spec · **Date:** 2026-09-13 · **Architecture:** Option C — adapter-per-harness with capability negotiation
+**Status:** reference for shipped behaviour · **Date:** 2026-09-21 · **Covers:** v0.5.0 · **Architecture:** Option C — adapter-per-harness with capability negotiation
+
+> This document began as a forward-looking spec and is now the reference for what
+> ships: every contract below is asserted by a test, and the sections that describe
+> something unbuilt say so in the sentence that describes it.
 
 ## Purpose
 
-A harness-agnostic profiler that captures runtime signals from any target harness (Cursor, Claude Code, Codex, Devin), degrades gracefully to `unknown` for unavailable metrics, and produces a serialized profile labelled with a caller-supplied snapshot id that F04 (paired comparisons) can read and group by.
+A harness-agnostic profiler, designed so that an adapter per harness can be added without changing the profile schema, which degrades gracefully to `unknown` for unavailable metrics and produces a serialized profile labelled with a caller-supplied snapshot id that `compare` can read and group by. **One adapter ships: Claude Code.** `capture --harness cursor|codex|devin` answers "unknown harness" and exits 1; the architecture is written for four and the registry holds one, which is the distinction this document keeps rather than collapsing.
 
 ## Core types
 
@@ -156,12 +160,20 @@ type ProbeDiagnoser interface {
 }
 
 type CaptureOpts struct {
-    ExportFile    string `json:"export_file,omitempty"`      // ATIF export or session transcript path
-    APIKey        string `json:"api_key,omitempty"`          // server API auth (Devin)
+    ExportFile    string `json:"export_file,omitempty"`      // ATIF export or session transcript path; reserved, read by nothing in this release
+    APIKey        string `json:"api_key,omitempty"`          // server API auth for a Devin or Cursor adapter; reserved, read by nothing in this release
     SnapshotHash  string `json:"snapshot_hash"`              // git SHA or content hash of the skill being profiled
     SkillDir      string `json:"skill_dir"`                 // path to the skill being profiled
 }
 ```
+
+`ExportFile` and `APIKey` are the input contract for adapters that do not exist, and **no
+shipped adapter reads either**: the Claude Code adapter refuses an `ExportFile` rather than
+ignoring it, and there is no CLI flag for an API key at all. They are kept because they are
+the shape a Devin or Cursor adapter would need and removing them would break this struct
+twice over. No release is named as the one that will read them, deliberately: naming the
+release being cut reads as a schedule and becomes a false claim the moment that release
+ships.
 
 ## Adapter contract
 
@@ -499,18 +511,54 @@ already exist instead of needing the sessions captured again.
 installed on the machine where it was written, no spool line in this repository
 was produced by Cursor, and no `hooks.json` this code wrote has been read by
 Cursor. Every statement below about *Cursor* is taken from Cursor's published
-hooks documentation. Specifically, these are unverified:
+hooks documentation, and that documentation has been re-read against this code
+field by field — which closes the docs-versus-code gap and not the
+docs-versus-running-Cursor one. Specifically, these remain unverified:
 
-- that Cursor reads `~/.cursor/hooks.json`, that its `hooks` member is keyed by
-  event name, and that an entry is an object with a `command` string;
-- that the 21 names in `CursorHookEvents` are the events Cursor invokes;
 - that a hook is invoked with one JSON document on stdin;
-- that the document is an object carrying `hook_event_name`, `cursor_version`,
-  `cwd` and `conversation_id`.
+- every payload shape for the tool-call events (`preToolUse`, `postToolUse`),
+  which were registered on a live hook emitter here and never fired.
 
-If any of those is wrong, `hooks install` writes a file Cursor ignores and the
-spool stays empty, or lines arrive whose promoted envelope fields are blank.
-**Neither loses data**, which is the reason this ships ahead of an adapter: a
+Two items this list used to carry have been removed from it, because the
+reference documents both and the list is for assumptions the reference does not
+cover. Its `hooks` member **is** keyed by event name with each entry an object
+carrying a `command` string — that is the shape of every configuration example
+in the reference, including its quickstart — and `hook_event_name`,
+`cursor_version` and `conversation_id` are all three in the reference's
+"Input (all hooks)" block. `README.md`'s parallel "Still documentary" list had
+already been narrowed to the two bullets above, and this section was the one
+left behind; they now agree.
+
+Two further assumptions this section used to list have since been settled
+against Cursor's published reference, and they went in opposite directions:
+
+- **Confirmed.** `~/.cursor/hooks.json` is the reference's User-scope location
+  (Enterprise, Team and Project scopes sit above it and this tool writes none of
+  them), and the 21 names in `CursorHookEvents` are exactly the documented event
+  set, with no twenty-second. The reference also marks a top-level `version`
+  **required** — *"Config schema version. Must be a positive integer (use 1)"* —
+  and `InstallHooks` now writes `1` when the key is absent, which is a stronger
+  statement than the old "unverified" note: without it the file most likely
+  fails Cursor's schema validation and is ignored whole, while `doctor` reads
+  the same file back and reports all 21 events registered.
+- **Contradicted.** `cwd` is **not** a field every payload carries. It is absent
+  from the reference's "Input (all hooks)" block, and appears in **four**
+  per-event payloads: `preToolUse`, `postToolUse`, `postToolUseFailure` and
+  `beforeShellExecution` — three of them events `InstallHooks` registers. (An
+  earlier version of this bullet named the first two and `beforeShellExecution`
+  "only", omitting `postToolUseFailure`; it has been re-read against the live
+  reference.) The field carried on every payload for workspace location is
+  `workspace_roots`, which this build does not promote. So `cwd` is promoted
+  when present, and when it is absent `SpoolEvent.Cwd` is the zero value under
+  `json:"cwd,omitempty"`, so the line carries **no `cwd` member** — not an empty
+  one. That is the "treated as absent rather than rendered" rule working, and it
+  is the reason a reader can distinguish a payload that sent nothing from one
+  that sent `""`, which marshals identically. Promoting `workspace_roots` is a
+  candidate for a later release; `raw` carries it today.
+
+If any of the remaining assumptions is wrong, `hooks install` writes a file
+Cursor ignores and the spool stays empty, or lines arrive whose promoted
+envelope fields are blank. **Neither loses data**, which is the reason this ships ahead of an adapter: a
 wrong guess about a field name costs a re-read of files that are still on disk,
 where a wrong capability claim in a stored profile is subtracted and reported by
 callers who never see this file. The three unlanded adapters are what that looks
@@ -625,11 +673,33 @@ so:
   is a number that reads the same is not the same entry.
 - An event left with no entries is removed with them: an empty registration is a
   trace of us in a file we are meant to have left as we found it.
+- **The schema version is supplied when absent and never overwritten.**
+  `ensureSchemaVersion` sets a top-level `"version": 1` if the key is missing,
+  because Cursor's reference marks it required; an existing value, including a
+  future `2`, is left alone. It is called from `InstallHooks` and deliberately
+  **not** from the save path `uninstall` shares: a required field added on the
+  way out would be something of ours left in a file we are meant to have
+  vacated. The result reports `schema_version_added` so a write that only
+  supplied the version does not report a backup and name nothing it did.
+- **Uninstall on a home that had no `.cursor` directory does not restore that
+  state.** It leaves the directory, a `hooks.json` holding `{"hooks": {},
+  "version": 1}`, and the timestamped backup. The residue is schema-valid, so it
+  does not break a hook config the user adds by hand later, but it is not
+  as-found and the bullet above's reasoning applies one level up.
+- **The backup suffix is second-resolution, so two writes in one second
+  collide.** Install then uninstall inside one second leaves one
+  `hooks.json.bak-<timestamp>` holding the post-install state, so the file the
+  user started with is not recoverable from it.
 
 The command registered by default is this binary's **absolute path** plus
-`ingest || true`. Absolute because `PATH` inside a hook's environment is not
-something this tool gets to assume; `|| true` so a failure of ours cannot take
-the user's session down.
+`ingest --spool-dir <home>/.skill-architect/spool || true`. Absolute because
+`PATH` inside a hook's environment is not something this tool gets to assume;
+`--spool-dir` for the same reason applied to `$HOME`, so that `--home` scopes
+the capture and not only the registration and `doctor --home X` describes the
+spool the registered hook actually writes to; `|| true` so a failure of ours
+cannot take the user's session down. `--command` still wins outright, and it is
+the only way to register `--strict`, which nothing else supplies and no
+environment variable reaches.
 
 ### The home directory
 
@@ -773,9 +843,9 @@ told to the user as a fact about their machine.
 
 `doctor` writes nothing, anywhere. It is a read of a home and a read of a file.
 
-## Adapter implementations (Slice 1 scope)
+## Adapter implementations
 
-### Claude Code adapter (Slice 1)
+### Claude Code adapter
 
 **Telemetry surface:** OTel export via `CLAUDE_CODE_ENABLE_TELEMETRY=1` + `OTEL_*` env vars.
 
@@ -785,11 +855,11 @@ Within that envelope:
 - Metrics are walked at every level — `resourceMetrics[].scopeMetrics[].metrics[]` — not just the first of each. Token counts come from `claude_code.token.usage` sum data points: the `type` attribute (`input`, `output`, `cacheRead`, `cacheCreation`, camelCase on the wire, snake_case in the profile) and the value from `asDouble`, falling back to `asInt`. Every 64-bit integer is accepted as a JSON number or a decimal string. That is narrower than the proto3 JSON mapping OTLP mandates, which also accepts exponent notation for an integer field; refusing exponent form is a deliberate deviation, recorded as such under "Deliberate deviations" below rather than claimed as conformance. A fractional `asDouble` is rounded, not truncated.
 - **A value reaches the profile only if it is a count**: a whole number from 0 to 2⁶³−1. The rule is applied to the *rounded* value, so a `-0.4` that is float drift on a true zero is the zero it was, while `-0.5` is a number the exporter meant to be negative. A data point that fails this splits two ways, counted apart because they are two different things to go and look at in a capture. A leaf that **decoded as a finite number** whose rounded value is negative or 2⁶³ or greater *is not a count*: it is refused rather than converted — converting it is undefined in Go and gave the same export two different profiles on two architectures — and `asInt` is not consulted after it, because `asDouble` already answered. A leaf that **did not decode as a finite number at all** is *unreadable*, not "not a count": `NaN`, `Infinity` and a literal that overflows `float64` are refused by the float reader itself, so `asDouble` said nothing and `asInt` is read next — `{"asDouble":"NaN","asInt":"9"}` is the count 9, not a refusal. A point is unreadable only when neither leaf yields a number, which is the clause the reason uses: "carried no asDouble or asInt value that reads as a number". An `asDouble` is bounded at 2⁶³ and not at 2⁶³−1 because no `float64` is 2⁶³−1: the literal `9223372036854775807` parses to exactly 2⁶³, and only `asInt` can carry that count exactly. A token type that no data point carried has no key in the profile at all; a type read as zero has its key, with `0` in it.
 - **Data points are merged per time series, and a series is what OTel says it is**: the resource it was exported from, the instrumentation scope that recorded it, the metric's name, and the data point's full attribute set — every attribute, of every `AnyValue` kind, and not the subset that renders as text. **Each `AnyValue` kind is canonicalised by what that kind is.** An `arrayValue`'s member order is part of its value and is kept; a `kvlistValue` is a map, and the OTel common data model defines two maps as equal irrespective of the order their members arrive in, so its members are sorted. Both recurse, so a map nested in an array or in another map normalises too, and a `null` members list is the empty one it decodes to under the proto3 JSON mapping. A *kind* written `null` is that kind **unset** rather than that kind holding its zero value, because ProtoJSON reads a null as the field being unset: `{"kvlistValue":null}` is an `AnyValue` of no kind — the same answer as `{}` — while `{"kvlistValue":{}}` is an empty map somebody set, and the two are two series. That is the rule the envelope is read by as well (`{"resourceMetrics":null}` says nothing about metrics), and it holds for every kind, scalars included; it does not reach a members list, because a repeated field's `null` *is* its default. Taking the compacted JSON as a composite's identity instead made one series read as two, and under cumulative temporality the two running totals **added** into a number no data point in the export carried — an over-count, which is the one direction "never invented" forbids. Two points differing in any of the four are two series and do not merge, so a capture that aggregates several resources or several scopes keeps them apart: two `resourceMetrics` entries whose data points carry identical attributes — a collector fanning in two `service.instance.id`s — are two running totals that add. A **resource** is its attribute set, so an entry carrying no `resource` and one carrying a resource with no attributes are one resource rather than two; `schemaUrl` is not part of it, because it declares which version of the semantic conventions the attributes follow, not a different origin. A **scope** is its name, its version and its attributes. Each of the four parts is encoded behind its byte length, so no part can spell another and no attribute value — a tool name, a prompt, a model id, all arbitrary text — can forge a foreign series' identity.
-- **Temporality decides how the points of one series merge, and they are opposite instructions.** `aggregationTemporality` 1 (delta) means the points are the increments since the last export and add up; 2 (cumulative) means each point is a running total. A temporality that reads as neither is refused rather than assumed, and absent, unreadable and declared-but-neither are counted apart, because they are three different things to look at in a capture. **A series carrying both temporalities is refused whole**, for the same reason and by the same rule: the two are opposite instructions, so every way of resolving the mix invents a number the export does not contain — adding the increments to a running total counts them twice, and dropping them counts them not at all. The series contributes nothing and has no key in the profile, the refusal is counted per *series* rather than per data point (the points are individually fine; it is their company that is malformed), and the `tokens` reason names it: "1 time series carried both delta (1) and cumulative (2) aggregationTemporality points". Refusing one series is not refusing the export — the well-formed series beside it still count, and `tokens` is `unknown` only when no series survives. This is a change from v0.4.1, where a series carrying either temporality was treated as cumulative and the point with the latest `timeUnixNano` won — so which number a mixed series produced depended on the timestamps, not on write order. (Checked against the v0.4.1 binary: a cumulative 50 at t9000 written before a delta 100 at t1000 gave 50.) **What the profile can say about a refusal depends on what else survived.** When no series survives, `tokens` is `unknown` and the reason names the refused series. When a well-formed series survives beside it, `tokens` is `present` with a total the refused series is missing from, and schema v1 has no field to say so: a `present` result carries no reason. That is a gap in the schema rather than in the count, and it is tracked for 0.5.0 with the skipped-record count it belongs beside.
+- **Temporality decides how the points of one series merge, and they are opposite instructions.** `aggregationTemporality` 1 (delta) means the points are the increments since the last export and add up; 2 (cumulative) means each point is a running total. A temporality that reads as neither is refused rather than assumed, and absent, unreadable and declared-but-neither are counted apart, because they are three different things to look at in a capture. **A series carrying both temporalities is refused whole**, for the same reason and by the same rule: the two are opposite instructions, so every way of resolving the mix invents a number the export does not contain — adding the increments to a running total counts them twice, and dropping them counts them not at all. The series contributes nothing and has no key in the profile, the refusal is counted per *series* rather than per data point (the points are individually fine; it is their company that is malformed), and the `tokens` reason names it: "1 time series carried both delta (1) and cumulative (2) aggregationTemporality points". Refusing one series is not refusing the export — the well-formed series beside it still count, and `tokens` is `unknown` only when no series survives. This is a change from v0.4.1, where a series carrying either temporality was treated as cumulative and the point with the latest `timeUnixNano` won — so which number a mixed series produced depended on the timestamps, not on write order. (Checked against the v0.4.1 binary: a cumulative 50 at t9000 written before a delta 100 at t1000 gave 50.) **What the profile can say about a refusal depends on what else survived.** When no series survives, `tokens` is `unknown` and the reason names the refused series. When a well-formed series survives beside it, `tokens` is `present` with a total the refused series is missing from, and schema v1 has no field to say so: a `present` result carries no reason. That is a gap in the schema rather than in the count, and it is not closed by 0.5.0: it needs a caveat channel schema v1 has not got, and it belongs beside the skipped-record count.
 - **A cumulative series is a set of runs, and `startTimeUnixNano` identifies one.** The points sharing a start are one run, and what that run holds is the **greatest running total any of them reported**. These are monotonic counters: a running total only goes up, so the values carry their own order, every point of a run is a prefix of the greatest, and a flush reporting less than an earlier one on the same run is a capture contradicting itself rather than tokens given back. `timeUnixNano` is **not read** by the merge. Ordering by it lets such a flush take the run down with it, and it is also what rules out the obvious repair: a merge that kept the ordering and let each run hold its latest point by `timeUnixNano` would let supplying `startTimeUnixNano` — the field that says which run a point is from — make the profile report *fewer* tokens than leaving it out, which is the property below inverted. (v0.4.1 does not exhibit that, because it does not read `startTimeUnixNano` at all; it is a property of the candidate, measured against a build of it.) A point carrying a *different* start is a counter that restarted: its run sits beside the earlier one rather than replacing it, and the series contributes the sum of its runs, so a capture spanning a restart reports both — 100 over `startTimeUnixNano` 1–10 followed by 20 over 11–20 is 120. Runs are identified by their start, not by file order, so batches written out of order still add up correctly. **A point whose `startTimeUnixNano` is absent, zero or unreadable** cannot say which run it came from — but it came from one, either a run that named itself or a run nothing else in the capture observed, so it is neither a run of its own nor free. What the capture guarantees is the **least total over every run it could have come from**, and the cheapest such run is the one that already reached furthest: the series contributes `(its runs added) + max(0, the unplaceable total − its largest run)`. Both ends of that are wrong in a direction already shipped. Counting the point as a run of its own adds mass no point ever reported — one flush that omitted one field then doubles a session. Taking the series to be "the greatest running total observed anywhere on it" throws away the runs the point did not join, which are tokens the session really spent. Four consequences worth stating: a capture carrying no start times at all has no runs to place its points against, so it holds the greatest running total they reported (v0.4.1 held the latest by `timeUnixNano` instead, which is the same number wherever an exporter wrote its flushes in time order and a lower one where it did not — `900` at t1001 then `500` at t1002 gave 500 at v0.4.1 and gives 900 here); a session whose last flush omits `startTimeUnixNano` — one series, one run, 800000 then 1200000 then an unplaced 1200050 — reports 1200050, not 2400050; a capture whose runs reach 100 and 20 beside an unplaced point reporting 500 reports **520**, because the 500 is a running total of the run that reached 100 and the other run's 20 is still beside it — 500 drops a run that named itself and 620 invents a third; and a capture whose runs reach 100, 100 and 100 beside an unplaced 150 reports **350**, the case where the unplaceable total is above the largest run but below their sum, so a rule that compares it only with the sum never fires and loses 50 tokens the points reported. The property behind all four: taking information away — erasing a start time — may lower the total and may never raise it. `startTimeUnixNano` **`0` is `startTimeUnixNano` absent**: it is a proto3 `fixed64` and OTLP mandates the proto3 JSON mapping, whose deviations do not touch default values, so an explicit `0` and an omitted field are two encodings of one message — `protojson` writes `"0"` with `EmitUnpopulated` on and omits the field with it off — and the same holds for `timeUnixNano`. An **exponent-form** number (`1.7893e18`) does not read as a start time even when it is an exact integer: reading it means going through a `float64`, which cannot represent every nanosecond instant, and two points of one run that round apart would become two runs. That refusal is a deliberate deviation from the proto3 JSON mapping, recorded under "Deliberate deviations" below. Since an unreadable start now costs only what its point exceeds the largest run by, refusing it is the cheap direction. A **delta** series is one sum whatever its points' start times say: a delta point's `startTimeUnixNano` is the start of that point's own interval rather than of a run, and it is not read.
 - Log records are identified by their `body`, which carries the fully-qualified event name (e.g. `claude_code.tool_result`) and is **taken as it stands**. A body that names an *unqualified* event — a bare `tool_result` — is refused rather than re-qualified: the qualified name is what this harness emits, so adding the prefix would manufacture an identity the record never had and attribute another product's log record to this profile. There is no fallback out of a body that said something. The `event.name` attribute is read only when the body says nothing at all — absent, not readable as a string, or an empty one — and only that attribute is qualified, because the short form is its documented spelling. A body may be an object, a bare string, or absent. Unknown event names are ignored.
 - Timestamps are read from `timeUnixNano`, nanoseconds since the epoch as a decimal string or a number, and recorded in the profile as RFC 3339 timestamps.
-- **Data points and log records that cannot be read are skipped, and the profile does not report how many.** A `present` result carries no reason in schema v1; surfacing a count of skipped records is tracked for 0.5.0, and two more cases belong in that same channel. A **refused time series**: a `present` total reduced by a malformed series beside a healthy one is invisible today. And **records the provenance projection removed while others survived**: when *some* of a signal's records lack the asserted `session.id` — or carry another session's, or arrived under a foreign scope — the surviving ones make the signal `present`, so the value is silently reduced and carries no reason at all, because the "not read" clause is built only on the `unknown` paths. All three are one gap with one shape: a `present` result has no field in which to say what it did not count. When *no* record survives, every signal is `unknown` and the clause does name how many were passed over and why, which is why this is a schema gap rather than a counting one.
+- **Data points and log records that cannot be read are skipped, and the profile does not report how many.** A `present` result carries no reason in schema v1; surfacing a count of skipped records needs a channel 0.5.0 did not add, and two more cases belong in that same channel. A **refused time series**: a `present` total reduced by a malformed series beside a healthy one is invisible today. And **records the provenance projection removed while others survived**: when *some* of a signal's records lack the asserted `session.id` — or carry another session's, or arrived under a foreign scope — the surviving ones make the signal `present`, so the value is silently reduced and carries no reason at all, because the "not read" clause is built only on the `unknown` paths. All three are one gap with one shape: a `present` result has no field in which to say what it did not count. When *no* record survives, every signal is `unknown` and the clause does name how many were passed over and why, which is why this is a schema gap rather than a counting one.
 
 **Deliberate deviations from the proto3 JSON mapping.** Two, stated here so this is not mistaken for a conformance claim. They run in opposite directions: one refuses a form the mapping accepts, the other accepts a form the mapping refuses.
 
@@ -803,7 +873,7 @@ Within that envelope:
 
 `unknown` means a well-formed OTLP/JSON export that carries no telemetry — for one signal, or, when no batch carries an OTLP envelope, for all three. **The envelope test is a value, not a key**: a batch carries an envelope when `resourceMetrics` or `resourceLogs` has a *value* under it. An empty list is a value, so `{"resourceMetrics":[]}` *is* an OTLP export of a session that emitted nothing, and each signal is `unknown` with its own reason. A JSON `null` is not a value — ProtoJSON reads `null` as the field's default, so a batch written `{"resourceMetrics":null}` said nothing about metrics — and a file whose batches carry a value for neither field is not a broken export, it is not an export: all three signals get the "this is not OTLP/JSON" reason. Naming the key is not enough, and `{"resourceMetrics":null}` is the case that tells the two apart.
 
-**Timing is a span over API requests.** `start_time`, `end_time` and `total_ms` cover the earliest to the latest `claude_code.api_request` record, so they exclude the prompt before the first request and any tool activity after the last one. Per-request `duration_ms` and the `claude_code.active_time.total` metric measure different quantities and have no field in schema v1; both are tracked for 0.5.0.
+**Timing is a span over API requests.** `start_time`, `end_time` and `total_ms` cover the earliest to the latest `claude_code.api_request` record, so they exclude the prompt before the first request and any tool activity after the last one. Per-request `duration_ms` and the `claude_code.active_time.total` metric measure different quantities and have no field in schema v1; 0.5.0 added neither field.
 
 **Probe logic:**
 0. Probe is **not session-scoped**, because it is not given a session: it reports what the export can yield for the session the export belongs to. The instrumentation-scope half of the provenance test still applies. A capture names a session and reads only that session's records, so an export carrying several sessions can probe `otel` and capture `unknown` for a session it does not contain. A profile cannot disagree with itself: the `capability` block in a profile is derived from that capture's own scoped resolution, not from this one.
@@ -815,7 +885,7 @@ Within that envelope:
    If the file is absent, unreadable, malformed, missing the signal, or carrying the signal with nothing readable inside it, that capability stays `none`. Availability is a fact about a value in hand, not about a name matched in a file — a probe that reports structure is how it comes to advertise data the capture cannot deliver.
 
    A capability's vocabulary is a source or `none`, so the report structurally cannot distinguish "no telemetry was configured" from "the export you named could not be read": both are `none`, while capture keeps them apart as `unknown` and as `error` with a reason. That distinction is information `resolve` already computed, so probe reports it — on **stderr**, through `ProbeDiagnoser`, one message per distinct reason, using capture's own wording. Adding it to `CapabilityReport` instead would change what every `Profile` that embeds the report contains for the same input, which is a schema and adapter-version question; a second channel changes nothing anyone parses. `Probe()` delegates to `ProbeWithDiagnostics()` so there is one read of one file and the report and its explanation cannot describe different files.
-2. Attribution is always `none` for Claude Code, because there is nothing to read: its telemetry carries no output-to-skill mapping at all. Skill activation was `none` for the same-shaped but different reason — the telemetry existed and this adapter did not read it — until 0.5.0, which reads it. **The source is the event, not the attribute.** `claude_code.skill_activated` is logged when a skill is invoked, through the Skill tool or a `/` command, and only then, so one record is one activation and the timestamp on it is the time the skill was invoked. `skill.name` also rides along on `token.usage`, `cost.usage`, `api_request`, `api_error` and `api_refusal`, where it marks the skill active *for that request* — a skill used across five requests carries it five times, and those records carry flush and request times rather than invocation times. Reading them as activations would report a count and a set of times the harness never recorded, so an export carrying the attribute and no event reports `skill_activation: none`, with a reason naming the event that was looked for. A reason may say what this adapter does not read; it may not say what the harness does not emit unless that is true.
+2. Attribution is always `none` for Claude Code, because there is nothing to read: its telemetry carries no output-to-skill mapping at all. Skill activation was `none` for the same-shaped but different reason — the telemetry existed and this adapter did not read it — until 0.5.0, which reads it. **The source is the event, not the attribute.** `claude_code.skill_activated` is logged when a skill is invoked, through the Skill tool or a `/` command, and only then, so one record is one activation and the timestamp on it is the time the skill was invoked. `skill.name` also rides along on `token.usage`, `cost.usage`, `api_request`, `api_error` and `api_refusal`, where it marks the skill active *for that request* — a skill used across five requests carries it five times, and those records carry flush and request times rather than invocation times. Reading them as activations would report a count and a set of times the harness never recorded, so an export carrying the attribute and no event gives `skill_activation: "none"` in the capability report and `{"state": "unknown", "reason": …}` in the profile, the reason naming the event that was looked for — a capability value carries no reason, and a signal state does, which is why both have to be said. A reason may say what this adapter does not read; it may not say what the harness does not emit unless that is true.
 
 **Provenance — which records a profile may be built from.** A capture file is not a session. Both documented capture routes append to one file by design, and route (a) is a receiver on the standard OTLP port that anything on the machine may post to, so one export legitimately carries several sessions and more than one product's telemetry. A profile names one session and is read as a measurement of it, so **a record contributes only when it carries the asserted `session.id` and was not recorded by another product's instrumentation scope.** Two independent tests, because either alone leaves a hole: Claude Code puts `session.id` on every metric data point and every log record, so a record either says which run it is from or cannot be attributed to one — carrying a different id and carrying none are the same answer; and a record naming another product's scope is that product's whatever identity it carries. The scope test is an **exclusion of a positively foreign scope, not an allowlist**: a scope that names no library is read, because the scope is optional in OTLP and a receiver or collector in the path may not carry one through, and refusing those would trade a wrong number for no number on every pipeline that drops it. The match is on the harness's own namespace component (`claude_code`), which is the same token its signal names are qualified with, so `com.anthropic.claude_code`, its `.events` and `.subagent` siblings and any later tail all read, while `some.other.product` does not. A log record's event identity is read the same way: the fully-qualified name in the body is taken as it stands rather than re-qualified, because adding the prefix to a body naming a bare `tool_result` manufactures an identity the record never had; only the `event.name` attribute is qualified, since the short form is the documented spelling of it. **A `present` signal is therefore always a measurement of the session the profile names.** When the projection removes records a signal reads from, that signal's `unknown` reason carries a clause naming how many and why, so a reason saying a signal was not found cannot be read as saying the export carries nothing of the kind; the clause is absent when nothing was removed, which is every capture of one session with nothing else on the port.
 
@@ -834,14 +904,19 @@ Within that envelope:
 diagnostics to stderr, and exits **0** in every case, including one where the export it was
 given could not be read. stdout is byte-identical with and without diagnostics, so a caller
 already parsing it is unaffected. Probe has no documented exit contract to extend, so giving
-it one is new surface rather than a repair, and it is **deferred to 0.5.0**; a caller that
+it one is new surface rather than a repair, and **0.5.0 did not add one**; a caller that
 must branch on a bad export uses `capture`, which does have one.
 
 `profiler capture` writes the profile to stdout in every case, and exits **2** when no signal was read and at least one is `error` — a supplied export that could not be used — and **0** otherwise, including an all-`unknown` profile from a session with no telemetry configured. The status is what a wrapping script branches on; exiting 0 after reading nothing would have it store the all-unknown profile as a successful capture. Every usage error exits **1** before any capture happens: an unknown command or harness, a missing required flag, `--export-file`, and an unrecognised flag. The last one is why the flag sets use `ContinueOnError` — `flag.ExitOnError` exits 2 on its own, and 2 has to mean exactly one thing for a script to branch on it.
 
 **Fallback:** With no export file configured, `tokens`, `tool_calls`, `skill_activation` and `timing` are `unknown` with reason "OTel export not configured. Provide an OTel export file via --otel-file or OtelExportFile." A file that is configured but cannot be read as an OTLP/JSON export must not borrow that reason: missing, unreadable, empty, non-object at the top level, malformed, or not fitting the OTLP schema are all `error`, naming the failure, because the caller did supply a file and "not configured" would send them to fix the one thing that is not wrong. A file that parses but carries nothing readable for a signal leaves that signal `unknown`, naming what was missing; a file carrying no OTLP envelope at all leaves all four `unknown`, naming the format expected. `attribution` is `unknown` with its own reason (step 7 above) in every one of these cases — it is a property of the harness and of this adapter, not of the export. The adapter reads only the file it is given: it does not inspect `CLAUDE_CODE_ENABLE_TELEMETRY` or the `OTEL_*` env vars itself.
 
-## Acceptance criteria (Slice 1)
+## Acceptance criteria
+
+These are the normative criteria for the Claude Code adapter as it ships, spanning
+every release that has touched it — AC2 and AC4's skill-activation clauses are
+0.5.0's, AC3's mixed-temporality clause is 0.4.3's — and not, as an earlier
+heading said, the scope of one slice.
 
 1. Metric result serialization: a `present` result includes value and source; an `unknown` result includes reason and no value key; an `error` result includes reason and no value key.
 2. `CapabilityReport` for Claude Code is per signal: `tokens`, `tool_calls`, `skill_activation` and `timing` are each `otel` only when the export file yields a readable value for that signal, and `none` otherwise; `attribution` is always `none`. An export yielding all four therefore reports `tokens: otel`, `tool_calls: otel`, `skill_activation: otel`, `timing: otel`. An export carrying `skill.name` on request-scoped signals and no `claude_code.skill_activated` event reports `skill_activation: none`: the attribute is not the source.
