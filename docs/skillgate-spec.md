@@ -45,6 +45,13 @@ with an allow-listed reason: `too_large`, `binary_unparsed`, `unreadable`,
 Deterministic, in Go, no external dependency. Severity is in the rule; the
 block set is Pack-B-owned.
 
+The Rule and Sev columns below are **checked against the gate**, not
+maintained beside it: `skillgate.RuleCatalog()` is assembled from the
+registries that run the rules, and `catalog_test.go` compares it to this table
+in both directions — a rule with no row here, and a row here naming no rule,
+each fail by name. What it catches is prose and is not checked; the id and the
+severity are. Edit a row and run `go test ./skillgate`.
+
 | Rule | Sev | What it catches |
 |---|---|---|
 | SK-T001 | blocker | Invisible / bidi / tag control chars in loaded text (hidden-instruction channel) |
@@ -78,8 +85,11 @@ block set is Pack-B-owned.
 | SK-H002 | info | Per-harness frontmatter: keys valid for Claude Code, silently ignored by Cursor (`allowed-tools`, `disable-model-invocation`, `context`, `when_to_use`) |
 
 Rule count is capped at 20 tripwires; extensions fold into existing legs
-(T017/T020 did). Rule representation is frozen until
-`docs/research/rule-language.md` lands.
+(T017/T020 did). That cap is a bound the build holds, not a claim about the
+table: `catalog_test.go` reads the number out of this sentence and counts the
+SK-T rules the gate registers, so the twenty-first tripwire fails the build,
+and raising the cap here is what raises it. Rule representation is frozen
+until `docs/research/rule-language.md` lands.
 
 ## Reference reachability (SK-G003)
 

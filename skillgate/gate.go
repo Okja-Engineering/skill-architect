@@ -40,7 +40,7 @@ type Engine struct {
 func NewEngine() *Engine {
 	e := &Engine{}
 	e.checks = append(e.checks, tripwireChecks()...)
-	e.checks = append(e.checks, Check{Name: "harness-frontmatter", Run: harnessFrontmatterCheck})
+	e.checks = append(e.checks, Check{Name: CheckHarnessFrontmatter, Run: harnessFrontmatterCheck})
 	return e
 }
 
@@ -90,12 +90,12 @@ func (e *Engine) Gate(dir string, opts Options) (*Report, error) {
 
 	// ICM statics run after externals so the measured token budget feeds
 	// SK-I005; a missing counter is a named skip, never silence (F13).
-	if !skip["icm"] {
+	if !skip[CheckICM] {
 		icmF, icmS := icmCheck(ledger, budget)
 		findings = append(findings, icmF...)
 		skipped = append(skipped, icmS...)
 	} else {
-		skipped = append(skipped, SkippedCheck{Check: "icm", Reason: "skipped by option"})
+		skipped = append(skipped, SkippedCheck{Check: CheckICM, Reason: "skipped by option"})
 	}
 
 	// F14 — the standing boundary skip. A gate audits the bundle before
