@@ -17,26 +17,43 @@ var (
 	// reads whole files.
 	reClaudePaths = regexp.MustCompile(`(?i)(~/|~?/?\.?/)?\.claude/|\$HOME/\.claude|~/\.codex|\.codex/|\.gemini/|\.continue/`)
 	reCursorPaths = regexp.MustCompile(`(?i)(~/|~?/?\.?/)?\.cursor/|\$HOME/\.cursor|\.cursor/mcp\.json|\.cursor/hooks\.json`)
-	reCursorCreds = regexp.MustCompile(`(?i)state\.vscdb|cursorAuth|ItemTable`)
+	reCursorCreds = regexp.MustCompile(`(?i)\bstate\.vscdb|\bcursorAuth|\bItemTable`)
 	reAccessToken = regexp.MustCompile(`(?i)\baccessToken\b`)
-	reCursorCtx   = regexp.MustCompile(`(?i)cursor|state\.vscdb|ItemTable`)
+	// `cursor` is an ordinary word — a database cursor, a text cursor, a Go
+	// identifier. Unbounded it matched `closeCursor` and `TestCursor`, and
+	// because this gate is what licenses the bare-`accessToken` leg, any
+	// file naming a DB cursor could push an ordinary OAuth token to blocker.
+	reCursorCtx = regexp.MustCompile(`(?i)\bcursor|\bstate\.vscdb|\bItemTable`)
 
 	// T020 — persistence / self-modification targets. [pi]: harness state
 	// roots include `.pi/` — `~/.pi/agent/trust.json` is pi's only
 	// input-loading guard, so writing it auto-answers the trust prompt —
 	// and the whole `.cursor/` state root, not only hooks/rules.
-	rePersistPath = regexp.MustCompile(`(?i)(~/\.(bashrc|zshrc|profile|bash_profile|zprofile)|\.claude/settings|\.claude/CLAUDE|\.cursor/|\.pi/|agent/trust\.json|/etc/(profile|crontab)|LaunchAgents|systemd|crontab\s|launchctl|systemctl\s+(enable|start)|defaults\s+write)`)
+	rePersistPath = regexp.MustCompile(`(?i)(~/\.(bashrc|zshrc|profile|bash_profile|zprofile)|\.claude/settings|\.claude/CLAUDE|\.cursor/|\.pi/|\bagent/trust\.json|/etc/(profile|crontab)|\bLaunchAgents|\bsystemd|\bcrontab\s|\blaunchctl|\bsystemctl\s+(enable|start)|\bdefaults\s+write)`)
 	// The redirect legs need a non-word preceding char (`x > file`) so `<cwd>`
 	// placeholders and `>=` comparisons don't fire; the target must look like
 	// a path (/, ~, . or quote) so `a > b` comparisons don't. Echo/cat bodies
 	// exclude `<>` for the same placeholder reason. writeFileSync/appendFile/
 	// createWriteStream/open-w cover programmatic persistence — the pi repo's
 	// real trust-file writes never touch shell.
-	rePersistVerb = regexp.MustCompile(`(?im)((^|[\s;|0-9)])>>?\s*["']?[/~.]|tee\s+\S|cp\s+(-\S+\s+)?\S+\s|mv\s+(-\S+\s+)?\S+\s|sed\s+-i\b|install\s+(-\S+\s+)?\S+\s|cat\s+[^<>\n]*>|echo\s+[^<>\n]*>>?\s*["']?[/~.]|(fs\.)?(write|append)File(Sync)?\s*\(|createWriteStream|open\s*\([^)\n]*['"][wax]\b)`)
+	//
+	// **Every command leg is `\b`-anchored, and that is load-bearing.** These
+	// verbs are words, and unanchored a word matched any longer word ending
+	// in it: `install` inside `uninstall` reported an *uninstall* script as
+	// persistence, `tee` inside `guarantee`, `cp` inside `MCP`. `\b` is the
+	// grammar — a word boundary — and not a list of the longer words anyone
+	// happened to think of, which is the defect this release exists to close.
+	// It costs nothing at the shapes that matter: `\b` matches after a space,
+	// a line start, `;`, `|`, `&&`, and after the `/` of `/usr/bin/install`.
+	// The redirect and echo/cat legs already carry their own leading guard.
+	rePersistVerb = regexp.MustCompile(`(?im)((^|[\s;|0-9)])>>?\s*["']?[/~.]|\btee\s+\S|\bcp\s+(-\S+\s+)?\S+\s|\bmv\s+(-\S+\s+)?\S+\s|\bsed\s+-i\b|\binstall\s+(-\S+\s+)?\S+\s|\bcat\s+[^<>\n]*>|\becho\s+[^<>\n]*>>?\s*["']?[/~.]|(fs\.)?\b(write|append)File(Sync)?\s*\(|\bcreateWriteStream|\bopen\s*\([^)\n]*['"][wax]\b)`)
 	// reProgWrite identifies the programmatic-write legs of rePersistVerb —
 	// for those, the persist path must sit in the call's first argument
-	// (the target), not in a later string-literal argument.
-	reProgWrite = regexp.MustCompile(`(write|append)File|createWriteStream|open\s*\(`)
+	// (the target), not in a later string-literal argument. Anchored for the
+	// same reason and to the same effect: `open(` is a word, so `Popen(` and
+	// `fdopen(` are not it, while `os.open(` still is — `.` is no more a word
+	// character than a space.
+	reProgWrite = regexp.MustCompile(`\b(write|append)File|\bcreateWriteStream|\bopen\s*\(`)
 
 	// T016 — MCP auto-approval without consent.
 	reAutoApprove = regexp.MustCompile(`(?i)"(autoApprove|alwaysAllow|auto-approve|auto_approve)"\s*:\s*(true|\[)|"(requireApproval|require_approval|confirm)"\s*:\s*false|"disabled"\s*:\s*false[^}]*autoApprove`)
