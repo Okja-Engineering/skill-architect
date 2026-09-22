@@ -6,6 +6,12 @@ harness_init
 tmp="$harness_scratch/walk"
 mkdir -p "$tmp"
 
+# The shipped-skill census. Shared with tests/test_skill.sh and
+# tests/test_gate.sh, which walk the same set out of the same tree — this file
+# carried a third copy of the same six-line loop, and a reader written three
+# times answers differently the moment one copy is repaired.
+source tests/lib/skills.sh
+
 # The distributable unit is a plugin; skills live under skills/.
 #
 # The manifest read is a function rather than a bare heredoc followed by
@@ -46,23 +52,16 @@ for skill in shipped:
 PY
 }
 
-# The skills this repository ships, by directory name. Same derivation as the
-# one inside the manifest check above, in the language this file's assertions
-# are written in.
-shipped_skill_names() {
-  local d
-  for d in skills/*/; do
-    d="${d%/}"
-    [ -f "$d/SKILL.md" ] || continue
-    printf '%s\n' "${d##*/}"
-  done
-}
-
 test_plugin_layout() {
   local skill
   assert "plugin points to canonical skill directory" \
     quietly plugin_points_to_canonical_skill_dir
-  for skill in $(shipped_skill_names); do
+  # shipped_skills comes from tests/lib/skills.sh. The Python derivation inside
+  # plugin_points_to_canonical_skill_dir stays where it is: it resolves each
+  # skill *through the manifest's own path value*, which is the thing that
+  # check exists to decide, and it has to do that in the language it reads the
+  # manifest in.
+  for skill in $(shipped_skills); do
     assert "$skill contains no plugin manifest" \
       test ! -e "skills/$skill/.devin-plugin/plugin.json"
   done

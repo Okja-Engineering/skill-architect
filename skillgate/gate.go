@@ -6,7 +6,7 @@ import (
 )
 
 // Version is the gate's semver, stamped into every report.
-const Version = "0.1.0"
+const Version = "0.6.0"
 
 // Target describes the bundle under gate: its ledger plus context derived
 // from the frontmatter and config files (populated lazily by helpers).

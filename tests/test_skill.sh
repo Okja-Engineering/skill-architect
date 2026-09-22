@@ -25,27 +25,43 @@ source tests/lib/skills.sh
 
 shipped_skill_count="$({ shipped_skills | grep -c . || true; } | tr -d '[:space:]')"
 
+# The version this release ships, declared once for the whole suite.
+#
+# It was four copies of one literal — two inside manifest_is_valid and
+# marketplace_is_valid, one in an assertion label, one in the AdapterVersion
+# grep — and bumping a release meant finding all of them. That is the shape
+# that leaves a surface behind: the suite catches the surface you forgot only
+# if the literal you forgot is the one it happens to check, and skillgate's
+# own `Version` sat at 0.1.0 through five releases because no literal here
+# named it at all. One declaration, every surface held against it, and a
+# surface added later joins by being asserted rather than by someone
+# remembering to add a seventh copy of the number.
+#
+# A surface that deliberately does *not* track the release states its own
+# value and its reason, below, rather than being quietly omitted from here.
+release_version="0.6.0"
+
 manifest_is_valid() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" "$release_version" <<'PY'
 import json, sys
 with open(sys.argv[1]) as f:
     data = json.load(f)
 assert data['name'] == 'skill-architect', 'name mismatch'
-assert data['version'] == '0.5.0', 'version mismatch'
+assert data['version'] == sys.argv[2], 'version mismatch'
 assert 'skills' in data, 'missing skills'
 PY
 }
 
 marketplace_is_valid() {
-  python3 - <<'PY'
-import json
+  python3 - "$release_version" <<'PY'
+import json, sys
 with open('.claude-plugin/marketplace.json') as f:
     data = json.load(f)
 assert data['name'] == 'skill-architect', 'marketplace name mismatch'
 plugins = data['plugins']
 assert len(plugins) == 1, 'expected exactly one plugin entry'
 assert plugins[0]['name'] == 'skill-architect', 'plugin entry name mismatch'
-assert plugins[0]['version'] == '0.5.0', 'plugin entry version mismatch'
+assert plugins[0]['version'] == sys.argv[1], 'plugin entry version mismatch'
 assert plugins[0]['source'] == './', 'plugin entry source mismatch'
 PY
 }
@@ -83,18 +99,39 @@ done
 # release that bumps the four plugin.json files and forgets this one advertises
 # the previous release to anyone installing by name.
 assert ".claude-plugin/marketplace.json exists" test -f .claude-plugin/marketplace.json
-assert ".claude-plugin/marketplace.json is valid and at 0.5.0" quietly marketplace_is_valid
+assert ".claude-plugin/marketplace.json is valid and at $release_version" \
+  quietly marketplace_is_valid
+
+# The gate stamps its own version into `tool.version` on every report it
+# writes, and it is the sixth version surface.
+#
+# tests/test_gate.sh already holds this constant against what `skillgate
+# version` prints and against what the report carries, so the three places the
+# binary states its version cannot drift apart — but all three derive from this
+# one constant, so the chain was internally consistent and tethered to nothing.
+# That is how it read `0.1.0` while the plugin around it shipped 0.5.0: every
+# check agreed, and none of them knew what release this was. Held to the
+# release here, propagated to the binary and the report there.
+assert "skillgate Version is $release_version" \
+  grep -q "^const Version = \"$release_version\"\$" skillgate/gate.go
 
 # The profiler records its own version in every profile it writes, and it is the
-# sixth version surface. It is asserted here beside the manifests so one place
+# seventh version surface. It is asserted here beside the manifests so one place
 # shows all of them, and in Go by TestAdapterVersionIsThisRelease.
 #
-# It is deliberately not required to equal the five above. The manifests version
-# the plugin and move when the release is cut; this one tracks what a profile
+# It is deliberately not required to equal the six above, which is why it names
+# its own value rather than reading $release_version. The manifests version the
+# plugin and move when the release is cut; this one tracks what a profile
 # contains and moves as soon as that changes, which is inside the release rather
 # than at the end of it. Holding them equal would mean either labelling every
 # profile built during a release as the previous release, or bumping the plugin
 # five times on the way there.
+#
+# 0.6.0 is the first release to exercise that: it changes nothing the profiler
+# reads or writes — `git diff v0.5.0..HEAD -- profiler/` is empty — so a profile
+# this release produces is the same profile 0.5.0 produced, and saying `0.6.0`
+# would tell a reader comparing two profiles that something about them changed.
+# The number below is a claim about profile content, not about the tag.
 assert "profiler AdapterVersion is 0.5.0" \
   grep -q 'AdapterVersion = "0.5.0"' profiler/types.go
 
@@ -806,9 +843,14 @@ assert "a document claiming verdict-guard.sh is named nowhere else is refused" \
 #
 # The version is read out of a manifest rather than written here, so there is no
 # number in this block for the next release to make wrong. The manifests' own
-# value is asserted against the literal above, which is where a release bump is
-# supposed to be a deliberate edit; everything below is derived from it.
-release_version() {
+# value is asserted against $release_version above, which is where a release
+# bump is supposed to be a deliberate edit; everything below is derived from the
+# artifact. The two are different kinds of statement and the file keeps both on
+# purpose — $release_version is the release this suite *intends*, this function
+# reads the release the repository *ships*, and the manifest assertions above
+# are where they are made to agree. Naming the reader for what it reads keeps
+# the two from being mistaken for one variable.
+release_version_in_manifest() {
   python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['version'])"
 }
 
@@ -836,7 +878,7 @@ release_section_body() {
   ' "$1"
 }
 
-skill_release_version="$(release_version)"
+skill_release_version="$(release_version_in_manifest)"
 echo "  the release the manifests declare: $skill_release_version"
 assert "the release version was read out of a manifest, not written down here" \
   test -n "$skill_release_version"
