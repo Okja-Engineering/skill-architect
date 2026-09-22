@@ -77,6 +77,42 @@ func TestReadsEveryOwnSkillVersion(t *testing.T) {
 	}
 }
 
+// TestShippedSkillsParseWithNoRefusals is the standing guard that the gate
+// can read the skills it ships. It derives its corpus from the tree rather
+// than naming it, and fails rather than skips when the walk finds nothing —
+// a guard whose corpus can silently be empty proves nothing.
+func TestShippedSkillsParseWithNoRefusals(t *testing.T) {
+	root := filepath.Join("..", "skills")
+	if _, err := os.Stat(root); err != nil {
+		t.Skipf("skills/ not present: %v", err)
+	}
+	found := 0
+	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || filepath.Base(p) != "SKILL.md" {
+			return err
+		}
+		found++
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		fm := ParseFrontmatter(string(b))
+		if len(fm.Unreadable) > 0 {
+			t.Errorf("%s: the gate refuses its own frontmatter: %v", p, fm.Unreadable)
+		}
+		if fm.Root.Kind() != KindMapping {
+			t.Errorf("%s: root kind = %s, want %s", p, fm.Root.Kind(), KindMapping)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found == 0 {
+		t.Fatal("walked skills/ and found no SKILL.md — this guard would have passed vacuously")
+	}
+}
+
 // --- one test per scalar style ------------------------------------------
 
 func TestBlockScalarStyle(t *testing.T) {
@@ -395,18 +431,59 @@ func TestLegacyProjectionUnchanged(t *testing.T) {
 	}
 }
 
-// TestLegacyProjectionOmitsUnreadableKeys documents the one thing the
-// compatibility view cannot say. Keys is map[string]string: it has no
-// spelling for "present but unreadable", so an unreadable key is missing
-// from it and visible only through Lookup and Unreadable. Pinned so the
-// gap is a known boundary rather than a silent one.
-func TestLegacyProjectionOmitsUnreadableKeys(t *testing.T) {
+// TestLegacyProjectionKeepsUnreadableKeys is the trap stated where it
+// actually bites. Keys is map[string]string and cannot say "unreadable" —
+// but dropping the key is not the way to say it either, because in the view
+// every rule reads, a dropped key is exactly an absent one. So a refused key
+// stays in Keys under its own line's text, and Lookup is where the refusal
+// is legible.
+//
+// This is not decoration: SK-T013 tests `_, ok := fm.Keys["allowed-tools"]`,
+// so dropping a refused allowed-tools turns a blocker-severity wildcard
+// grant into silence.
+func TestLegacyProjectionKeepsUnreadableKeys(t *testing.T) {
 	fm := ParseFrontmatter("---\nname: x\ndescription: !!str tagged\n---\nbody\n")
-	if _, ok := fm.Keys["description"]; ok {
-		t.Error("Keys carried a value for an unreadable key")
+	got, ok := fm.Keys["description"]
+	if !ok {
+		t.Fatal("a refused key was dropped from Keys, which is how a present key reads as absent")
+	}
+	if got != "!!str tagged" {
+		t.Errorf("Keys[description] = %q, want the text that stood on its line", got)
 	}
 	if fm.Lookup("description").Kind() != KindUnreadable {
-		t.Error("the unreadable key is not reachable through Lookup either")
+		t.Error("Lookup does not report the key as unreadable")
+	}
+	if _, ok := fm.Lookup("description").Scalar(); ok {
+		t.Error("Scalar handed out a value for a refused key")
+	}
+}
+
+// TestWildcardGrantStillReachesTheBlocker pins the behaviour a stricter
+// reader is most likely to destroy. "allowed-tools: *" and "[*]" are not
+// well-formed YAML — a bare "*" introduces an alias with no anchor name —
+// but a harness reading them leniently grants every tool, so SK-T013 must
+// still see them. An indicator that introduces no token is read as the plain
+// scalar it looks like, which is what keeps this reachable.
+func TestWildcardGrantStillReachesTheBlocker(t *testing.T) {
+	for _, form := range []string{"*", `"*"`, "[*]", "[ * ]", "all"} {
+		root := writeBundle(t, map[string]string{
+			"SKILL.md": "---\nname: bundle\ndescription: a demo skill\nallowed-tools: " + form + "\n---\nBody.\n",
+		})
+		rep, err := NewEngine().Gate(root, optsForTest())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fired bool
+		for _, f := range rep.Findings {
+			if f.RuleID == "SK-T013" {
+				fired = true
+			}
+		}
+		if !fired {
+			fm := ParseFrontmatter("---\nname: bundle\nallowed-tools: " + form + "\n---\n")
+			t.Errorf("allowed-tools: %s did not reach SK-T013 (Keys=%v Lists=%v refusals=%v)",
+				form, fm.Keys, fm.Lists, fm.Unreadable)
+		}
 	}
 }
 

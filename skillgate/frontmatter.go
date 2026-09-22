@@ -10,15 +10,17 @@ import (
 // as the reader in yaml.go read it; Keys and Lists are a flat projection of
 // its top-level entries, kept because every rule reads through them.
 //
-// The projection is lossy by construction and in exactly one way: Keys is a
-// map[string]string, so it has no spelling for a key that is present and
-// unreadable, and such a key is missing from it. Root and Unreadable are
-// where that distinction lives — see Lookup.
+// The projection loses structure — a nested map flattens to nothing, and
+// map[string]string has no spelling for "unreadable" — but it never loses a
+// key. A key the reader refused is present in Keys under the text that stood
+// on its line, because dropping it would make a key that is there
+// indistinguishable from one that is not, in the view every rule reads. What
+// the projection cannot say, Root and Unreadable can: see Lookup.
 type Frontmatter struct {
 	// Keys holds each top-level entry whose value is a scalar, under that
-	// value; each entry whose value is a collection is here too, under the
-	// text that stood on the key's own line — empty for a block collection,
-	// the bracket text for a flow one.
+	// value, and every other top-level entry under the text that stood on
+	// the key's own line — empty for a block collection, the bracket text
+	// for a flow one, the refused text for an unreadable one.
 	Keys map[string]string
 	// Lists holds each top-level entry whose value is a sequence of
 	// scalars, flow or block alike.
@@ -86,7 +88,7 @@ func (fm *Frontmatter) project() {
 		case KindScalar:
 			v, _ := n.Scalar()
 			fm.Keys[k] = v
-		case KindMapping:
+		case KindMapping, KindUnreadable:
 			fm.Keys[k] = n.src
 		case KindSequence:
 			fm.Keys[k] = n.src

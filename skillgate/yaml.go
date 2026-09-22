@@ -224,14 +224,47 @@ func splitYAMLLines(raw string, firstLine int) []yamlLine {
 }
 
 // refuse records an entry-scope refusal and returns the unreadable node that
-// stands in for the entry.
-func (p *yamlParser) refuse(l yamlLine, reason string) *Node {
+// stands in for the entry. src is the text that stood on the entry's own
+// line, which the compatibility projection reports so that a key the reader
+// refused is never missing from the flat view — missing is how a key that is
+// present becomes indistinguishable from one that is absent.
+func (p *yamlParser) refuse(l yamlLine, reason, src string) *Node {
 	if p.quiet == 0 {
 		p.refusals = append(p.refusals, Refusal{
 			Path: append([]string(nil), p.path...), Line: l.num, Reason: reason,
 		})
 	}
-	return &Node{kind: KindUnreadable, line: l.num, reason: reason}
+	return &Node{kind: KindUnreadable, line: l.num, reason: reason, src: src}
+}
+
+// indicatorToken reports the length of the token an anchor ("&"), alias
+// ("*") or tag ("!") indicator introduces. It is zero when nothing follows
+// the indicator, and an indicator that introduces no token starts no node:
+// the text is then read as the plain scalar it looks like rather than
+// refused. That is the one deliberate leniency here, and it is load-bearing.
+// "allowed-tools: *" is not well-formed YAML, but a harness reading it
+// leniently grants every tool, so a gate that declined to read it would be
+// silent about the grant it exists to catch.
+func indicatorToken(s string) int {
+	n := 0
+	for n+1 < len(s) {
+		switch s[n+1] {
+		case ' ', '\t', ',', '[', ']', '{', '}':
+			return n
+		}
+		n++
+	}
+	return n
+}
+
+func indicatorName(c byte) string {
+	switch c {
+	case '&':
+		return "an anchor"
+	case '*':
+		return "an alias"
+	}
+	return "a tag"
 }
 
 // fail records a document-scope refusal: the reader has lost the boundaries
@@ -335,7 +368,7 @@ func (p *yamlParser) parseBlockMapping(col int) *Node {
 			// The merge key resolves against an anchor this reader does not
 			// track, so its entry is refused whole; the value is consumed
 			// only to find where the entry ends.
-			value = p.refuse(l, "the merge key (<<)")
+			value = p.refuse(l, "the merge key (<<)", rest)
 			p.quiet++
 			p.parseValue(col, rest, l)
 			p.quiet--
@@ -345,7 +378,10 @@ func (p *yamlParser) parseBlockMapping(col int) *Node {
 		if at, dup := seen[key]; dup {
 			// Which value the key holds is exactly what the reader cannot
 			// say, so it holds neither.
-			node.entries[at].node = p.refuse(l, "a duplicate key")
+			// Which value the key holds is what the reader cannot say, so
+			// the flat view reports no text for it either — but the key is
+			// still there, which is what keeps it apart from an absent one.
+			node.entries[at].node = p.refuse(l, "a duplicate key", "")
 		} else {
 			seen[key] = len(node.entries)
 			node.entries = append(node.entries, mapEntry{key: key, node: value})
@@ -414,12 +450,12 @@ func (p *yamlParser) parseValue(col int, rest string, l yamlLine) *Node {
 	switch rest[0] {
 	case '|', '>':
 		return p.parseBlockScalar(col, rest, l)
-	case '&':
-		return p.refuseEntry(col, l, "an anchor")
-	case '*':
-		return p.refuseEntry(col, l, "an alias")
-	case '!':
-		return p.refuseEntry(col, l, "a tag")
+	case '&', '*', '!':
+		if indicatorToken(rest) > 0 {
+			return p.refuseEntry(col, l, indicatorName(rest[0]), rest)
+		}
+		// No token follows, so no node begins here: fall through to the
+		// plain scalar below.
 	case '[', '{', '"', '\'':
 		return p.parseFlowValue(rest, l)
 	}
@@ -429,8 +465,8 @@ func (p *yamlParser) parseValue(col int, rest string, l yamlLine) *Node {
 
 // refuseEntry refuses a value whose extent the reader can still find: the
 // key's own line plus any block indented under it.
-func (p *yamlParser) refuseEntry(col int, l yamlLine, what string) *Node {
-	n := p.refuse(l, what)
+func (p *yamlParser) refuseEntry(col int, l yamlLine, what, src string) *Node {
+	n := p.refuse(l, what, src)
 	p.i++
 	for p.i < len(p.lines) && (p.lines[p.i].blank || p.lines[p.i].indent > col) {
 		p.i++
@@ -452,16 +488,16 @@ func (p *yamlParser) parseBlockScalar(col int, header string, l yamlLine) *Node 
 		switch {
 		case rest[0] == '+' || rest[0] == '-':
 			if chomp != 'c' {
-				return p.refuseEntry(col, l, "a malformed block scalar header")
+				return p.refuseEntry(col, l, "a malformed block scalar header", header)
 			}
 			chomp = rest[0]
 		case rest[0] >= '1' && rest[0] <= '9':
 			if explicit != 0 {
-				return p.refuseEntry(col, l, "a malformed block scalar header")
+				return p.refuseEntry(col, l, "a malformed block scalar header", header)
 			}
 			explicit = int(rest[0] - '0')
 		default:
-			return p.refuseEntry(col, l, "a malformed block scalar header")
+			return p.refuseEntry(col, l, "a malformed block scalar header", header)
 		}
 		rest = rest[1:]
 	}
@@ -620,11 +656,21 @@ func (p *yamlParser) parseFlowValue(rest string, l yamlLine) *Node {
 	}
 	text := b.String()
 
+	src := strings.TrimSpace(strings.SplitN(rest, "\n", 2)[0])
 	s := &flowScanner{text: text, line: l.num}
 	node := s.node()
 	if s.err != "" {
-		p.fail(yamlLine{num: s.line}, s.err)
-		return nil
+		// A flow node whose delimiters balance still tells the reader where
+		// the entry ends, so only its own entry is refused. One whose
+		// delimiters do not balance takes the document with it.
+		end, closed := skipFlowNode(text)
+		if !closed {
+			p.fail(yamlLine{num: s.line}, s.err)
+			return nil
+		}
+		n := p.refuse(l, s.err, src)
+		p.i += strings.Count(text[:end], "\n") + 1
+		return n
 	}
 	// Whatever follows the flow node on its own line must be a comment. The
 	// tail stops at the newline: skipping past it would read the next
@@ -641,9 +687,56 @@ func (p *yamlParser) parseFlowValue(rest string, l yamlLine) *Node {
 	if node.Kind() != KindScalar {
 		// The compatibility projection reports a flow collection by the text
 		// that stood on the key's line.
-		node.src = strings.TrimSpace(strings.SplitN(rest, "\n", 2)[0])
+		node.src = src
 	}
 	return node
+}
+
+// skipFlowNode finds the end of the flow node starting at text[0] by
+// matching its delimiters, without reading its content — which is how the
+// reader locates the end of a flow value it could not read. It reports
+// false when the delimiters never balance.
+func skipFlowNode(text string) (int, bool) {
+	depth := 0
+	for i := 0; i < len(text); i++ {
+		switch c := text[i]; c {
+		case '[', '{':
+			depth++
+		case ']', '}':
+			depth--
+			if depth == 0 {
+				return i + 1, true
+			}
+		case '"', '\'':
+			j := i + 1
+			for j < len(text) {
+				if text[j] == '\\' && c == '"' {
+					j += 2
+					continue
+				}
+				if text[j] == c {
+					if c == '\'' && j+1 < len(text) && text[j+1] == '\'' {
+						j += 2
+						continue
+					}
+					break
+				}
+				j++
+			}
+			if j >= len(text) {
+				return 0, false
+			}
+			i = j
+			if depth == 0 {
+				return i + 1, true
+			}
+		case '\n':
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return len(text), depth == 0
 }
 
 type flowScanner struct {
@@ -690,12 +783,11 @@ func (s *flowScanner) node() *Node {
 		return s.mapping()
 	case '"', '\'':
 		return s.quoted()
-	case '&':
-		return s.fail("an anchor")
-	case '*':
-		return s.fail("an alias")
-	case '!':
-		return s.fail("a tag")
+	case '&', '*', '!':
+		if indicatorToken(s.text[s.pos:]) > 0 {
+			return s.fail(indicatorName(c))
+		}
+		// No token follows, so no node begins here: read the plain scalar.
 	}
 	return s.plain()
 }
