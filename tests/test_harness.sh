@@ -1730,4 +1730,101 @@ assert "the Go DID NOT END verdict is printed" grep -q 'DID NOT END' "$mut_out"
 
 mutation_format=harness
 
+# --- A match is a verdict about the text, not about the producer's exit ------
+#
+# `producer | grep -q PATTERN` under `set -o pipefail` cannot tell a found
+# match from a dead producer. `grep -q` exits the moment it has its answer and
+# closes the pipe; a producer with anything still to write is killed by
+# SIGPIPE, the pipeline's status is 141 — or bash's own `printf` gets EPIPE,
+# reports `write error: Broken pipe` and returns 1 — and `pipefail` hands that
+# status to the assertion, which prints FAIL over a match it actually found.
+#
+# Whether the producer had finished writing when the reader stopped listening
+# is a race, so the shape does not fail: it fails *sometimes*. That is the
+# defect this file exists for, wearing the other mask. An assertion that cannot
+# print FAIL makes a green run meaningless; an assertion that prints FAIL at
+# random makes a green run meaningless *and* a red run ignorable, which is
+# worse, because the next real failure arrives looking like the noise everyone
+# has learned to re-run.
+#
+# It was live. tests/test_skill.sh reddened one of its seven heading assertions
+# at random, from `promise_scope_run | grep -q`: measured over the isolated
+# pipeline, 15 in 400 invocations on bash 5.3.15 and 4 in 400 on bash 3.2.57,
+# and caught in CI on macos-latest in a run ubuntu-latest passed.
+#
+# The exposure is not "a pipe into grep -q". It is a producer that does work
+# *after* the reader is already blocked in `read()`, so its output lands on the
+# far side of the reader's early exit. An `echo "$already_captured"` writes
+# before the reader can even exec, and measured 0 in 400 on both shells at 400
+# bytes and at 40kB. That distinction is what the two controls below hold: the
+# first proves the piped shape loses a found match, the second proves the
+# primitive that replaces it does not.
+#
+# The filler is larger than any pipe buffer, so the control here is
+# deterministic. At the sizes suites actually produce, the same shape is the
+# intermittent one — which is exactly why it had to be driven at a size that
+# cannot be lucky.
+sigpipe_filler="$(awk 'BEGIN { s = "x"; while (length(s) < 262144) s = s s; print substr(s, 1, 262144) }')"
+still_writing_producer() {
+  printf 'MATCHME here\n%s\nTRAILER\n' "$sigpipe_filler"
+}
+
+require "the producer for these controls has more to write than a pipe will hold" \
+  test "${#sigpipe_filler}" -gt 65536
+
+piped_match_is_lost() {
+  local st=0
+  ( set -euo pipefail; still_writing_producer | grep -q '^MATCHME' ) >/dev/null 2>&1 || st=$?
+  [ "$st" -ne 0 ]
+}
+assert "the piped shape these primitives replace loses a found match to the producer's SIGPIPE" \
+  piped_match_is_lost
+
+assert "holds_line returns the match over the same text the piped shape lost" \
+  holds_line "$(still_writing_producer)" '^MATCHME'
+
+# The other direction, so the primitive is not a function that says yes. A
+# matcher that could not say no would pass the assertion above while asserting
+# nothing at all, which is the shape this whole file refuses.
+holds_line_refuses_absent() {
+  ! holds_line "$(still_writing_producer)" '^NOT-IN-THE-TEXT'
+}
+assert "holds_line refuses a pattern the text does not hold, so it can still fail" \
+  holds_line_refuses_absent
+
+# And the anchoring, because a matcher that quietly dropped the caller's
+# options or their `^` would pass both assertions above while matching far more
+# than the call site asked for. `MATCHME` is on the text's first line and not
+# at the start of any other, so an unanchored reading and an anchored one
+# disagree here.
+holds_line_keeps_the_anchor() {
+  ! holds_line "$(still_writing_producer)" '^TRAILER-NOT-AT-LINE-START'
+}
+assert "holds_line keeps the caller's anchoring rather than widening the match" \
+  holds_line_keeps_the_anchor
+assert "holds_line passes the caller's grep options through, so -F stays literal" \
+  holds_line "$(still_writing_producer)" -F -- 'MATCHME here'
+holds_line_F_is_literal() {
+  ! holds_line "$(still_writing_producer)" -F -- '^MATCHME'
+}
+assert "holds_line -F reads the pattern as a literal, not as an expression" \
+  holds_line_F_is_literal
+
+# `head -1` is the same defect in the other spelling: it stops at the first
+# line and leaves the producer writing into a closed pipe.
+piped_first_line_is_lost() {
+  local st=0
+  ( set -euo pipefail; still_writing_producer | head -1 ) >/dev/null 2>&1 || st=$?
+  [ "$st" -ne 0 ]
+}
+assert "the piped head shape loses the producer the same way" \
+  piped_first_line_is_lost
+
+assert "first_line returns the first line over the text the piped shape lost" \
+  test "$(first_line "$(still_writing_producer)")" = 'MATCHME here'
+assert "first_line of a single-line text is that line" \
+  test "$(first_line "$sigpipe_filler")" = "$sigpipe_filler"
+assert "first_line of nothing is nothing, as the shape it replaces reported" \
+  test -z "$(first_line "")"
+
 harness_summary
