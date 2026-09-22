@@ -131,15 +131,25 @@ func isScript(path string) bool {
 	return false
 }
 
+// isHarnessEntry reports whether a harness loads this file *by convention*
+// rather than through a reference from another file: the skill manifest, a
+// memory file it reads on session start, or a Cursor rule file it discovers
+// and applies by glob. These are the doors into a bundle — they need no
+// inbound reference to be reached, which is what makes them G003's entry
+// set and never its candidates.
+func isHarnessEntry(path string) bool {
+	base := path[strings.LastIndex(path, "/")+1:]
+	switch base {
+	case "SKILL.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md", "AGENT.md":
+		return true
+	}
+	return strings.HasSuffix(path, ".mdc")
+}
+
 // isLoadedText reports whether a file's text enters an agent's context:
 // markdown instruction files, harness memory files, and Cursor rule files.
 func isLoadedText(path string) bool {
-	base := path[strings.LastIndex(path, "/")+1:]
-	switch base {
-	case "AGENTS.md", "CLAUDE.md", "GEMINI.md", "AGENT.md":
-		return true
-	}
-	return strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".mdc")
+	return isHarnessEntry(path) || strings.HasSuffix(path, ".md")
 }
 
 // reSkillName is the spec name charset — lowercase alphanumerics and

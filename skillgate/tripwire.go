@@ -100,7 +100,7 @@ var tripwireGroups = []tripwireGroup{
 	{name: "tripwire-agency", rules: []rule{ruleT013, ruleT014}},
 	{name: "tripwire-config", rules: []rule{ruleT015, ruleT016, ruleT017, ruleT018}},
 	{name: "tripwire-integrity", rules: []rule{ruleT019, ruleT020}},
-	{name: "refgraph", rules: []rule{ruleG001, ruleG002}},
+	{name: "refgraph", rules: []rule{ruleG001, ruleG002, ruleG003}},
 }
 
 // --- helpers shared by the rule implementations ---

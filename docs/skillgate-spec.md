@@ -69,6 +69,7 @@ block set is Pack-B-owned.
 | SK-T020 | blocker | Writes to persistence/self-modification surfaces — shell rc, crontab, LaunchAgents, `.claude/settings*.json`, `.cursor/`, `.pi/`, `~/.pi/agent/trust.json`. Verbs: shell redirects (path-like target required — `<cwd>` placeholders and `a > b`/`>=` comparisons don't count), copy/move/sed -i, and programmatic writes (`writeFileSync`, `appendFile`, `open(…,'w')`). `/dev/null` redirects and backslash-spelled paths normalized. |
 | SK-G001 | medium | Dangling reference: path resolves inside the bundle, no file exists. Refs try file-dir first then each ancestor up to the root; an ancestor-level escape keeps the in-bundle candidates (a `../` ref is still checked, not dropped) |
 | SK-G002 | info | Reference cycle between bundle files (Tarjan SCC) |
+| SK-G003 | low | Unreachable file: a loaded-text file in a skill's subdirectory that no reference path from a harness entry point reaches. See **Reference reachability** below for the edge derivation and its stated limits |
 | SK-I001 | medium | Required frontmatter missing (`name`, `description`). Skill files are `SKILL.md` only — `.mdc` rule files have no skill frontmatter contract |
 | SK-I002 | low | Frontmatter `name` ≠ dir name; charset violation (lowercase-hyphen, ≤64); in-bundle same-name skill collision |
 | SK-I003 | medium | `description` > 1024 chars |
@@ -79,6 +80,89 @@ block set is Pack-B-owned.
 Rule count is capped at 20 tripwires; extensions fold into existing legs
 (T017/T020 did). Rule representation is frozen until
 `docs/research/rule-language.md` lands.
+
+## Reference reachability (SK-G003)
+
+Reachability is a property of the resolved graph, not of the text. This
+section is normative because the rule accuses a file of being dead, and an
+accusation must state the computation that produced it.
+
+**Entry set.** Every inspected file a harness opens *by convention* rather
+than through a reference: `SKILL.md`, the memory files (`AGENTS.md`,
+`CLAUDE.md`, `GEMINI.md`, `AGENT.md`), and `.mdc` Cursor rule files. These
+are the doors; they need no inbound reference and are never candidates.
+
+**Reachable set.** The forward closure of the entry set over the resolved
+edges. Reference sources are **every inspected file**, not only loaded text
+— a script or a manifest naming a template is an edge a reader follows, and
+a missed edge is what turns a reachable file into a false orphan.
+
+**Candidate set.** Inspected loaded-text files sitting in a *subdirectory*
+of a skill root — the progressive-disclosure payload, which exists only to
+be pointed at. Files beside `SKILL.md` are skill furniture (README,
+CHANGELOG, a license) and are not candidates. Skill roots are derived from
+the `SKILL.md` files in the ledger, so a package with no `SKILL.md` has no
+candidates and the rule is silent: with no entry point there is no
+reachability question, and a docs tree is not a bundle of orphans.
+
+**Reported set.** Candidates minus reachable — the complement of a
+computation, not a list of files that look orphaned.
+
+### Which spellings of a reference become an edge
+
+Edges come from the same token stream the rest of the reference graph reads
+(markdown link targets, backtick-quoted path tokens, and bare paths under
+`references/`, `scripts/`, `assets/`, `examples/`, `hooks/`), classified by
+whether the token names a file or a directory:
+
+- **File reference** — a token ending in a known source/document extension
+  that resolves to a ledger file: one edge to that file. Bare filenames
+  count only from an explicit markdown link target.
+- **Directory reference** — a path-shaped token that names no file and
+  resolves to a ledger directory: an edge to **every** ledger file beneath
+  it, at any depth. Naming a directory discloses what is in it; only
+  reachability reads these, never SK-G001.
+
+Everything else produces **no edge**: URLs, anchors, `~/` home-relative
+paths, `$VAR`/`<placeholder>` forms, command strings, and bare prose
+mentions of a path outside the five conventional directories.
+
+### The three rulings, and the direction the rule errs
+
+- **A cycle is not reachability.** An island of files referencing only each
+  other is reached by nobody, so every member is reported. A cycle hanging
+  off an entry point is reached through its entry edge and is silent — that
+  one is SK-G002's to mention.
+- **An edge may leave the referencing skill's directory.** The audited unit
+  is the package, so a file another skill reaches is reachable. An edge
+  whose target leaves the package *root* resolves to no ledger file and
+  contributes no edge at all; that reference is SK-T019's.
+- **A missed edge is the dangerous direction**, because it accuses a file
+  that is in fact reached in a spelling the resolver could not follow. So a
+  candidate whose base name is named in a file that produced no edge to it
+  is **not** reported: the resolver's blind spot is not the skill's defect.
+
+### Stated limits — where SK-G003 is silent by construction
+
+These are gaps, accepted deliberately in exchange for not accusing correct
+skills. Each is asserted by a test in `skillgate/refgraph_test.go`, not
+promised here.
+
+1. **A directory reference blinds the directory.** A layout line naming
+   `references/` is indistinguishable from "use the templates in
+   `assets/contracts/`", so a bundle that names its payload directory as a
+   whole can never produce an SK-G003 for a file inside it. Measured: this
+   silences the rule for
+   `skills/skill-audit/references/` (`SKILL.md:152` names `references/`,
+   `scripts/` and `assets/` bare).
+2. **Scripts and other non-loaded-text files are not candidates.** The
+   resolver reads references out of text and cannot see a script's own
+   imports, a hook config's command target, or a package manifest's `bin`
+   entry, so an unreferenced script is never reported as unreachable. Those
+   registration surfaces are SK-T013's and SK-T017's.
+3. **A base-name mention anywhere spares the file**, including a mention
+   that has nothing to do with it. A genuine orphan whose file name happens
+   to appear in unrelated prose goes unreported.
 
 ## checks_skipped contract
 
