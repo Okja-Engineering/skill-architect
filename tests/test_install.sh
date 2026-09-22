@@ -2386,10 +2386,11 @@ installed_skill_dirs() {
 # The destination root, read back from where the block actually installed. Named
 # from the repository's own skill list, so it is discovered and not spelled.
 installed_destination_root() {
-  local home="$1" first
-  first="$(repository_skill_names | head -1)"
+  local home="$1" first hit
+  first="$(first_line "$(repository_skill_names)")"
   [ -n "$first" ] || return 1
-  find "$home" -type d -name "$first" | head -1 | sed "s|/$first\$||"
+  hit="$(first_line "$(find "$home" -type d -name "$first")")"
+  printf '%s\n' "$hit" | sed "s|/$first\$||"
 }
 
 # What is installed is what is in the repository: every shipped skill present,
@@ -2481,7 +2482,7 @@ an_interrupted_update_leaves_the_next_one_able_to_converge() {
   stage_the_repository_skills "$dir" || return 1
   run_documented_block "$dir" || return 1
   dest="$(installed_destination_root "$dir/home")" || return 1
-  first="$(repository_skill_names | head -1)"
+  first="$(first_line "$(repository_skill_names)")"
   [ -n "$first" ] || return 1
 
   chmod 500 "$dest/$first" || return 1
@@ -2545,7 +2546,7 @@ documented_update_leaves_the_other_skills_alone() {
 # `#` that really does open a comment has whitespace in front of it, so
 # stopping at whitespace already stops there.
 first_assignment_value() {
-  sed -n 's/^[A-Za-z_][A-Za-z0-9_]*=\([^ 	]*\).*$/\1/p' | head -1
+  first_line "$(sed -n 's/^[A-Za-z_][A-Za-z0-9_]*=\([^ 	]*\).*$/\1/p')"
 }
 
 documented_destination() {
@@ -2555,7 +2556,7 @@ documented_destination() {
 # The same path as the README's own list of where each agent reads skills from
 # gives it. Claude Code is the row the command is written against.
 readme_listed_destination() {
-  sed -n 's/^- \*\*Claude Code\*\* — `\([^`]*\)`.*$/\1/p' README.md | head -1
+  first_line "$(sed -n 's/^- \*\*Claude Code\*\* — `\([^`]*\)`.*$/\1/p' README.md)"
 }
 
 the_list_and_the_block_agree_on_the_destination() {
@@ -2587,7 +2588,7 @@ documented_install_is_an_update_that_converges() {
   # merge-into-the-destination command leaves behind for good: a file the
   # repository no longer has, and a file whose contents are stale.
   local installed
-  installed="$(installed_skill_dirs "$dir/home" | head -1)"
+  installed="$(first_line "$(installed_skill_dirs "$dir/home")")"
   [ -n "$installed" ] || return 1
   : > "$installed/withdrawn-upstream.md"
   echo "stale" > "$installed/SKILL.md"
