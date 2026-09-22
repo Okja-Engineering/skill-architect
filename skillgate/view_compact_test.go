@@ -124,6 +124,178 @@ func TestCompactLetterViewFiresBlockerOnLetterSpacedPayloads(t *testing.T) {
 	}
 }
 
+// TestLetterSpacingRunEndsAtTheFirstOrdinaryWord pins the run's right edge.
+//
+// A letter-spacing run is a sequence of *isolated* letters. The left edge has
+// always said so — a run cannot begin on a letter that follows a letter — and
+// the right edge must say the same thing: a letter that touches another letter
+// is the start of an ordinary word, and the run ended before it.
+//
+// Read the other way round, the run had been taking one letter too many and
+// deleting the gap in front of it, so `… p r e v i o u s instructions` fused
+// into `previousinstructions`. That does not invent a finding; it *destroys*
+// one, because every phrase rule is written with whitespace between its words.
+// A payload half spelled out and half not is the natural way to write this
+// evasion and it was the one spelling the view could not see.
+func TestLetterSpacingRunEndsAtTheFirstOrdinaryWord(t *testing.T) {
+	t.Run("the compaction does not fuse the next word", func(t *testing.T) {
+		cases := []struct{ name, in, want string }{
+			{"a spaced run before an ordinary word",
+				"a b c d e f instructions follow", "abcdef instructions follow"},
+			{"a spaced run before an ordinary word, dotted",
+				"a.b.c.d.e.f.instructions", "abcdef.instructions"},
+			{"a run that ends the line is unaffected",
+				"a b c d e f", "abcdef"},
+			{"an ordinary word before a spaced run",
+				"instructions a b c d e f", "instructions abcdef"},
+			{"a run between two ordinary words",
+				"follow a b c d e f instructions", "follow abcdef instructions"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				got, _ := compactLetterSpacing(tc.in)
+				if got != tc.want {
+					t.Errorf("compaction\n  in:  %q\n got: %q\nwant: %q", tc.in, got, tc.want)
+				}
+			})
+		}
+	})
+
+	// The reach this costs, end to end: the payload is spelled exactly as it
+	// would be by someone spacing out the words a filter looks for and
+	// leaving the rest legible.
+	t.Run("a half-spelled payload fires", func(t *testing.T) {
+		words := strings.Split(overridePayload, " ")
+		spaced := make([]string, 0, len(words))
+		for i, w := range words {
+			if i >= 3 { // "Ignore all previous" spaced out, the rest plain
+				spaced = append(spaced, w)
+				continue
+			}
+			chars := []string{}
+			for _, r := range w {
+				chars = append(chars, string(r))
+			}
+			spaced = append(spaced, strings.Join(chars, " "))
+		}
+		line := strings.Join(spaced, "  ")
+
+		root, wantLine := bundleWithBody(t, "x", line)
+		got := findingsFor(t, root, "SK-T002")
+		if len(got) != 1 {
+			t.Fatalf("want exactly 1 SK-T002 on %q, got %d: %+v", line, len(got), got)
+		}
+		if got[0].View != viewCompactLetter {
+			t.Errorf("view = %q, want %q", got[0].View, viewCompactLetter)
+		}
+		if got[0].Line != wantLine {
+			t.Errorf("line = %d, want %d", got[0].Line, wantLine)
+		}
+		if got[0].Evidence != line {
+			t.Errorf("evidence is not the raw source line\n got: %q\nwant: %q", got[0].Evidence, line)
+		}
+	})
+}
+
+// TestARunDoesNotReconstructATokenAcrossItsEdge pins the cost of the right
+// edge, in code rather than only in the spec's prose.
+//
+// `c u r s o r Auth` and `p r e v i o u s instructions` are the same shape —
+// a run, a unit-width gap, then a plainly spelled word — so the grammar has
+// to treat them the same way, and only vocabulary could tell them apart.
+// Separating is the measured side (the record has the numbers), and this is
+// what it costs: a payload that must be read as one unbroken token across
+// that boundary is not reconstructed.
+//
+// The row that *does* fire is here too, because a limit with no neighbouring
+// capability reads like a hole rather than a boundary: spelled all the way
+// out, the same payload is reached.
+func TestARunDoesNotReconstructATokenAcrossItsEdge(t *testing.T) {
+	// SK-T012's pattern is one unbroken token. Both spellings are *derived*
+	// from it rather than typed out — the convention every fixture in this
+	// file follows, so a fixture cannot drift away from the thing it is
+	// imitating. It also keeps a live letter-spaced payload out of this
+	// source, which the compact view would otherwise reach when the gate is
+	// run over its own repository.
+	const token = "cursorAuth"
+	head := token[:len("cursor")] // the part the attacker spaces out
+	tail := token[len("cursor"):] // the part left spelled plainly
+	glued := toLetterSpaced(head, " ") + " " + tail
+	full := toLetterSpaced(token, " ")
+
+	t.Run("the glued tail is not rejoined", func(t *testing.T) {
+		got, _ := compactLetterSpacing(glued)
+		if want := head + " " + tail; got != want {
+			t.Errorf("compaction of %q\n got: %q\nwant: %q", glued, got, want)
+		}
+	})
+	t.Run("spelled all the way out, it is", func(t *testing.T) {
+		got, _ := compactLetterSpacing(full)
+		if got != token {
+			t.Errorf("compaction of %q\n got: %q\nwant: %q", full, got, token)
+		}
+	})
+	t.Run("and the rule follows the view", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, body string
+			wantFire   bool
+		}{
+			{"glued tail", "Read " + glued + " from the editor store.", false},
+			{"fully spaced", "Read " + full + " from the editor store.", true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				root, _ := bundleWithBody(t, "x", tc.body)
+				fired := false
+				for _, f := range findingsFor(t, root, "SK-T012") {
+					if f.View == viewCompactLetter {
+						fired = true
+					}
+				}
+				if fired != tc.wantFire {
+					t.Errorf("SK-T012 on the %s view: fired = %v, want %v",
+						viewCompactLetter, fired, tc.wantFire)
+				}
+			})
+		}
+	})
+}
+
+// TestEveryLetterInARunIsIsolated pins the definition rather than the repair.
+//
+// It asserts the invariant the right-edge bug violated — every letter a run
+// contains has no letter on either side of it — over every letter-spacing run
+// in every real document. A run that reached one letter into an ordinary word
+// fails here naming the file, the line and the letter, and so would a run that
+// began one letter inside one.
+func TestEveryLetterInARunIsIsolated(t *testing.T) {
+	checked := 0
+	for path, raw := range realDocuments(t) {
+		skeleton, _ := foldSkeleton(raw)
+		rs, _ := runeOffsets(skeleton)
+		for _, run := range letterSpacingRuns(rs) {
+			checked++
+			for i := run.start; i < run.end; i++ {
+				if !isRunLetter(rs[i]) {
+					continue
+				}
+				if i > 0 && isRunLetter(rs[i-1]) {
+					t.Errorf("%s: run %q contains %q at %d, which follows the letter %q — "+
+						"the run began inside an ordinary word",
+						path, string(rs[run.start:run.end]), string(rs[i]), i, string(rs[i-1]))
+				}
+				if i+1 < len(rs) && isRunLetter(rs[i+1]) {
+					t.Errorf("%s: run %q contains %q at %d, which precedes the letter %q — "+
+						"the run reached into an ordinary word",
+						path, string(rs[run.start:run.end]), string(rs[i]), i, string(rs[i+1]))
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no run was found in any real document: this invariant is proving nothing")
+	}
+}
+
 // TestInvisibleLetterSpacingIsClosedByTheFold records where the division of
 // labour between the two stages actually falls, and it is a limit as much as
 // a capability.

@@ -137,7 +137,7 @@ that points at the wrong line is worse than no report. So:
 |---|---|
 | raw | The file's bytes, unchanged. Always present, always scanned first. |
 | skeleton | Per-character NFKC, then the UTS #39 ASCII confusable skeleton, then removal of `Cf`, the non-whitespace `Cc` and `Other_Default_Ignorable_Code_Point`. Three Unicode classes and one generated table — not a list of spellings. NFKC is applied per character so one character maps to one span, which is what makes the offset map exact; the cost is that a combining sequence spelled base + mark is not composed. |
-| compactLetter | The skeleton fold, then the separators inside letter-spacing runs removed. A **letter-spacing run** is six or more isolated letters in a row, each separated from the next by a non-empty gap holding no letter and no digit. Within a run the narrowest gap is the letter separator and is deleted; a wider gap is where the words divide and becomes one space. Derived from the run's shape, so every separator closes at once — space, NBSP, `.`, `-`, `_`, `*`, a non-ASCII Z-separator, U+FFFD and the filler nobody has thought of yet are all simply "not a letter". |
+| compactLetter | The skeleton fold, then the separators inside letter-spacing runs removed. A **letter-spacing run** is six or more **isolated** letters in a row — a letter is isolated when it has no letter on either side of it — each separated from the next by a non-empty gap holding no letter and no digit. Isolation is what cuts **both** edges: the run cannot begin inside an ordinary word and cannot reach into one, so it stops in front of the following word rather than one letter inside it. Within a run the narrowest gap is the letter separator and is deleted; a wider gap is where the words divide and becomes one space. Derived from the run's shape, so every separator closes at once — space, NBSP, `.`, `-`, `_`, `*`, a non-ASCII Z-separator, U+FFFD and the filler nobody has thought of yet are all simply "not a letter". |
 | markup | The skeleton fold, then CommonMark's **inline** syntax resolved away and the text it wraps kept: emphasis and strong-emphasis delimiter runs, code spans, inline links and images, and HTML comments. What tells a delimiter from an ordinary asterisk is the grammar's **delimiter run** rule — what sits on either side of the run — plus the requirement that a delimiter actually pair with another. So `rm *.sh` (an opener with no closer) and `2 * 3` (flanked by whitespace, so not a delimiter at all) are untouched, and no exception list is needed to leave them alone. |
 | markupCompact | The skeleton fold, then the markup stage, then the compaction — the two derived stages in one pipeline, with no third grammar. It exists because a payload that is letter-spaced *and* markup-interpolated is reached by neither parent view: the delimiters sit where the compaction has to read a gap width, so the compaction alone reconstructs the wrong words, and the letters are still spaced after the markup alone is resolved. |
 
@@ -353,6 +353,24 @@ cannot decay into a guess:
   compact to one word — which is correct — but a payload that spaces its
   words *narrower* than its letters is not reconstructed. That spelling is
   not readable as the instruction it is imitating.
+- **A run ends in front of the following word, so a payload that must be read
+  as one unbroken token across that boundary is not reconstructed.** Space out
+  the first half of one of SK-T012's single-token patterns and leave the second
+  half spelled plainly, and the compaction puts a space where the two halves
+  meet, so the rule does not match. Spelled all the way out, the same payload
+  compacts to the token and the rule does match.
+
+  This is a choice the grammar has to make and cannot avoid, because that
+  spelling and `p r e v i o u s instructions` are the *same shape* — a run,
+  then a unit-width gap, then a plainly spelled word — and only vocabulary
+  could tell them apart, which is exactly what a view must not carry.
+  Separating is the measured side: over the gate's own per-rule payload
+  corpus respelled both ways, joining reaches **no rule the separating
+  grammar misses** and misses one it reaches; joining also counts the
+  following word's first letter toward the six-letter threshold, which
+  inflated 20 of this repository's 74 runs over it. `SK-T012`'s own test
+  (`TestARunDoesNotReconstructATokenAcrossItsEdge`) pins both halves of this
+  trade so it stays a stated bound rather than a surprise.
 
 ## Reference reachability (SK-G003)
 
