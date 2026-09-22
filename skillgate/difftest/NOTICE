@@ -1,0 +1,24 @@
+skill-architect/skillgate/difftest
+==================================
+
+This module includes material derived from NVIDIA SkillSpector
+(https://github.com/NVIDIA/skillspector), pinned at commit
+8421a2eb4e7bb98af2557bd4b54325d6ad90a3da.
+
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under the Apache License, Version 2.0.
+
+Derived material:
+
+- Detection pattern text and analyzer semantics re-expressed in Go in this
+  module (SK-P* rules; each records its upstream rule ID in Origin).
+- Test fixtures under testdata/upstream/, copied verbatim from upstream
+  tests/fixtures/.
+
+Upstream does not ship a NOTICE file; this file serves as the required
+attribution.
+
+This module carries its own copy of the attribution because it is a separate
+Go module: a consumer who resolves it on its own never sees the repository
+root's NOTICE. The root NOTICE remains authoritative for the repository as a
+whole; the two describe the same derived material.
