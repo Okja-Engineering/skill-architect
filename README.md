@@ -70,6 +70,13 @@ version: it moves as soon as the adapter changes what a profile contains for
 the same input, which is usually before the release that carries it is tagged,
 so the two numbers can differ.
 
+**At this release they do differ, for the first time, and the reason is the
+plain one.** The plugin is `0.6.0` and the adapter version is `0.5.0`: v0.6.0
+is the skill-gate release and it changes nothing the profiler reads or writes,
+so a profile captured with it is the profile v0.5.0 captured. Moving the number
+would make `compare` refuse two profiles that are in fact comparable, which is
+the opposite of what the refusal is for.
+
 Probe detection is per signal, not all-or-nothing, and a signal is reported available
 only when the export yields a value the adapter can actually read:
 
@@ -803,11 +810,15 @@ claude plugin marketplace add Okja-Engineering/skill-architect
 claude plugin install skill-architect@skill-architect
 ```
 
-`claude plugin list` then shows `skill-architect@skill-architect` at version 0.5.0.
+`claude plugin list` then shows `skill-architect@skill-architect` at the version the plugin
+manifests declare. The number is not written out here because nothing in this repository
+runs that command to check it, and a version in this sentence would be a claim about install
+output that no release re-verifies — which is what the paragraph below says about every
+other row in this table.
 
 Every row below carries the status of the route as **executed in 0.4.3**, the release that
-ran them, not as described by a vendor's documentation. 0.5.0 did not re-run them; it changed
-no install or update route. Routes marked verified were run against a clean install on that
+ran them, not as described by a vendor's documentation. Neither 0.5.0 nor 0.6.0 re-ran them;
+neither changed an install or update route. Routes marked verified were run against a clean install on that
 release's tree. Where a route says "not verified" the row says why — nobody
 here could run it, or running it would have changed something that is not ours to change —
 and it is a pointer to the vendor's own docs rather than a claim of ours; if it turns out
