@@ -130,4 +130,9 @@ prefix-invalidation signals.
 (blocking → `error`, advisory/suppressed → `warning`, info → `note`).
 
 CLI: `skillgate gate <dir-or-url> [--baseline f] [--fail-on-incomplete]
-[--format json|sarif] [-o file] [--skip-checks a,b]`.
+[--format json|sarif] [-o file] [--skip-checks a,b]`. A flag may appear
+before or after the target and the report is identical either way; `--` ends
+flag parsing, so a target whose name begins with `-` is written
+`gate -- -target`. Exactly one target is required, an undefined flag is
+refused wherever it appears, and a flag whose value is missing is refused
+rather than read from the arguments beside it.
