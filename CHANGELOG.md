@@ -410,6 +410,30 @@ infrastructure rather than as an adapter, and the harness row draws that distinc
   reader's own header comment while this entry was being written, and that is the check
   working, not a false positive.)
 
+  **How far a shape reaches, because "in any position" is not "in any form".** A shape is
+  the span from the verb to the version, and markup *around* that span is a position: a
+  list marker, indentation, a colon or an em dash in front, emphasis opening before the
+  verb and closing after the version. **Inside the span it is the other way round.** The
+  pattern interiors are letters and spaces, with one literal space in front of the version
+  and the version itself bare, so the phrase is missed whenever something interrupts it
+  between the verb and the version — emphasis closed around the verb alone instead of
+  around the whole phrase, which is the near neighbour of the reader's own worked example
+  and the lead-in style this repository actually writes; the version set in inline code,
+  written as a link label, or quoted; a comma, a colon, a bracketed aside or a digit
+  between the verb and its preposition; a tab or a doubled space where one space is
+  wanted. Trailing punctuation and a `v` prefix are both fine: the gap is on the left of
+  the version, not the right. This is **pre-existing** — the interiors are byte-identical
+  to what they were before the case repair, which neither opened nor closed it — and it is
+  **named here as 0.6.0 surface rather than repaired**, alongside the `macos-latest` job
+  below, for the same kind of reason: widening the interiors is a false-positive budget and
+  not a regex. This tree is documentation-heavy and both release documents describe this
+  reader, so a wider matcher starts reading prose *about* the check as the check —
+  measured, a crude widening of the other three shapes lands on a sentence in the release
+  notes that is describing this very reader, while the same treatment of the deferral shape
+  alone adds nothing on this tree. That is a decision to take with evidence in front of it,
+  not a tightening to slip in at a release gate. **No sentence in this release claims this
+  class is closed.**
+
   **And the verb and the version no longer have to share a line.** Each record is examined
   joined to the one before it, which is the same join a prose reflow performs, and a finding
   seen only that way prints `across a line break` in its shape. This was live rather than
@@ -857,6 +881,16 @@ infrastructure rather than as an adapter, and the harness row draws that distinc
   here.
 - **`draft-rewrite.sh` can still exit 7**, from a failing `rm` in its EXIT trap, outside the
   `{0, 1, 3}` its header states. Unchanged from 0.4.3 and recorded there in full.
+- **The forward-promise reader matches the verb-to-version span, and markup *inside* that
+  span defeats it.** Stated in full where the reader is described above and in its own
+  header: emphasis closed around the verb alone, a version set in inline code or as a link
+  label, punctuation or a digit between the verb and its preposition, a tab or a doubled
+  space. Markup *around* the span is a position and is handled; this is the interior. It is
+  pre-existing, unchanged by this release either way, and it is **0.6.0 surface** — the same
+  shelf as the `macos-latest` job — because widening the interiors is a false-positive
+  budget on a documentation-heavy tree whose release documents describe the reader, and
+  measured, a crude widening fires on one of those descriptions. Whoever takes it should
+  re-drive both documents and not only the fixtures.
 
 ## 0.4.3 — 2026-09-20
 

@@ -94,6 +94,36 @@
 # (`trap cleanup 0`), the suite audit (the libraries the suites `source`), and
 # here.
 #
+# # How far a shape reaches, stated so nobody has to find out
+#
+# A shape is the span from the verb to the version, and the markup a writer
+# puts *around* that span is a position: a list marker, indentation, a colon or
+# an em dash in front, emphasis that opens before the verb and closes after the
+# version. Those need no rule, which is what leaving the tests unanchored buys.
+#
+# Inside the span it is the other way round, and this is the honest boundary.
+# The interiors are still written as letters and spaces, with one literal space
+# in front of the version and the version itself bare, so a phrase is missed
+# when anything interrupts it between the verb and the version: emphasis closed
+# around the verb alone rather than around the whole phrase — the near
+# neighbour of the worked example above, and the lead-in style this repository
+# actually writes; the version set in inline code, or written as a link label,
+# or in quotes; a comma, a colon, a bracketed aside or a digit between the verb
+# and its preposition; and a tab or a doubled space where one space is wanted.
+# Trailing punctuation after the version is fine, and so is a `v` in front of
+# it: the defect is on the left of the version, not the right.
+#
+# This is pre-existing rather than opened or closed by any recent round, and it
+# is recorded as 0.6.0 surface rather than repaired here, because widening the
+# interiors is a false-positive budget and not a regex. This tree is
+# documentation-heavy and both release documents describe this reader, so a
+# wider matcher starts reading prose about the check as the check — measured,
+# a crude widening of the last three shapes lands on a sentence in the release
+# notes that is describing this reader, while the same treatment of the
+# deferral shape alone adds nothing on this tree. Which of those is worth
+# buying is a decision with evidence behind it, not a tightening to slip into a
+# release gate. Nothing here claims this class is closed.
+#
 # And the record is read joined to the record before it, because the unit of
 # meaning is a sentence while the unit of the walk is a line. A promise whose
 # verb and version fall either side of a wrap is still a promise; this
