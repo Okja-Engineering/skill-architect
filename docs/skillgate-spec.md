@@ -139,11 +139,23 @@ that points at the wrong line is worse than no report. So:
 | skeleton | Per-character NFKC, then the UTS #39 ASCII confusable skeleton, then removal of `Cf`, the non-whitespace `Cc` and `Other_Default_Ignorable_Code_Point`. Three Unicode classes and one generated table — not a list of spellings. NFKC is applied per character so one character maps to one span, which is what makes the offset map exact; the cost is that a combining sequence spelled base + mark is not composed. |
 | compactLetter | The skeleton fold, then the separators inside letter-spacing runs removed. A **letter-spacing run** is six or more isolated letters in a row, each separated from the next by a non-empty gap holding no letter and no digit. Within a run the narrowest gap is the letter separator and is deleted; a wider gap is where the words divide and becomes one space. Derived from the run's shape, so every separator closes at once — space, NBSP, `.`, `-`, `_`, `*`, a non-ASCII Z-separator, U+FFFD and the filler nobody has thought of yet are all simply "not a letter". |
 | markup | The skeleton fold, then CommonMark's **inline** syntax resolved away and the text it wraps kept: emphasis and strong-emphasis delimiter runs, code spans, inline links and images, and HTML comments. What tells a delimiter from an ordinary asterisk is the grammar's **delimiter run** rule — what sits on either side of the run — plus the requirement that a delimiter actually pair with another. So `rm *.sh` (an opener with no closer) and `2 * 3` (flanked by whitespace, so not a delimiter at all) are untouched, and no exception list is needed to leave them alone. |
+| markupCompact | The skeleton fold, then the markup stage, then the compaction — the two derived stages in one pipeline, with no third grammar. It exists because a payload that is letter-spaced *and* markup-interpolated is reached by neither parent view: the delimiters sit where the compaction has to read a gap width, so the compaction alone reconstructs the wrong words, and the letters are still spaced after the markup alone is resolved. |
 
-A view is an ordered pipeline of stages, and `compactLetter` and `markup`
-**are** `skeleton` plus one more stage each: every stage is written against
-the text the stage before it produced, and the offset maps are composed, so a
-view anchors back to raw however many stages made it.
+A view is an ordered pipeline of stages: every stage is written against the
+text the stage before it produced, and the offset maps are composed, so a view
+anchors back to raw however many stages made it. `compactLetter` and `markup`
+are the fold plus one stage each; `markupCompact` is the fold plus both.
+
+**Stage order is part of a view's identity, not an implementation detail.**
+Two stages in the other order are a different transform with different output,
+so `markupCompact`'s order is a measured decision: the markup stage runs
+first. The compaction normalises every gap inside a run to nothing or to one
+space, so a delimiter that sits in a run is consumed as gap material and can
+never pair afterwards; the markup stage run first still sees delimiters as
+delimiters. Measured over 18,480 spellings of the `SK-T002` payload — every
+combination of unit separator, word gap and interpolated construct —
+markup-then-compaction reached 10,968 that no existing view reached, and
+compaction-then-markup reached none that markup-then-compaction did not.
 
 **Every view has the same lines as the file**, so view line *i* is raw line
 *i*. This is a property of the view axis as a whole, not of any one view:
@@ -166,6 +178,16 @@ because that is where a view manufactures findings rather than revealing them:
   is the one stage that removes punctuation, so this is the bound that matters
   for it, and it is why the rule that fired on the fold's manufactured `..` —
   `SK-T019`, already raw-only below — cannot be reached this way either.
+- **A composition states its own bound, because a composition's bound is not
+  the conjunction of its parts.** The compaction's bound is stated against the
+  text it is given, and in `markupCompact` that text is not the document: the
+  markup stage has already fused what sat on either side of a delimiter, so
+  the compaction can read a letter run that exists neither in the raw document
+  nor in either parent view. Measured, the composition's own bound holds and
+  is narrower than that fear: every character of a composed line is a
+  character of the folded line, in order, except that a word boundary may be
+  rendered as a space. So the composition can bring characters together and
+  can never produce one the line did not contain.
 
 `skillgate.ViewNames()` returns this list from the registry that builds them,
 and `view_test.go` compares the two: a view with no row here, and a row here
@@ -264,11 +286,15 @@ positively identifying the grammar.
     than a CommonMark production. Measured over this repository, 300 installed
     markdown documents and the design corpus, resolving it would have changed
     no finding either way.
-- A payload that is **both** letter-spaced and markup-interpolated is not
-  reached. Each derived view is the fold plus one stage, and no view composes
-  the compaction with the markup stage. Adding one is a registry entry, but
-  which combinations to build is a question about the cost of the view axis,
-  not about either stage.
+- A payload that is **both** letter-spaced and markup-interpolated is closed
+  by `markupCompact`, with one bound: if the letter-spacing separator is
+  *itself* an inline-markup delimiter (`*` or `_`), the markup stage reads the
+  run's own separators as delimiters, resolves some of them, and the
+  compaction that follows no longer sees a run. Reaching that spelling costs
+  an attacker the interpolation the composed view exists to close — the same
+  payload spaced with `*` or `_` and *not* additionally interpolated is closed
+  by `compactLetter` alone. The reverse stage order does not fix it and closes
+  strictly less besides.
 - A letter-spaced payload whose **word boundaries are also invisible** — a
   zero-width character between every letter *and* between every word — is not
   reached by any view. The skeleton strips the invisible characters before
