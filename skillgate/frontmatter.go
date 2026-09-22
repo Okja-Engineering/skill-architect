@@ -2,6 +2,7 @@ package skillgate
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -13,6 +14,36 @@ type Frontmatter struct {
 	Keys  map[string]string
 	Lists map[string][]string
 	Raw   string
+
+	// Root is the parsed document. Its Kind is KindAbsent when the file
+	// carries no frontmatter block at all.
+	Root *Node
+	// Unreadable names every construct the reader refused, in document
+	// order. Empty is the only way to say "everything present was read".
+	Unreadable []Refusal
+}
+
+// Lookup resolves a path through the document. Sequence steps are decimal
+// indices. The zero answer is a nil *Node, whose Kind is KindAbsent — so a
+// key that is present but unreadable (KindUnreadable, carrying a Reason) is
+// never the same answer as a key that is not there.
+func (fm *Frontmatter) Lookup(path ...string) *Node {
+	n := fm.Root
+	for _, step := range path {
+		switch n.Kind() {
+		case KindMapping:
+			n = n.Get(step)
+		case KindSequence:
+			i, err := strconv.Atoi(step)
+			if err != nil || i < 0 || i >= len(n.Items()) {
+				return nil
+			}
+			n = n.Items()[i]
+		default:
+			return nil
+		}
+	}
+	return n
 }
 
 // ParseFrontmatter extracts the `---`-delimited block from a SKILL.md.
