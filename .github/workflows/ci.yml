@@ -1,38 +1,125 @@
 name: CI
 
+# What starts this workflow, and why its two halves are shaped differently.
+#
+# `pull_request` carries no branch filter. It said `[main]`, written when main
+# was the only place work landed — and the moment 0.6.0 opened an integration
+# branch that list quietly stopped covering the work: PRs #23, #24, #25 and #26
+# all merged into `epic/0.6.0-skill-gate` reporting "no checks reported on the
+# branch", and the integration -> main PR would have been the release's first
+# CI run, which is the most expensive place in the release to learn something.
+# Naming the bases in use this quarter is the same defect this release exists
+# to fix, one file over, so the list is gone rather than extended: a pull
+# request is a pull request, and every one of them is built. The next
+# integration line needs no edit here. (A PR from an epic branch into main has
+# base `main` and was already covered; it is covered by the same absence now.)
+#
+# `push` keeps a list, because it answers a different question: which branches
+# must stay verified *after* a merge. A pull_request build runs against head
+# merged into base as base stood then, so a base that moved while the PR was
+# open is not the tree that was tested — and in an epic whose slices land in
+# parallel, it moves. Those branches are trunk and the integration lines, and
+# nothing else: a push build of a slice branch would only duplicate that
+# branch's own PR build.
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'epic/**'
   pull_request:
-    branches: [main]
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Two platforms over one list of steps, rather than a second job copied
+    # from the first. The order below is load-bearing — setup-go before the
+    # shell suites most of all — and a copied job makes that agreement
+    # something a reader has to maintain in two places and notice when it
+    # drifts. A matrix makes it the same steps by construction.
+    #
+    # macOS is not a courtesy build. The containment barriers 0.5.0 added
+    # decide whether a path is inside a protected directory, and two of the
+    # three escapes they closed are things only a macOS filesystem does:
+    # case-folding, and NFD/NFC normalisation of the bytes in a filename. A
+    # case-sensitive ubuntu-latest filesystem cannot produce either, so that
+    # half of the invariant has never been exercised by CI at all.
+    strategy:
+      # A red macOS job must not cancel the Linux one. Which half of a failure
+      # is platform-specific is the part worth reading, and it is only legible
+      # against the other platform's result.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      # Directly after the checkout, for two reasons that both want it early.
+      #
+      # `tests/test_skill.sh` witnesses each shipped skill's declared carrier,
+      # and skill-gate's carrier is a Go binary built from this checkout, so
+      # the suite needs a toolchain that used to be installed only in time for
+      # the Go steps at the bottom. A witness that skips when its toolchain is
+      # missing is the vacuity that suite exists to refuse, so the prerequisite
+      # moves rather than the witness becoming conditional. (From S01; the
+      # matrix above is what keeps it true on every platform rather than on the
+      # one somebody remembered.)
+      #
+      # And the install step below asks this toolchain what platform it is on.
+      #
+      # The version comes from go.work, not from one of the three go.mod files.
+      # The workspace is where the toolchain is declared for all of them;
+      # naming a member module would leave the other two's pins implicit and
+      # would have to be rewritten whenever the membership moves — which it did
+      # twice while this release was being built.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          # Two of the three modules resolve entirely from the standard library
+          # and the third has one dependency, so there is nothing here worth a
+          # cache round-trip, and setup-go keys its cache on a dependency file
+          # at the repository root, where this repository has none.
+          cache: false
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+
       - name: Install skill-validator
         run: |
-          curl -sSL https://github.com/agent-ecosystem/skill-validator/releases/download/v1.6.1/skill-validator_1.6.1_linux_amd64.tar.gz \
-            | tar xz -C /usr/local/bin skill-validator
-          skill-validator --version
+          version=1.6.1
+          # The release's assets are named for the Go platform they were built
+          # for — skill-validator_<version>_<goos>_<goarch>.tar.gz — so the
+          # platform half of the name is asked of the toolchain installed
+          # above. Hard-coding `linux_amd64` is what kept this workflow on one
+          # platform; a table mapping runner labels to asset names would keep
+          # it on the labels somebody thought of. A fourth runner needs a
+          # published asset, not a line in this file.
+          asset="skill-validator_${version}_$(go env GOOS)_$(go env GOARCH).tar.gz"
+          url="https://github.com/agent-ecosystem/skill-validator/releases/download/v${version}/${asset}"
+
+          # To a file, not piped into tar. `curl | tar` hides curl's exit
+          # status from the step, so a missing asset arrives as an error page
+          # that tar rejects for the wrong reason or does not reject at all.
+          # With -f the download itself is the failure, and it names the URL.
+          curl -fsSL -o "$RUNNER_TEMP/$asset" "$url"
+
+          # Into a directory this workflow owns, rather than /usr/local/bin.
+          # Which system directories a runner lets you write to without sudo is
+          # one more per-platform fact, and RUNNER_TEMP is one the runner
+          # states rather than one this file assumes.
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/bin" skill-validator
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # Separate, because $GITHUB_PATH takes effect in the next step and not in
+      # the one that writes it. So this reports the version *and* that the PATH
+      # entry took, which is the half that differs per runner image.
+      - name: Report the skill-validator version
+        run: skill-validator --version
+
       - name: Install skillscore
         run: npm install -g skillscore@2.0.2
-      # Before the shell suites, not after them. `tests/test_skill.sh` witnesses
-      # each shipped skill's declared carrier, and skill-gate's carrier is a Go
-      # binary built from this checkout — so the suite needs a toolchain that
-      # used to be installed only in time for the Go steps at the bottom. A
-      # witness that cannot run is the vacuity that suite exists to refuse, so
-      # the prerequisite moves rather than the witness becoming conditional.
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: profiler/go.mod
-          # The profiler module has no dependencies and so no go.sum. setup-go
-          # caches on a go.sum hash and warns on every run when it finds none.
-          cache: false
+
       # First, because the suites below are only worth running if their substrate
       # can report a failure. This checks that every suite is on the shared
       # harness, that none of them can reach a verdict without saying so, that no
@@ -56,19 +143,63 @@ jobs:
         run: tests/test_f01.sh
       - name: Run F02 unified audit report tests
         run: tests/test_f02.sh
-      # The same four commands the release checklist runs locally. A diff that
-      # adds a parser and claims vet, gofmt and the race detector were run has
-      # to be a diff CI would have caught if they had not been.
-      - name: Check profiler formatting
+
+      # The same commands the release checklist runs locally. A diff that adds
+      # a parser and claims vet, gofmt and the race detector were run has to be
+      # a diff CI would have caught if they had not been.
+      #
+      # gofmt has no notion of modules — being formatted is a property of every
+      # Go file in the tree — so it is asked once, over the repository.
+      # Per-module would examine skillgate/difftest twice, since it is nested
+      # inside skillgate's directory, and would still say nothing about a .go
+      # file that belonged to no module at all.
+      - name: Check Go formatting
         run: |
-          cd profiler
           unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then
             echo "gofmt would rewrite these files:"
             echo "$unformatted"
             exit 1
           fi
-      - name: Build and vet the profiler
-        run: cd profiler && go build ./... && go vet ./...
-      - name: Run profiler tests
-        run: cd profiler && go test -race -count=1 ./...
+
+      # Building, vetting and testing *are* per-module operations, and the set
+      # of modules is read out of the workspace rather than written here. In
+      # workspace mode `go list -m -f '{{.Dir}}'` prints exactly the
+      # directories go.work `use`s. That is not a theoretical improvement over
+      # a list of two: this file was drafted against two modules and
+      # skillgate/difftest became the third while it was being written.
+      #
+      # Each module is entered and asked for `./...`, which stops at a nested
+      # module — skillgate/difftest lives inside skillgate's directory but is
+      # not in skillgate's package set — so the runs partition the packages
+      # instead of overlapping. Nothing here reads module membership off a path
+      # prefix, which is the reading that makes difftest look like part of
+      # skillgate, since its module path extends skillgate's.
+      #
+      # The empty derivation is refused rather than walked over: a `go list`
+      # that returned nothing would otherwise run this step in zero iterations
+      # and report success for having checked nothing.
+      - name: Build and vet every module in the workspace
+        run: |
+          modules="$(go list -m -f '{{.Dir}}')"
+          test -n "$modules" || { echo "the workspace declares no modules"; exit 1; }
+          status=0
+          while IFS= read -r dir; do
+            echo "== $dir"
+            ( cd "$dir" && go build ./... && go vet ./... ) || status=1
+          done <<< "$modules"
+          exit $status
+
+      # Every module is attempted before the step fails: "profiler is green and
+      # skillgate is red" is information that a loop stopping at the first
+      # failure would have thrown away.
+      - name: Race-test every module in the workspace
+        run: |
+          modules="$(go list -m -f '{{.Dir}}')"
+          test -n "$modules" || { echo "the workspace declares no modules"; exit 1; }
+          status=0
+          while IFS= read -r dir; do
+            echo "== $dir"
+            ( cd "$dir" && go test -race -count=1 ./... ) || status=1
+          done <<< "$modules"
+          exit $status
