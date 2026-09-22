@@ -6,6 +6,9 @@ compatibility: "Go toolchain or a built skillgate binary; POSIX shell for exampl
 allowed-tools: Read, Bash
 metadata:
   version: "0.1.0"
+  carrier: installed-binary
+  carrier-command: skillgate
+  carrier-source: ./skillgate/cmd/skillgate
 ---
 
 # skill-gate

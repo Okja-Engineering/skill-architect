@@ -21,6 +21,18 @@ jobs:
           skill-validator --version
       - name: Install skillscore
         run: npm install -g skillscore@2.0.2
+      # Before the shell suites, not after them. `tests/test_skill.sh` witnesses
+      # each shipped skill's declared carrier, and skill-gate's carrier is a Go
+      # binary built from this checkout — so the suite needs a toolchain that
+      # used to be installed only in time for the Go steps at the bottom. A
+      # witness that cannot run is the vacuity that suite exists to refuse, so
+      # the prerequisite moves rather than the witness becoming conditional.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: profiler/go.mod
+          # The profiler module has no dependencies and so no go.sum. setup-go
+          # caches on a go.sum hash and warns on every run when it finds none.
+          cache: false
       # First, because the suites below are only worth running if their substrate
       # can report a failure. This checks that every suite is on the shared
       # harness, that none of them can reach a verdict without saying so, that no
@@ -44,12 +56,6 @@ jobs:
         run: tests/test_f01.sh
       - name: Run F02 unified audit report tests
         run: tests/test_f02.sh
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: profiler/go.mod
-          # The profiler module has no dependencies and so no go.sum. setup-go
-          # caches on a go.sum hash and warns on every run when it finds none.
-          cache: false
       # The same four commands the release checklist runs locally. A diff that
       # adds a parser and claims vet, gofmt and the race detector were run has
       # to be a diff CI would have caught if they had not been.

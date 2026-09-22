@@ -388,9 +388,13 @@ claimed_commands() { claimed_commands_in "$(compatibility_line "$1")"; }
 # the fixture's own basename, because a skill's directory name is part of what
 # check-frontmatter.sh judges and a copy under a slot name of the suite's
 # choosing would turn a clean fixture into a spec failure.
+# skill-gate's is a skill bundle because that is what its carrier takes as
+# input; the fixture is shared with skill-audit rather than duplicated, since
+# what each witness needs of it is different -- one audits it, one gates it.
 witness_fixture_of() {
   case "$1" in
     skill-audit)   printf 'tests/fixtures/f01/valid-minimal' ;;
+    skill-gate)    printf 'tests/fixtures/f01/valid-minimal' ;;
     skill-rewrite) printf 'tests/fixtures/rewrite/all-sections' ;;
     *) return 1 ;;
   esac
@@ -489,45 +493,200 @@ uses_only_bash_32() {
   return 0
 }
 
+# --- What carries a skill's mechanical work ----------------------------------
+#
+# AGENTS.md:27 states the principle: deterministic work is carried by something
+# mechanical, `SKILL.md` carries orchestration, judgment stays small. Every
+# check above this point read that as *bundled shell scripts*, because for two
+# skills it was the same thing. skill-gate carries its deterministic work in a
+# Go binary and ships no scripts at all, and the checks did not merely pass or
+# fail on it -- three of them asked questions that have no answer for a skill
+# with no scripts ("the interpreter its shebangs name", of a skill with no
+# shebangs).
+#
+# So a skill **declares** which kind it is, and each kind is witnessed against
+# its own claim. Two things make that a contract rather than a hole:
+#
+#   - The declaration is cross-checked against the artifact in both directions.
+#     Declaring bundled scripts and shipping none fails; declaring an installed
+#     binary and shipping scripts fails. The declaration cannot be derived from
+#     what is on disk, because then it would agree with the disk by
+#     construction and assert nothing.
+#   - A kind this suite does not witness fails. That is the same refusal
+#     `skill_witness`'s missing arm already makes one level down: the danger is
+#     not a wrong declaration, which is loud, but a *third* kind that quietly
+#     matches no arm and is walked over. `carrier_is_known` is asserted for
+#     every skill, unconditionally, before the dispatch that would skip it.
+#
+# The declaration lives under `metadata:` because that map is already open and
+# already carries `version`. Note that skillgate's own frontmatter reader cannot
+# read nested keys today (frontmatter.go:40-44 skips them by design) -- that is
+# S05's subject, and this suite reads the file itself.
+carrier_kinds="bundled-scripts installed-binary"
+
+# metadata_value <skill> <key> -- a key nested one level under `metadata:` in
+# the skill's frontmatter. Nothing, rather than an error, when it is absent: an
+# absent declaration is a verdict this file reports, not a reason to abort.
+metadata_value() {
+  awk -v want="$2" '
+    NR == 1 && $0 == "---" { fm = 1; next }
+    fm && $0 == "---" { exit }
+    fm && /^metadata:[[:space:]]*$/ { in_md = 1; next }
+    in_md && /^[^[:space:]]/ { in_md = 0 }
+    in_md {
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      key = line
+      sub(/:.*$/, "", key)
+      if (key == want) {
+        val = line
+        sub(/^[^:]*:[[:space:]]*/, "", val)
+        gsub(/^"|"$/, "", val)
+        print val
+        exit
+      }
+    }
+  ' "$(skill_md_of "$1")"
+}
+
+carrier_of() { metadata_value "$1" carrier; }
+
+carrier_is_known() {
+  case " $carrier_kinds " in *" $(carrier_of "$1") "*) return 0 ;; esac
+  return 1
+}
+
+ships_executables() { [ -n "$(bundled_executables "$1")" ]; }
+ships_no_executables() { [ -z "$(bundled_executables "$1")" ]; }
+
+# The compatibility line names the command that carries the skill. The line is
+# prose and this is a substring question, deliberately: what is being checked is
+# that a reader deciding whether to install is told what they must have, not
+# that the sentence is written in any particular shape.
+compat_names_carrier() {
+  local carrier
+  carrier="$(metadata_value "$1" carrier-command)"
+  [ -n "$carrier" ] || return 1
+  printf '%s\n' "$(compatibility_line "$1")" | grep -qF -- "$carrier"
+}
+
+# A terminal verdict on stdin: the binary reached a conclusion about the bundle
+# it was pointed at. Which conclusion is not this suite's question -- pinning it
+# to one verdict would pin this check to the gate's current rule set, and the
+# rules are another slice's to change.
+verdict_is_terminal() {
+  python3 -c '
+import json, sys
+report = json.load(sys.stdin)
+verdict = report.get("verdict")
+assert verdict in ("APPROVE", "CAUTION", "REJECT"), "no terminal verdict: %r" % (verdict,)
+'
+}
+
+# carrier_witness <skill> <slot> -- run the skill's declared carrier against a
+# real bundle and succeed only when it reached a verdict. The binary-kind
+# counterpart of skill_witness, and it refuses an unknown skill for the same
+# reason that one does: a skill with no arm here fails, so a fourth skill cannot
+# join the tree and be walked over vacuously.
+#
+# Resolved from the declared source rather than from PATH. `carrier-command` is
+# what a user installs; `carrier-source` is where this repository builds it from,
+# and a checkout is the only place this suite can witness anything.
+carrier_witness() {
+  local skill="$1" slot="$2" target source out
+  target="$(witness_target "$skill" "$slot")" || return 1
+  source="$(metadata_value "$skill" carrier-source)"
+  [ -n "$source" ] || return 1
+  case "$skill" in
+    skill-gate)
+      out="$(cd "$harness_repo_root" && go run "$source" gate "$target" 2>/dev/null)" || return 1
+      printf '%s\n' "$out" | verdict_is_terminal
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 for skill in $(shipped_skills); do
   echo "  $skill compatibility: $(compatibility_line "$skill")"
+  echo "    declares carrier   : $(carrier_of "$skill")"
   echo "    claims interpreters: $(claimed_interpreters "$skill" | tr '\n' ' ')"
   echo "    claims tools       : $(claimed_commands "$skill" | tr '\n' ' ')"
   echo "    shebangs name      : $(shebang_interpreters "$skill" | tr '\n' ' ')"
 
-  assert "$skill's compatibility line names an interpreter at all" \
-    test -n "$(claimed_interpreters "$skill")"
+  # Asserted before the dispatch, and unconditionally, so that a kind the
+  # dispatch would fall through is reported rather than skipped.
+  assert "$skill declares what carries its mechanical work" \
+    test -n "$(carrier_of "$skill")"
+  assert "$skill's declared carrier is a kind this suite witnesses" \
+    carrier_is_known "$skill"
 
-  # (1) Behavioural: every interpreter the line claims runs one of this skill's
-  # own scripts to a verdict.
-  for interp in $(claimed_interpreters "$skill"); do
-    assert "$skill works under $interp, which its compatibility line claims" \
-      skill_witness "$skill" "$interp" "under-$interp"
-  done
+  case "$(carrier_of "$skill")" in
+  bundled-scripts)
+    # The declaration against the artifact. Without this the declaration is
+    # free: a skill could claim scripts, ship none, and every check below would
+    # ask a question with no subject.
+    assert "$skill declares bundled scripts and ships at least one" \
+      ships_executables "$skill"
 
-  # (2) Every tool the line names is a tool the skill needs. `git` was on
-  # skill-audit's line and no script in either skill runs git.
-  for tool in $(claimed_commands "$skill"); do
-    assert "$skill's compatibility line names $tool, a tool it actually needs" \
-      tool_is_required "$skill" "$tool"
-  done
+    assert "$skill's compatibility line names an interpreter at all" \
+      test -n "$(claimed_interpreters "$skill")"
 
-  # (3) Declarative: the line claims the interpreter the bundled scripts'
-  # shebangs name, and no other family. This is what makes "POSIX shell"
-  # answerable -- a behavioural `sh` run cannot answer it, because /bin/sh is
-  # bash in sh mode on macOS and dash on Linux, so the same assertion passes
-  # here and fails there.
-  assert "$skill's executable scripts each name an interpreter in their shebang" \
-    every_executable_names_an_interpreter "$skill"
-  assert "$skill's compatibility line claims its scripts' interpreter and no other family" \
-    test "$(claimed_interpreters "$skill")" = "$(shebang_interpreters "$skill")"
-  if [ "$(claimed_interpreters "$skill")" != "$(shebang_interpreters "$skill")" ]; then
-    echo "  claimed: $(claimed_interpreters "$skill" | tr '\n' ' ')"
-    echo "  shebang: $(shebang_interpreters "$skill" | tr '\n' ' ')"
-  fi
+    # (1) Behavioural: every interpreter the line claims runs one of this
+    # skill's own scripts to a verdict.
+    for interp in $(claimed_interpreters "$skill"); do
+      assert "$skill works under $interp, which its compatibility line claims" \
+        skill_witness "$skill" "$interp" "under-$interp"
+    done
 
-  assert "$skill's bundled scripts use no construct bash 3.2 does not have" \
-    quietly uses_only_bash_32 "$skill"
+    # (2) Every tool the line names is a tool the skill needs. `git` was on
+    # skill-audit's line and no script in either skill runs git.
+    for tool in $(claimed_commands "$skill"); do
+      assert "$skill's compatibility line names $tool, a tool it actually needs" \
+        tool_is_required "$skill" "$tool"
+    done
+
+    # (3) Declarative: the line claims the interpreter the bundled scripts'
+    # shebangs name, and no other family. This is what makes "POSIX shell"
+    # answerable -- a behavioural `sh` run cannot answer it, because /bin/sh is
+    # bash in sh mode on macOS and dash on Linux, so the same assertion passes
+    # here and fails there.
+    assert "$skill's executable scripts each name an interpreter in their shebang" \
+      every_executable_names_an_interpreter "$skill"
+    assert "$skill's compatibility line claims its scripts' interpreter and no other family" \
+      test "$(claimed_interpreters "$skill")" = "$(shebang_interpreters "$skill")"
+    if [ "$(claimed_interpreters "$skill")" != "$(shebang_interpreters "$skill")" ]; then
+      echo "  claimed: $(claimed_interpreters "$skill" | tr '\n' ' ')"
+      echo "  shebang: $(shebang_interpreters "$skill" | tr '\n' ' ')"
+    fi
+
+    assert "$skill's bundled scripts use no construct bash 3.2 does not have" \
+      quietly uses_only_bash_32 "$skill"
+    ;;
+
+  installed-binary)
+    # The declaration against the artifact, the other direction. A skill that
+    # claims a binary carries it and ships scripts anyway has an unwitnessed
+    # second carrier, and the scripts-kind checks above would never see it.
+    assert "$skill declares an installed binary and ships no scripts of its own" \
+      ships_no_executables "$skill"
+
+    # The two halves of the declaration, each asserted before anything rests on
+    # it: what a user installs, and where this checkout builds it from.
+    assert "$skill names the command that carries it" \
+      test -n "$(metadata_value "$skill" carrier-command)"
+    assert "$skill's compatibility line names the command that carries it" \
+      compat_names_carrier "$skill"
+    assert "$skill's carrier is buildable from the source path it declares" \
+      test -d "$(metadata_value "$skill" carrier-source)"
+
+    # Behavioural, and the one that makes the kind real: the carrier runs and
+    # reaches a verdict about a bundle. The counterpart of the per-interpreter
+    # witness above -- not "exits 0", which a binary that printed nothing would
+    # also do.
+    assert "$skill's declared carrier runs to a verdict" \
+      quietly carrier_witness "$skill" carrier
+    ;;
+  esac
 done
 
 # The control for the command extractor, which reads nothing once both lines
