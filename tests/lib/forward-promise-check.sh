@@ -437,14 +437,15 @@ scan() {
       # that matches. So a heading written any other way is not a narrower
       # scope, it is *no* scope: every record in the file leaves through the
       # skip counter, the accounting still adds up perfectly, and the reader
-      # exits 0 over a document it did not read a line of. Driven, five
+      # exits 0 over a document it did not read a line of. Driven, four
       # ordinary spellings of the heading did exactly that — a bracketed
       # version, a leading word, a doubled space, a deeper heading level — and
       # a live assignment planted inside the section went unreported with the
       # counts all self-consistent, which is the one failure this whole file
-      # exists to make impossible.
+      # exists to make impossible. (A fifth, a capital V, was the raw-record
+      # read fixed above; it is a spelling of the heading and is now read.)
       #
-      # Tolerating those five spellings would leave the sixth, and enumerating
+      # Tolerating those four spellings would leave the fifth, and enumerating
       # forms is the defect this reader has now been repaired for twice. So
       # what is asserted instead is the thing that has to be true: a file
       # scoped by a heading has to have entered its section. Miss it and this

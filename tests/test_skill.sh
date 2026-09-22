@@ -1187,7 +1187,7 @@ assert "the same copy without the rule accounts for what it read" \
 # Every fixture control in this file runs the reader in `--over` mode, and
 # `--over` applies no section scoping and no exemption. So the two halves of
 # the reader that decide *what it reads at all* had no control anywhere — and
-# both of them were wrong. The scoping was: a heading written in any of five
+# both of them were wrong. The scoping was: a heading written in any of four
 # ordinary ways — a bracketed version, a leading word, a doubled space, a
 # deeper level — took the whole document out of scope, the accounting stayed
 # perfectly self-consistent, and the reader exited 0 over a file it had not
