@@ -250,7 +250,7 @@ readme_test_block() {
 }
 
 listed_in_the_readme() {
-  readme_test_block | grep -qF -- "$1"
+  holds_line "$(readme_test_block)" -F -- "$1"
 }
 
 workflow_suite_count="$(workflow_suites | wc -l | tr -d '[:space:]')"
