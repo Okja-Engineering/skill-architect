@@ -377,25 +377,59 @@ infrastructure rather than as an adapter, and the harness row draws that distinc
   work to the release being cut, while leaving a line that records history alone: "0.5.0 did
   not add one" passes, and `tracked for <the version being cut>` does not. It reads a closed vocabulary of
   deferral verbs rather than the version string, and the reason is the ratio: `git grep -o`
-  finds the version **99** times across 88 lines, the check reports no findings, so **every
-  one of those 99 is correct** and a check on the string alone would fire on all of them.
+  finds the version **101** times across 91 lines, the check reports no findings, so **every
+  one of those 101 is correct** and a check on the string alone would fire on all of them.
   (An earlier draft of this entry said "about seventy … about sixty of those are correct",
-  which undercounted the total and, worse, implied a third of them were wrong. The reader's
-  own header comment still carries that wording, and `tests/test_skill.sh` carries a "69
-  times" variant; both are noted for the maintainer rather than edited here, this being the
-  prose lane.) **Two boundaries of that vocabulary, stated rather than left to be found.**
-  The match is **case-sensitive**. Driven at this head over one-line scratch files, so that
-  the finding belongs to the reader and not to this document: the lowercase form of
-  `<deferral verb> to <the version being cut>` exits 1 and reports a `[deferral verb]`
-  finding, while the same phrase with the verb capitalised — at a sentence start, at a
-  bullet start, or inside a bolded lead-in — exits **0**. A bolded lead-in is this
-  repository's commonest prose shape, and all 18 of the reader's fixture cases are
-  lowercase, so no control holds that half. It closes the five spellings this repository has
-  actually used, five rounds running, and that is the claim; it is not a check on the class.
-  (The caught form is deliberately not spelled out here. Writing it into this section would
-  be writing the thing the check refuses, and the check would refuse it — which is not
-  hypothetical: it happened once while this entry was being written, and the build went red,
-  correctly.) And a line naming a version
+  which undercounted the total and, worse, implied a third of them were wrong. Both places
+  that carried a variant of it — the reader's own header comment and `tests/test_skill.sh` —
+  now publish **no numeral at all**: a figure in a comment that nothing re-derives is stale
+  by the next release, and the argument does not rest on it.)
+
+  **That vocabulary is a set of verbs, and this release is where it stopped being a set of
+  spellings.** The matcher tested the raw record, so every alternative in its own closed set
+  was in effect a lowercase spelling, and a capitalised member of the set went past it
+  silently — at a sentence start, at a bullet start, or inside a bolded lead-in, which is
+  this repository's commonest prose shape. All 18 of the reader's fixture cases were
+  lowercase, so no control held that half. The repair is not seven more alternatives in the
+  list. The record is **case-folded once**, at the single point it reaches the shape tests,
+  and the tests are left unanchored: capitalisation, ALL CAPS and mixed case become one
+  `tolower`, and a leading `-`, `*` or `**`, indentation, a colon or an em dash before the
+  verb stop being forms to enumerate at all, because a position was never a shape. All five
+  shapes are now matched in any case and in any position in the record. (The caught form is
+  still deliberately not spelled out here, because writing it into this section would be
+  writing the thing the check refuses — and the check does refuse it: it fired on this
+  reader's own header comment while this entry was being written, and that is the check
+  working, not a false positive.)
+
+  **And the verb and the version no longer have to share a line.** Each record is examined
+  joined to the one before it, which is the same join a prose reflow performs, and a finding
+  seen only that way prints `across a line break` in its shape. This was live rather than
+  theoretical: this section's own earlier copy of this paragraph escaped the reader only
+  because a break happened to fall between the verb and the version, so re-wrapping a
+  paragraph nobody had edited would have reddened CI later. The join resets at a file
+  boundary, at a section heading and at a blank line — none of those is a wrap — and
+  sentence-ending punctuation blocks it, so a sentence merely ending in a deferral verb
+  before the next begins with the version is not a finding.
+
+  **The controls, because the previous ones could not reach this.** All 18 cases ran one
+  line in a file of one line. There are **35** single-line cases now — 24 refusals covering
+  each member of the case class and each of the five shapes capitalised, and 11 acceptances
+  holding the other side of the fold, including a version surface in ALL CAPS staying
+  exempt. On top of them the class is driven over a **real multi-line document** with the
+  texture the reader actually meets: headings, bulleted lists with bolded lead-ins, wrapped
+  paragraphs, an indented line and a fenced block, five promises planted in it and eight
+  innocent lines naming the version planted beside them. The assertion is on the **set of
+  line numbers the reader names**, written out as literals and checked against the
+  document's own length, so a reader blind to a planted shape and a reader firing on an
+  innocent line both fail it — an exit-status check would have passed on four of the five.
+  The wrapped promise is asserted by the shape the reader reports, and driven both inverse
+  ways: with the wrap closed up it must still be refused and no longer attributed to a
+  break, and with the promise taken out those two lines must go quiet while the other four
+  still fire.
+
+  **What it still does not do, stated rather than left to be found.** The window is two
+  records, so a promise spread over three lines with neither the verb nor the version
+  adjacent to the join is not seen. And a line naming a version
   surface is exempt from the bare `is <version>` shape. `CHANGELOG.md` and
   `RELEASE_NOTES.md` are
   scoped to the section for the release being cut, because 0.4.3's section saying what 0.4.3
@@ -436,9 +470,9 @@ infrastructure rather than as an adapter, and the harness row draws that distinc
 
 **Verification**
 
-- **3112 assertions across seven shell suites, 0 failed, identical under bash 3.2.57 and
+- **3137 assertions across seven shell suites, 0 failed, identical under bash 3.2.57 and
   bash 5.3.15**: `test_f01` 1912, `test_f02` 350, `test_harness` 276, `test_rewrite` 401,
-  `test_skill` 101, `test_install` 52, `test_walk` 20. Against 0.4.3's 2499 across the same
+  `test_skill` 126, `test_install` 52, `test_walk` 20. Against 0.4.3's 2499 across the same
   seven, re-measured from the `v0.4.3` tag rather than quoted — 1868 / 350 / 75 / 85 / 53 /
   48 / 20. Every figure here is each suite's own last line under
   `for s in tests/test_*.sh; do "$B" "$s" | tail -1; done` run once per shell; the three
@@ -471,7 +505,7 @@ infrastructure rather than as an adapter, and the harness row draws that distinc
   computed from the `source` directives, and a `source` whose path cannot be resolved is a
   violation rather than a shrug. At this head that closure is **nine** files — the seven
   suites plus `tests/lib/masked-path.sh` and `tests/lib/mutation-runner.sh` — reporting
-  `sites=821 files=9 lines=11749 accounted=11749`. (The base this work started from measured
+  `sites=829 files=9 lines=11913 accounted=11913`. (The base this work started from measured
   `sites=767 files=7 lines=10288`; the 761/9397 pair an earlier draft published was an
   earlier commit still, which is exactly why the figure is given with its command rather than
   carried forward.) **Each counter has a second reader rather than a floor.** `lines` is held

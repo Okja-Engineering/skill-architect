@@ -48,11 +48,15 @@
 #
 # # Why it reads a vocabulary and not the version string
 #
-# The version appears about seventy times in this tree and roughly sixty of
-# those are correct: `0.5.0 did not add one`, `Until 0.5.0`, `every key 0.5.0
-# adds`, `this release is 0.5.0`, `AdapterVersion is 0.5.0`, a section heading,
-# a manifest value. A check on the string alone fires on all of them, and a
-# check that fires on forty correct lines is a check somebody turns off.
+# The version string occurs far more often in this tree than there are promises
+# — every occurrence of it is correct at the moment of writing, and the
+# overwhelming majority stay correct: `0.5.0 did not add one`, `Until 0.5.0`,
+# `every key 0.5.0 adds`, `this release is 0.5.0`, `AdapterVersion is 0.5.0`, a
+# section heading, a manifest value. A check on the string alone fires on all
+# of them, and a check that fires on dozens of correct lines is a check
+# somebody turns off. No count is written here on purpose: the last one this
+# comment carried was wrong by about forty per cent, and a numeral in a comment
+# nothing re-derives goes stale by next release. The argument does not need it.
 #
 # What makes a line an assignment is the verb beside the version, and this
 # repository has used the same handful every time: tracked, deferred, carried,
@@ -62,6 +66,41 @@
 # needs to be worth having: it is not the list of phrasings somebody might use,
 # it is the list this repository has used, so a phrasing outside it is a new
 # finding rather than something this was meant to catch and missed.
+#
+# # A vocabulary is a set of verbs, not a set of spellings
+#
+# The distinction is the whole reason this reader was wrong once already. The
+# verb set above was closed and correct, and the matcher still walked past any
+# one of those verbs capitalised and standing beside the version — because it
+# tested the raw record, so every alternative in the set was implicitly a
+# lowercase *spelling* rather than a verb. A capitalised member of a closed set
+# is inside the set; missing it is not a gap in the vocabulary, it is the
+# matcher asking the wrong question.
+#
+# That shape is described here and deliberately not written out, because the
+# reader below reads this file too and would refuse the example. Seeing it
+# refuse its own documentation is the check working, not a false positive; the
+# controls in tests/test_skill.sh hold the literal spellings instead, over
+# fixtures, where they belong.
+#
+# So the record is case-folded once, at the single point it reaches the shape
+# tests, and the tests are unanchored. That makes three things fall out
+# together instead of needing a rule each: capitalisation, ALL CAPS and mixed
+# case are one `tolower`; and a leading `-`, `*`, `**`, indentation, a colon or
+# an em dash before the verb are positions the tests never cared about. The
+# alternative — adding `Deferred|DEFERRED|…` to the list — is the move that has
+# now cost this repository five rounds, in the guard-primitive reader
+# (`name ( ) {`), the shadowing check (`assert ( ) {`), the trap check
+# (`trap cleanup 0`), the suite audit (the libraries the suites `source`), and
+# here.
+#
+# And the record is read joined to the record before it, because the unit of
+# meaning is a sentence while the unit of the walk is a line. A promise whose
+# verb and version fall either side of a wrap is still a promise; this
+# release's own changelog copy of that sentence escaped only because the break
+# landed between them, which made a prose reflow a latent CI failure on a file
+# nobody had edited. Such a finding prints with `across a line break` in its
+# shape so the reader can see why the named line looks innocent on its own.
 #
 # # Two scopes, because history is legitimate in exactly two files
 #
@@ -80,7 +119,18 @@
 # the same three words doing opposite jobs. A forward promise written into a
 # line that also mentions a version would get past this. Closing that needs the
 # sentence parsed, which is not what this does; what it does close is the
-# vocabulary that was live five times.
+# vocabulary that was live five times — now in any case, in any position in the
+# record, and with the verb and the version either side of a line wrap.
+#
+# Two things this still does not do, stated so the next round does not have to
+# find them. The window is two records, so a promise spread over three lines
+# with neither the verb nor the version adjacent to the join is not seen. And
+# the section-heading probe reads a literal `## v?<version>`, so the two
+# history documents are scoped by an exact heading match; a heading written
+# some other way would take that file's whole section out of scope rather than
+# report anything, which is why tests/test_skill.sh holds the per-file skip
+# counts against this script's own HISTORY_DOCS rather than trusting the
+# accounting to add up.
 #
 # Usage:
 #   forward-promise-check.sh <version>                the tracked tree
@@ -167,6 +217,37 @@ scan() {
       exempt_seen = 0
     }
 
+    # The shape tests, in one place, over a record the caller has already
+    # case-folded.
+    #
+    # Case is normalised away rather than enumerated. `Deferred`, `DEFERRED`
+    # and `DeFeRrEd` are the same closed verb set arriving in a different
+    # spelling, not members the set was missing, so the repair is `tolower` at
+    # the one place the record reaches the tests — not seven more alternatives
+    # in the vocabulary. Listing spellings is what left this reader blind to
+    # the capitalised half, and listing spellings is what left the guard-
+    # primitive reader blind to `name ( ) {`, the shadowing check blind to
+    # `assert ( ) {`, and the trap check blind to `trap cleanup 0`.
+    #
+    # Nothing here is anchored, and that is load-bearing rather than
+    # incidental: a leading list marker, a bold or emphasis lead-in,
+    # indentation, a colon or an em dash in front of the verb are *positions*,
+    # and a position is not a shape. `- **Deferred to <version>**:` needs no
+    # rule of its own once the verb is found wherever it sits in the record.
+    function shape_of(rec) {
+      if (rec ~ ("(tracked|deferred|carried|reserved|scheduled|planned|postponed)[ a-z]* (for|to|until|with it for) v?" v))
+        return "deferral verb"
+      if (rec ~ ("is +`?v?" v "`?( work|\\.|,|$)") && rec !~ /version|release \*?is\*?/)
+        return "is <version>"
+      if (rec ~ ("will [a-z]+ [a-z ]*in v?" v))
+        return "will ... in <version>"
+      if (rec ~ ("needs? [a-z ]*in v?" v))
+        return "needs ... in <version>"
+      if (rec ~ ("new surface (for|in) v?" v))
+        return "new surface for <version>"
+      return ""
+    }
+
     # Every record, counted before any rule below can skip one, for the reason
     # tests/lib/audit-suites.sh counts its own: a reader that stopped is
     # indistinguishable from a clean tree unless the amount read is reported.
@@ -176,6 +257,9 @@ scan() {
       files++
       sectioned = (single == "" && index(history_docs, " " FILENAME " ") > 0)
       in_section = !sectioned
+      # A file boundary is never a line wrap, so the window starts empty.
+      prev = ""
+      prev_raw = ""
     }
 
     # A heading is structure and not prose, so it is skipped — and the skip says
@@ -189,38 +273,70 @@ scan() {
       in_section = (probe == version)
       skipped++
       scope_skips[FILENAME]++
+      prev = ""
+      prev_raw = ""
       next
     }
 
-    !in_section { skipped++; scope_skips[FILENAME]++; next }
+    !in_section { skipped++; scope_skips[FILENAME]++; prev = ""; prev_raw = ""; next }
 
     {
       if (single == "" && FILENAME == exempt_file && $0 ~ exempt_pattern) {
         exempt_seen++
         skipped++
         exempt_skips[FILENAME]++
+        prev = ""
+        prev_raw = ""
         next
       }
 
       examined++
 
-      shape = ""
-      if ($0 ~ ("(tracked|deferred|carried|reserved|scheduled|planned|postponed)[ a-z]* (for|to|until|with it for) v?" v)) {
-        shape = "deferral verb"
-      } else if ($0 ~ ("is +`?v?" v "`?( work|\\.|,|$)") && $0 !~ /[Vv]ersion|release \*?is\*?/) {
-        shape = "is <version>"
-      } else if ($0 ~ ("will [a-z]+ [a-z ]*in v?" v)) {
-        shape = "will ... in <version>"
-      } else if ($0 ~ ("needs? [a-z ]*in v?" v)) {
-        shape = "needs ... in <version>"
-      } else if ($0 ~ ("new surface (for|in) v?" v)) {
-        shape = "new surface for <version>"
+      rec = tolower($0)
+      shape = shape_of(rec)
+      text = $0
+
+      # Two records, because the unit of meaning is a sentence and the unit of
+      # the walk is a line.
+      #
+      # This is not hypothetical. The changelog copy of the sentence describing
+      # this very finding survived only because a line break happened to fall
+      # between the verb and the version; a reflow moving that break by one
+      # word would have reddened CI on a file nobody edited. A promise is a
+      # promise whichever side of the wrap the version lands on, so the reader
+      # looks at the record joined to the one before it — the same join a
+      # reflow would perform.
+      #
+      # No apostrophe appears in any comment in this awk program, and that is
+      # deliberate rather than styleless: the program is a single-quoted shell
+      # word, so one apostrophe here ends it and bash reports a syntax error
+      # somewhere below. It fails loudly and closed, but it fails.
+      #
+      # `prev` is the previous record *this file examined*, reset at a file
+      # boundary and at every skip, so the window never spans a section heading
+      # or the exempt control: those two lines were never one sentence.
+      #
+      # Reported only when the match genuinely crosses the boundary. If `prev`
+      # matched on its own it was already reported at its own line, so
+      # requiring `shape_of(prev) == ""` is what keeps one promise from being
+      # counted twice. Sentence-ending punctuation blocks the join on its own,
+      # because no alternative in the vocabulary admits `.` between the verb
+      # and its preposition.
+      if (shape == "" && prev != "" && shape_of(prev) == "") {
+        shape = shape_of(prev " " rec)
+        if (shape != "") {
+          shape = shape " across a line break"
+          text = prev_raw " " $0
+        }
       }
 
       if (shape != "") {
-        printf "%s:%d: [%s] %s\n", FILENAME, FNR, shape, substr($0, 1, 160)
+        printf "%s:%d: [%s] %s\n", FILENAME, FNR, shape, substr(text, 1, 160)
         found++
       }
+
+      prev = rec
+      prev_raw = $0
     }
 
     END {

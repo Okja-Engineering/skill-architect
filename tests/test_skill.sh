@@ -720,14 +720,22 @@ done
 # `tests/` and `skills/` survived — two of the eight lived there.
 #
 # What it looks for is a **deferral vocabulary**, not the version string. The
-# version appears 69 times in this tree and about sixty of those are correct:
-# `0.5.0 did not add one`, `Until 0.5.0`, `every key 0.5.0 adds`, `this release
-# is 0.5.0`, `AdapterVersion is 0.5.0`, a heading, a manifest value. A check on
-# the string alone fires on all of them and gets turned off. The words that make
-# a line an *assignment* are few and this repository has used the same ones
-# every time: tracked, deferred, carried, reserved, scheduled, planned,
-# postponed, "is <version> work", "will … in <version>", "needs … in
-# <version>", "new surface for <version>".
+# version occurs far more often in this tree than there are promises, and
+# essentially all of those occurrences are correct: `0.5.0 did not add one`,
+# `Until 0.5.0`, `every key 0.5.0 adds`, `this release is 0.5.0`,
+# `AdapterVersion is 0.5.0`, a heading, a manifest value. A check on the string
+# alone fires on all of them and gets turned off. No count is written here on
+# purpose — the numerals this comment used to carry ("69 times … about sixty of
+# those") were both wrong, and a figure in a comment that nothing re-derives is
+# stale by the next release. The argument does not rest on it.
+#
+# The words that make a line an *assignment* are few and this repository has
+# used the same ones every time: tracked, deferred, carried, reserved,
+# scheduled, planned, postponed, "is <version> work", "will … in <version>",
+# "needs … in <version>", "new surface for <version>". That is a set of
+# **verbs**, and the distinction from a set of *spellings* is what this round
+# repaired: the reader matched the raw record, so a capitalised member of its
+# own closed vocabulary went past it. It case-folds the record now.
 #
 # Two scopes, because the two release documents are the one place where a
 # forward promise is legitimately *history*. `CHANGELOG.md` and
@@ -767,6 +775,24 @@ fi
 # The controls. The check can only ever say "none found", which is what it says
 # over a tree it never read — the failure this repository has now found six ways
 # — so it is shown finding each shape and shown not firing on the correct ones.
+#
+# The case class, and why every member of it is written out here rather than in
+# the reader. The reader matched the raw record, so its closed verb set was in
+# practice a set of *lowercase spellings*, and a capitalised member of its own
+# vocabulary passed silently — while a capitalised verb at a sentence start, a
+# bullet start or inside a bolded lead-in is the dominant prose shape in this
+# repository. All 18 cases here were lowercase, so nothing held that half.
+#
+# The repair case-folds the record once at the point it reaches the shape tests
+# and leaves the tests unanchored, so capitalisation, ALL CAPS, mixed case and
+# every leading marker stop being separate forms to enumerate. The enumeration
+# belongs here instead, where a fixture is the point: capitalised, ALL CAPS,
+# mixed, leading `**`, leading `*`, a list marker, leading whitespace,
+# mid-sentence, after a colon, after an em dash, a capital `V` before the
+# version, and each of the four non-deferral shapes capitalised. Two accepts
+# hold the other side of the fold — an ALL CAPS version surface stays exempt,
+# and sentence-ending punctuation between the verb and the version still
+# blocks the match — so the fold cannot have been bought with false positives.
 promise_scan_rejects() {
   local fixture="$1"
   if "$FORWARD_PROMISE_SCAN" --over "$fixture" "$skill_release_version" >/dev/null 2>&1; then
@@ -805,6 +831,23 @@ refuse|// making it branchable is @V work
 refuse|and names it as the source it will read in @V
 refuse|// the shape the Devin and Cursor adapters need in @V
 refuse|// giving probe an exit contract is new surface for @V
+refuse|**Deferred to @V**: a receiver subcommand for the spool
+refuse|DEFERRED TO @V.
+refuse|DeFeRrEd To @V.
+refuse|- Tracked for @V, once the receiver lands
+refuse|	  Reserved for @V.
+refuse|the receiver is Postponed to @V for now
+refuse|Known limits: Carried to @V
+refuse|Known limits — Scheduled for @V
+refuse|- **Planned for @V**
+refuse|*Deferred to @V.*
+refuse|Deferred to V@V.
+refuse|Making it branchable Is @V work
+refuse|Names it as the source it Will read in @V
+refuse|Needs a receiver subcommand in @V
+refuse|Giving probe an exit contract is New surface for @V
+accept|ADAPTERVERSION IS @V AND IS NOT HELD EQUAL
+accept|Two adapters were deferred. To @V we added a receiver instead
 accept|// making it branchable is new surface, which @V did not add
 accept|// Until @V the only list of them was a switch in the CLI
 accept|- Every key @V adds is optional, so a round trip is not vacuous
@@ -817,9 +860,128 @@ accept|a stored 0.4.x profile against a fresh @V one differs by four keys
 PROMISE_CASES
 
 echo "  forward-promise cases driven: $promise_n"
-PROMISE_CASES_EXPECTED=18
+PROMISE_CASES_EXPECTED=35
 assert "every one of the $PROMISE_CASES_EXPECTED forward-promise cases was driven, not a prefix of them" \
   test "$promise_n" -eq "$PROMISE_CASES_EXPECTED"
+
+# --- The same class over a real multi-line document --------------------------
+#
+# Every case above is one line in a file of one line, which is the shape this
+# block has twice been caught having: a control that cannot reach the condition
+# it tests. None of them can say anything about a promise whose verb and
+# version fall either side of a line wrap, because a one-line fixture has no
+# second line — and that case is not hypothetical. The changelog copy of the
+# sentence describing this very finding escaped the reader only because a break
+# happened to fall between the verb and the version, so a reflow moving that
+# break by one word would have reddened CI on a file nobody edited.
+#
+# So one document, with the texture the reader actually meets: headings, a
+# bulleted list with bolded lead-ins, wrapped paragraphs, an indented line, a
+# fenced block, and blank lines between them. Five promises are planted in it
+# and eight innocent lines that name the version are planted beside them.
+#
+# The assertion is on the **set of line numbers the reader names**, not on the
+# exit status, and the expected set is written out here as literals. That is
+# what makes it two-sided: a reader blind to any planted shape reports a
+# smaller set, and a reader firing on any innocent line reports a larger one,
+# and either way the sets differ. An exit-status check would have passed on
+# four of the five.
+#
+# The document length is asserted too, so the literals below cannot silently
+# come to mean different lines than the ones the promises were written on.
+promise_doc="$promise_fixtures/release-notes-draft.md"
+{
+  echo '# Release notes draft'                                                      # 1
+  echo ''                                                                           # 2
+  echo "This release closes the capability gap and this release is $skill_release_version." # 3
+  echo ''                                                                           # 4
+  echo '## Known limits'                                                            # 5
+  echo ''                                                                           # 6
+  echo "- **Deferred to $skill_release_version**: a receiver subcommand for the spool." # 7  PROMISE
+  echo "- Every key $skill_release_version adds is optional, so a round trip is not vacuous." # 8
+  echo "- TRACKED FOR $skill_release_version — the second half of the redaction table." # 9  PROMISE
+  echo ''                                                                           # 10
+  echo "Until $skill_release_version the only list of them was a switch in the CLI, and that" # 11
+  echo 'list is gone now.'                                                          # 12
+  echo ''                                                                           # 13
+  echo 'The receiver that reads the spool back out over the wire is Deferred'       # 14
+  echo "to $skill_release_version, once the envelope shape settles."                # 15 PROMISE (wrapped)
+  echo ''                                                                           # 16
+  echo '```'                                                                        # 17
+  echo "AdapterVersion is $skill_release_version"                                   # 18
+  echo '```'                                                                        # 19
+  echo ''                                                                           # 20
+  printf '\t  Reserved for %s.\n' "$skill_release_version"                          # 21 PROMISE
+  echo ''                                                                           # 22
+  echo "Known limits: Postponed to $skill_release_version."                         # 23 PROMISE
+  echo ''                                                                           # 24
+  echo "Two adapters were deferred. To $skill_release_version we added a receiver instead." # 25
+  echo ''                                                                           # 26
+  echo "a stored 0.4.x profile against a fresh $skill_release_version one differs by four keys" # 27
+} > "$promise_doc"
+
+PROMISE_DOC_LINES=27
+PROMISE_DOC_PLANTED='7 9 15 21 23'
+
+promise_doc_named() {
+  { "$FORWARD_PROMISE_SCAN" --over "$promise_doc" "$skill_release_version" 2>/dev/null || true; } \
+    | sed -n "s|^.*/$(basename "$promise_doc"):\([0-9]*\):.*|\1|p" | sort -n | tr '\n' ' ' \
+    | sed 's/ $//'
+}
+
+promise_doc_found="$(promise_doc_named)"
+echo "  multi-line document: the reader named lines [$promise_doc_found]; planted on [$PROMISE_DOC_PLANTED]"
+
+require "the multi-line document is the length its expected line numbers were written against" \
+  test "$(grep -ac '' "$promise_doc")" -eq "$PROMISE_DOC_LINES"
+assert "over a real multi-line document the reader names exactly the planted promises, and no innocent line" \
+  test "$promise_doc_found" = "$PROMISE_DOC_PLANTED"
+assert "the multi-line document is refused outright, not merely annotated" \
+  promise_scan_rejects "$promise_doc"
+
+# The wrapped promise specifically, named as the shape it is. The reader prints
+# `across a line break` in the shape for a finding it could only have seen by
+# joining two records, so this asserts the mechanism and not merely the line
+# number: a reader that arrived at line 15 some other way would not print it.
+PROMISE_DOC_WRAP_AT=15
+promise_doc_report() {
+  { "$FORWARD_PROMISE_SCAN" --over "$1" "$skill_release_version" 2>/dev/null || true; }
+}
+promise_doc_shape_at() {
+  promise_doc_report "$1" | sed -n "s|^.*:$2: \[\([^]]*\)\].*|\1|p"
+}
+echo "  the shape reported at line $PROMISE_DOC_WRAP_AT: $(promise_doc_shape_at "$promise_doc" "$PROMISE_DOC_WRAP_AT")"
+assert "the promise split across a line wrap is reported as having been found across the wrap" \
+  test "$(promise_doc_shape_at "$promise_doc" "$PROMISE_DOC_WRAP_AT")" \
+     = "deferral verb across a line break"
+
+# And both inverses over the same document, so "it found line 15" says why.
+#
+# Wrap closed up, verb and version in one record: still refused, and now as a
+# plain deferral verb rather than a wrapped one — the promise is the same
+# promise and the reader reaches it by the ordinary path.
+promise_doc_joined="$promise_fixtures/wrap-closed.md"
+awk 'NR==14 { held = $0; next } NR==15 { print held " " $0; next } { print }' \
+  "$promise_doc" > "$promise_doc_joined"
+require "closing the wrap produced a document one line shorter, so the join happened" \
+  test "$(grep -ac '' "$promise_doc_joined")" -eq "$((PROMISE_DOC_LINES - 1))"
+assert "the same promise with the wrap closed up is still refused" \
+  promise_scan_rejects "$promise_doc_joined"
+assert "with the wrap closed up the finding is no longer attributed to a line break" \
+  test "$(promise_doc_shape_at "$promise_doc_joined" 14)" = "deferral verb"
+
+# Promise taken out, wrap left in place: those two lines go quiet and the other
+# four planted promises still fire, so what was refused above was the promise
+# and not the presence of a wrap.
+promise_doc_clean="$promise_fixtures/wrap-innocent.md"
+awk 'NR==14 { print "The receiver that reads the spool back out over the wire is there"; next }
+     NR==15 { print "in this release, so nothing is owed."; next }
+     { print }' "$promise_doc" > "$promise_doc_clean"
+promise_doc_clean_found="$(promise_doc_report "$promise_doc_clean" \
+  | sed -n "s|^.*/wrap-innocent.md:\([0-9]*\):.*|\1|p" | sort -n | tr '\n' ' ' | sed 's/ $//')"
+echo "  with the wrapped promise taken out, the reader named lines [$promise_doc_clean_found]"
+assert "taking the wrapped promise out quiets those two lines and leaves the other four firing" \
+  test "$promise_doc_clean_found" = "7 9 21 23"
 
 # And the denominator, in three parts, because "the reader ran", "the reader
 # read the whole of what it opened" and "the reader looked at what it read" are
@@ -917,12 +1079,14 @@ assert "the reader skipped records only in the files its own scope names, and in
 
 # --- Controls: the reader can say it did not read the whole tree --------------
 #
-# Every comparison above can only ever say "it read all of it". The 18 fixture
-# controls at the top of this block cannot say the opposite about any of them:
-# all 18 run in `--over` single-file mode over one-line fixtures, so not one
-# reaches the line count it would take to exercise a limit. A control that
-# cannot reach the condition it tests is the shape tests/test_harness.sh
-# explicitly refuses, and this block had it for the whole of the release.
+# Every comparison above can only ever say "it read all of it". The 35
+# single-line fixture controls at the top of this block cannot say the opposite
+# about any of them: all 35 run in `--over` mode over a file of one line, so
+# not one reaches the line count it would take to exercise a limit. A control
+# that cannot reach the condition it tests is the shape tests/test_harness.sh
+# explicitly refuses, and this block had it for the whole of the release. (The
+# multi-line document control above reaches a *wrap*, which is what it is for;
+# at 27 lines it comes nowhere near a scan limit either.)
 #
 # So the reader is copied twice, with a limit inserted at each of the two ends a
 # limit can be introduced at, and each copy is driven over the **real tracked
