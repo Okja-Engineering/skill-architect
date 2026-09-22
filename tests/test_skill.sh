@@ -534,7 +534,11 @@ compat_names_carrier() {
   local carrier
   carrier="$(metadata_value "$1" carrier-command)"
   [ -n "$carrier" ] || return 1
-  printf '%s\n' "$(compatibility_line "$1")" | grep -qF -- "$carrier"
+  # Captured and then matched: `compatibility_line` reads a file before it
+  # writes, so piping it into `grep -qF` puts the rest of its output on the far
+  # side of grep's early exit and the producer dies of SIGPIPE under pipefail.
+  # Same grep, same `-F`, same substring question.
+  holds_line "$(compatibility_line "$1")" -F -- "$carrier"
 }
 
 # A terminal verdict on stdin: the binary reached a conclusion about the bundle
@@ -1438,14 +1442,25 @@ promise_scope_run() {
   printf '%s\nrc=%d\n' "$out" "$status"
 }
 
+# The report is captured and then matched, rather than piped into `grep -q`.
+#
+# `promise_scope_run` builds a repository and runs the reader over it before it
+# writes a byte, so a `grep -q` on the far side of a pipe is already blocked in
+# `read()` when the report finally arrives: it matches the first line, exits,
+# and the rest of the report goes into a closed pipe. The producer dies of
+# SIGPIPE, `pipefail` reports the pipeline as 141, and the assertion prints
+# FAIL over the finding it had just found. Measured at 15 in 400 invocations on
+# bash 5.3.15 and 4 in 400 on bash 3.2.57, which is why it took a different one
+# of the seven assertions below on each run. `holds_line` is the same grep over
+# the same pattern with no producer left to kill.
 promise_scope_names_the_promise() {
-  promise_scope_run "$1" planted | grep -q '^CHANGELOG\.md:7: \[deferral verb\]'
+  holds_line "$(promise_scope_run "$1" planted)" '^CHANGELOG\.md:7: \[deferral verb\]'
 }
 promise_scope_refuses_the_scope() {
-  promise_scope_run "$1" "${2:-planted}" | grep -q '^CHANGELOG\.md: no heading for the release being cut was found'
+  holds_line "$(promise_scope_run "$1" "${2:-planted}")" '^CHANGELOG\.md: no heading for the release being cut was found'
 }
 promise_scope_is_quiet() {
-  promise_scope_run "$1" clean | grep -q '^rc=0$'
+  holds_line "$(promise_scope_run "$1" clean)" '^rc=0$'
 }
 
 promise_scope_heading="## $skill_release_version — 2026-09-21"

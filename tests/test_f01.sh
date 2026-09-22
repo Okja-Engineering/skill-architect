@@ -884,7 +884,7 @@ for gdrop in $guard_definitions; do
   # that matched nothing leaves a *working* guard in the tree. Every assertion
   # below would then be about a guard that loads.
   assert_value "the drop-$gdrop tree really lost that definition" \
-    "$(guard_definition_names "$gdir/verdict-guard.sh" | grep -qx "$gdrop" && echo false || echo true)"
+    "$(holds_line "$(guard_definition_names "$gdir/verdict-guard.sh")" -x -- "$gdrop" && echo false || echo true)"
   run_present "$gdir/check-structure.sh" --json tests/fixtures/f01/valid-full
   assert_value "check-structure.sh --json, guard missing $gdrop: exits 3, not a status meaning a verdict" \
     "$([[ $code -eq 3 ]] && echo true || echo false)"
@@ -1143,7 +1143,7 @@ rules_of() {
     if [[ "$child" == "$file" ]]; then
       continue
     fi
-    if grep -hF -- "$(basename "$child")" "$file" | grep -qF -- '--json'; then
+    if holds_line "$(grep -hF -- "$(basename "$child")" "$file")" -F -- '--json'; then
       rules_of "$child" "$chain $file"
     fi
   done
@@ -1506,7 +1506,7 @@ done
 # exit_line_of <script>     — the script's own statement of its exit contract.
 # stated_exit_codes <script> — the numbers in it.
 exit_line_of() {
-  sed -n 's/^# Exit codes:[[:space:]]*//p' "$1" | head -1
+  first_line "$(sed -n 's/^# Exit codes:[[:space:]]*//p' "$1")"
 }
 
 stated_exit_codes() {
@@ -2183,7 +2183,7 @@ unguarded_proved="$unguarded_proved dirname"
 # taking the suite down under pipefail before it can report anything. The
 # "was read, not matched as an empty set" assertion below is what refuses the
 # empty reading.
-readme_anchor="$(sed -n 's/^Required tools:[[:space:]]*//p' README.md | head -1)"
+readme_anchor="$(first_line "$(sed -n 's/^Required tools:[[:space:]]*//p' README.md)")"
 readme_required="$({ printf '%s' "$readme_anchor" | grep -oE '`[a-z][a-z-]*`' || true; } \
   | tr -d '`' | sort -u)"
 
@@ -2236,7 +2236,7 @@ fi
 # The count written in the prose is the list's own length, so the sentence and
 # the list cannot disagree. This is the half that was wrong: the sentence said
 # three while the scripts required ten.
-readme_claimed_count="$(sed -n 's/^The skills shell out to \([a-z]*\) external tools.*/\1/p' README.md | head -1)"
+readme_claimed_count="$(first_line "$(sed -n 's/^The skills shell out to \([a-z]*\) external tools.*/\1/p' README.md)")"
 readme_count_expected="$(english_count "$readme_required_n")"
 assert_value "the readme's tool count is the number of tools it lists ($readme_required_n)" \
   "$([[ -n "$readme_claimed_count" && "$readme_claimed_count" == "$readme_count_expected" ]] && echo true || echo false)"
@@ -2576,8 +2576,8 @@ assert_value "structure --json, SKILL.md over the line limit: the message names 
 
 # doc_exit_row_of <basename> — what SKILL.md says that script exits with.
 doc_exit_row_of() {
-  sed -n "s/^|[[:space:]]*\`$1\`[[:space:]]*|[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*|[[:space:]]*\$/\1/p" \
-    skills/skill-audit/SKILL.md | head -1
+  first_line "$(sed -n "s/^|[[:space:]]*\`$1\`[[:space:]]*|[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*|[[:space:]]*\$/\1/p" \
+    skills/skill-audit/SKILL.md)"
 }
 
 exit_documented=0
@@ -2664,8 +2664,8 @@ echo "  scripts that are generators: $exit_generators"
 assert_value "the scripts were sorted into verdict-carriers and generators, not read as an empty set" \
   "$([[ $((exit_verdict_carriers + exit_generators)) -eq "$exit_documented" && "$exit_verdict_carriers" -gt 0 ]] && echo true || echo false)"
 
-doc_carrier_word="$(sed -n 's/^The \([a-z][a-z]*\) house-policy checks do carry their verdict in the exit status.*/\1/p' \
-  skills/skill-audit/SKILL.md | head -1)"
+doc_carrier_word="$(first_line "$(sed -n 's/^The \([a-z][a-z]*\) house-policy checks do carry their verdict in the exit status.*/\1/p' \
+  skills/skill-audit/SKILL.md)")"
 assert_value "SKILL.md's count of the checks that carry a verdict in the exit status is the table's own ($exit_verdict_carriers)" \
   "$([[ -n "$doc_carrier_word" && "$doc_carrier_word" == "$(english_count "$exit_verdict_carriers")" ]] && echo true || echo false)"
 if [[ "$doc_carrier_word" != "$(english_count "$exit_verdict_carriers")" ]]; then
@@ -2684,8 +2684,9 @@ for gscript in "$SCRIPTS_DIR"/*.sh; do
   done
   $gcarries && continue
   grep -q "report a verdict in their output, not in their exit status" skills/skill-audit/SKILL.md \
-    && sed -n 's/^\*\*\(.*\)report a verdict in their output.*/\1/p' skills/skill-audit/SKILL.md \
-       | grep -qF -- "$(basename "$gscript")" \
+    && holds_line \
+         "$(sed -n 's/^\*\*\(.*\)report a verdict in their output.*/\1/p' skills/skill-audit/SKILL.md)" \
+         -F -- "$(basename "$gscript")" \
     && doc_generators_named=$((doc_generators_named + 1))
 done
 assert_value "SKILL.md names every generator as one, and there are $exit_generators of them" \
@@ -2750,8 +2751,8 @@ assert_value "SKILL.md names verdict-guard.sh, the file every one of them refuse
   "$(grep -qF 'verdict-guard.sh' skills/skill-audit/SKILL.md && echo true || echo false)"
 # Emphasis markers are stripped first: the count is a claim, and whether the
 # document sets it in bold is not part of it.
-guard_doc_word="$(tr -d '*' < skills/skill-audit/SKILL.md \
-  | sed -n 's/^All \([a-z][a-z]*\) of the scripts above load .*verdict-guard\.sh.*/\1/p' | head -1)"
+guard_doc_word="$(first_line "$(tr -d '*' < skills/skill-audit/SKILL.md \
+  | sed -n 's/^All \([a-z][a-z]*\) of the scripts above load .*verdict-guard\.sh.*/\1/p')")"
 assert_value "SKILL.md's count of the scripts that load the guard is the number that do ($guard_loader_n)" \
   "$([[ -n "$guard_doc_word" && "$guard_doc_word" == "$(english_count "$guard_loader_n")" ]] && echo true || echo false)"
 if [[ "$guard_doc_word" != "$(english_count "$guard_loader_n")" ]]; then

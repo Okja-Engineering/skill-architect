@@ -344,6 +344,76 @@ quietly() {
   return "$status"
 }
 
+# Reading a producer's output, without asking a short-circuiting reader to read
+# a pipe.
+#
+# `producer | grep -q PATTERN` and `producer | head -1` under `set -o pipefail`
+# cannot tell a found answer from a dead producer. Both readers exit the moment
+# they have their answer and close the pipe; a producer with anything still to
+# write is then killed by SIGPIPE, the pipeline's status is 141 — or bash's own
+# `printf` gets EPIPE, reports `write error: Broken pipe` and returns 1 — and
+# `pipefail` hands that status to the assertion, which reports FAIL over an
+# answer it actually got.
+#
+# Whether the producer had finished writing when the reader stopped listening
+# is a race, so the shape does not fail, it fails *sometimes*. It reddened one
+# of seven heading assertions in tests/test_skill.sh at random, and which
+# assertion it took varied by run — so the report named a different check each
+# time and none of them was what was wrong.
+#
+# The exposure is not the pipe by itself. It is a producer that does work
+# *after* the reader is already blocked in `read()`, so its output lands on the
+# far side of the reader's early exit: a function that builds a fixture and
+# runs a script, a `find` that is still walking, a `sed` still reading a file.
+# An `echo "$already_captured"` writes before the reader can exec and measured
+# 0 in 400 on both shells at 400 bytes and at 40kB. The two primitives below
+# are for the first kind, where the caller captures the producer's output
+# first and there is no pipe left to race over.
+#
+# They live here rather than in the suite that needed them for the reason the
+# rest of this file does: a per-suite copy is the drift this file exists to
+# end, and `harness_provides` then covers them the moment they land, so a suite
+# cannot quietly redefine one and get a private matcher no repair reaches.
+#
+# The controls are in tests/test_harness.sh, driven at a size larger than a
+# pipe buffer so the shape they replace fails there every time rather than
+# sometimes.
+
+# holds_line <text> [grep-option]... <pattern>
+#
+# True when <text> holds a line grep matches.
+#
+# The options and the pattern are handed to grep untouched, so a call site
+# keeps the dialect and the anchoring it already had — `-F`, `-x`, `-E`, `-i`
+# and a leading `^` all mean here exactly what they meant in the pipeline this
+# replaces. That is deliberate: a matcher that imposed its own dialect would
+# widen or narrow every call site it was migrated to, and a widened match is a
+# check that stops being able to fail, which is the defect this harness is
+# about rather than a repair for it.
+#
+# The text reaches grep as a here-string. bash writes a here-string into its
+# temporary file or its pipe *before* grep is started, so there is no producer
+# left running for grep's early exit to kill — verified from 100 bytes to 2MB
+# on 3.2.57 and on 5.3.15. `grep -q` is kept because the question really is
+# "is it there", and with nothing writing behind it, stopping early is free.
+holds_line() {
+  local text="$1"
+  shift
+  grep -q "$@" <<<"$text"
+}
+
+# first_line <text>
+#
+# The first line of <text>, and nothing if <text> is empty — which is what
+# `producer | head -1` reported, so a caller's comparison does not change.
+#
+# Parameter expansion rather than `head`, so there is no second process and no
+# pipe at all. The caller captures the producer with `$( )`, which is where the
+# producer's own exit status stays visible to it.
+first_line() {
+  printf '%s\n' "${1%%$'\n'*}"
+}
+
 # harness_census — every call site this suite ran is one the audit reached.
 #
 # The direction that matters is this one, and only this one is asserted: a line
