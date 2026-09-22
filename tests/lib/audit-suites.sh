@@ -671,6 +671,23 @@ END {
 # There is no list of them anywhere in this file.
 harness_names="$(awk -v mode=names -v harness_names="" "$AUDIT_READER" "$harness" | sort -u | tr '\n' ' ')"
 
+# And the derivation has to be total, which is the same rule the closure below
+# is held to and the rule this whole file was rewritten for: a derived side that
+# comes back empty and says nothing has replaced a short list with no list at
+# all. Measured, before this refusal existed: pointed at a harness that defines
+# no function, this script read a suite whose first line was `assert() {` and
+# reported nothing about it — the shadowing half silently disabled, with the
+# exit status coming from an unrelated finding. Every caller in the repository
+# passes the real harness, so it was not live; it is the shape that is the
+# defect, and a check whose subject can be emptied from outside has no floor
+# under it.
+#
+# The refusal is scoped to `audit`, which is the only mode that consults the
+# set. `--names` *is* the derivation and is handed an empty set on purpose;
+# `--sites` and `--closure` never look at a harness name, and refusing there
+# would take the diagnostic away from the caller that asked a different
+# question — tests/lib/harness.sh's census reads `--sites` out of a deliberately
+# crippled reader to prove it can refuse one.
 if [ "$mode" = names ]; then
   awk -v mode=names -v harness_names="" "$AUDIT_READER" "$@" | sort -u
   exit 0
@@ -679,6 +696,15 @@ fi
 if [ "$mode" = sites ]; then
   awk -v mode=sites -v harness_names="$harness_names" "$AUDIT_READER" "$@" || true
   exit 0
+fi
+
+if [ "$mode" = audit ]; then
+  case "$harness_names" in
+    '' | ' ')
+      echo "audit-suites.sh: no function definition was found in the harness at $harness: there is nothing a suite could shadow, so the check would pass over one that does" >&2
+      exit 2
+      ;;
+  esac
 fi
 
 # --- The closure under `source` ----------------------------------------------

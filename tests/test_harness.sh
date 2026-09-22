@@ -605,6 +605,42 @@ require "bash recorded the names the harness loaded, so the comparison has a sec
 assert "every name the reader says the harness defines is one bash loaded from it, and none it did not" \
   test "$harness_names_derived" = "$harness_names_loaded"
 
+# --- Control: the derivation refuses to come back empty ----------------------
+#
+# The precondition above says this file will not compare an empty set, and that
+# is this file's own protection. The audit is run by tests/lib/harness.sh at
+# every summary of every suite as well, and there the derivation had no floor
+# under it at all: handed a harness that defines no function, it read a suite
+# whose first line was `assert() {` and reported nothing about it, because an
+# empty name set makes the shadowing half of the reader unconditionally silent.
+# A derived side that can be emptied from outside and says nothing is a short
+# list with the list taken out, which is not the repair.
+#
+# So the script refuses it, and this is the control that makes it say so. Both
+# directions, because "it exited nonzero" is also what a found violation looks
+# like: the refusal has to be the usage status and it has to name the harness.
+empty_harness="$fixtures/a-harness-that-defines-nothing.sh"
+printf '# A harness with no function definition in it.\npass=0\nfail=0\n' \
+  > "$empty_harness"
+shadowing_suite="$fixtures/shadows-the-shared-assert.sh"
+printf 'assert() {\n  echo "PASS: $1"\n}\n' > "$shadowing_suite"
+
+audit_refuses_as_unusable() {
+  local out
+  local code=0
+  out="$("$AUDIT" --harness "$1" "$2" 2>&1)" || code=$?
+  if [ "$code" -ne 2 ]; then
+    printf 'expected the usage status 2, got %s:\n%s\n' "$code" "$out" >&2
+    return 1
+  fi
+  printf '%s\n' "$out" | grep -q 'no function definition was found in the harness'
+}
+
+assert "an audit whose harness defines nothing refuses rather than reading a suite against an empty set" \
+  audit_refuses_as_unusable "$empty_harness" "$shadowing_suite"
+assert "the same suite against the real harness is refused for the shadow itself, so the case is about the harness" \
+  audit_rejects "$shadowing_suite"
+
 # What bash itself says a file defines. The oracle.
 name_oracle="$fixtures/what-bash-defines.sh"
 cat > "$name_oracle" <<'EOF'
