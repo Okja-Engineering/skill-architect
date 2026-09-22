@@ -366,10 +366,18 @@ $audit_closure
 CLOSURE_HAS
 done
 
-# The second reader. `grep` cannot tell a `source` in a heredoc from a real one,
-# so it finds at least as much as the audit's tokenizer does, and every literal
-# library path it finds has to be in the closure. The direction is the one that
-# matters: a library the audit did not read is the hole.
+# The second reader, and only one direction of it is asserted: every library it
+# sees sourced has to be in the closure, because a library the audit did not
+# read is the hole.
+#
+# Not the other direction, and the reason is measured rather than assumed. It
+# was written here that `grep` "finds at least as much as the audit's tokenizer
+# does", since it cannot tell a `source` in a heredoc from a real one — and that
+# is false: it also finds *less*. It matches only a literal path on the
+# directive, so `. "$mutation_runner"` at the bottom of this file is invisible
+# to it while the tokenizer resolves the variable and reads the library. Today
+# grep sees one library and the closure holds two. The claim this side can carry
+# is the containment, not the equality, which is what is asserted.
 sourced_by_grep() {
   grep -hoE '(^|[^a-zA-Z])(\.|source)[[:space:]]+"?tests/lib/[A-Za-z0-9_-]+\.sh' $suites \
     | grep -oE 'tests/lib/[A-Za-z0-9_-]+\.sh' | sort -u || :

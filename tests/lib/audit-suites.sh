@@ -61,9 +61,12 @@
 #      shrug.
 #
 # The same discipline governs the counters. `lines` is what the reader saw, and
-# `wc -l` over the same file is its other side. `accounted` is what the walk
-# disposed of, and `lines` is its other side: every record leaves the walk
-# through one of four paths and each increments it.
+# a second program counting the records of the same file is its other side —
+# `grep -ac ''` in tests/test_harness.sh, and not `wc -l`, because awk counts
+# *records* and a file whose last line has no newline holds one more of them
+# than `wc -l` reports. `accounted` is what the walk disposed of, and `lines` is
+# its other side: every record leaves the walk through one of four paths and
+# each increments it.
 #
 # That pair is not sufficient on its own and the failure is worth recording,
 # because the sentence that used to stand here claimed it was. `accounted`
