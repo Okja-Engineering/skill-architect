@@ -1,9 +1,12 @@
 package skillgate
 
 import (
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The check registry is published by --list-checks and consumed by
@@ -341,5 +344,135 @@ func TestAPanickingCheckIsANamedSkipNotACrash(t *testing.T) {
 	// The rest of the run is intact: the ledger was still built and inspected.
 	if !rep.Coverage.Complete {
 		t.Errorf("a panicking check damaged the file ledger: %+v", rep.Coverage)
+	}
+}
+
+// TestConcurrentChecksEmitInRegistryOrder is the determinism control for the
+// concurrent run, and it exists because TestReportDeterministic cannot see
+// this.
+//
+// That probe force-skips the three external scanners so it asserts our
+// determinism rather than the environment's — which is right, and it means the
+// only selected check that contributes a checks_skipped entry is icm, alone in
+// its stage. Collection in completion order was measured to be invisible to it
+// and visible on a real run with the scanners live: gating skills/skill-gate
+// 30 times, skillspector and agnix swapped places in checks_skipped in 7 of
+// them.
+//
+// So the ordering is exercised here with synthetic checks instead, which need
+// nothing installed. Each finishes in the reverse of its registry position, so
+// completion order is not merely different from registry order, it is its
+// inverse — a report built from completion order cannot accidentally agree.
+func TestConcurrentChecksEmitInRegistryOrder(t *testing.T) {
+	const n = 8
+	e := &Engine{}
+	var want []string
+	for i := 0; i < n; i++ {
+		name := "synthetic-" + strconv.Itoa(i)
+		want = append(want, name)
+		delay := time.Duration(n-i) * 2 * time.Millisecond
+		e.checks = append(e.checks, Check{
+			Name: name, Stage: stageScan,
+			Run: func(checkInput) checkResult {
+				time.Sleep(delay)
+				return checkResult{
+					// Every sort key is identical, so the post-hoc sort is
+					// stable over the collected order and cannot rescue it.
+					// Only Message — which the sort does not read — says which
+					// check produced the finding.
+					Findings: []Finding{{
+						RuleID: "SK-SYN", Severity: SeverityInfo, Quality: "maintainability",
+						Message: name, File: "SKILL.md", Line: 1, Evidence: "x", Source: "skillgate",
+					}},
+					Skipped: []SkippedCheck{{Check: name, Reason: "synthetic"}},
+				}
+			},
+		})
+	}
+
+	dir := demoBundle(t)
+	for run := 0; run < 50; run++ {
+		rep, err := e.Gate(dir, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var gotSkips, gotFindings []string
+		for _, s := range rep.ChecksSkipped {
+			gotSkips = append(gotSkips, s.Check)
+		}
+		for _, f := range rep.Findings {
+			gotFindings = append(gotFindings, f.Message)
+		}
+		if !slices.Equal(gotSkips, want) {
+			t.Fatalf("run %d: checks_skipped order = %v, want the registry's %v", run, gotSkips, want)
+		}
+		if !slices.Equal(gotFindings, want) {
+			t.Fatalf("run %d: findings order = %v, want the registry's %v", run, gotFindings, want)
+		}
+	}
+}
+
+// TestALaterStageSeesWhatAnEarlierStageMeasured pins the stage mechanism
+// itself: a check in a later stage reads what an earlier one produced. Without
+// it, "stage" is a field nothing depends on and moving a check between stages
+// costs nothing visible.
+func TestALaterStageSeesWhatAnEarlierStageMeasured(t *testing.T) {
+	const missed = "the later stage saw no budget"
+	e := &Engine{checks: []Check{
+		{
+			Name: "synthetic-measure", Stage: stageScan,
+			Run: func(checkInput) checkResult {
+				return checkResult{Budget: &TokenBudget{
+					TotalTokens: 7, Counter: "synthetic", Basis: "measured",
+					Files: []TokenPerFile{{File: "SKILL.md", Tokens: 7}},
+				}}
+			},
+		},
+		{
+			Name: "synthetic-read", Stage: stageDerive,
+			Run: func(in checkInput) checkResult {
+				if in.Budget == nil || in.Budget.TotalTokens != 7 {
+					return checkResult{Skipped: []SkippedCheck{{Check: "synthetic-read", Reason: missed}}}
+				}
+				return checkResult{}
+			},
+		},
+	}}
+	rep, err := e.Gate(demoBundle(t), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range rep.ChecksSkipped {
+		if s.Reason == missed {
+			t.Fatal("a stageDerive check did not see what a stageScan check measured")
+		}
+	}
+	if rep.Tokens == nil || rep.Tokens.TotalTokens != 7 {
+		t.Fatalf("the measured budget did not reach the report: %+v", rep.Tokens)
+	}
+}
+
+// TestTheCheckThatReadsTheBudgetRunsAfterTheOneThatMeasuresIt applies that to
+// the real registry. icm's SK-I005 reads the measured token counts that
+// skill-validator produces; in the same stage it would race it and always see
+// nil, silently reporting icm-token-budget even when a counter did run. The
+// stages are read off the registry rather than asserted as constants.
+func TestTheCheckThatReadsTheBudgetRunsAfterTheOneThatMeasuresIt(t *testing.T) {
+	stage := map[string]checkStage{}
+	for _, c := range NewEngine().checks {
+		stage[c.Name] = c.Stage
+	}
+	measurer, ok := stage[CheckSkillValidator]
+	if !ok {
+		t.Fatalf("%s is not registered — the comparison would be vacuous", CheckSkillValidator)
+	}
+	reader, ok := stage[CheckICM]
+	if !ok {
+		t.Fatalf("%s is not registered — the comparison would be vacuous", CheckICM)
+	}
+	if reader <= measurer {
+		t.Errorf("%s reads the token budget %s measures, and runs in stage %d against its %d: "+
+			"in the same stage it sees no budget and reports %s on every run",
+			CheckICM, CheckSkillValidator, reader, measurer, CheckICMTokenBudget)
 	}
 }
