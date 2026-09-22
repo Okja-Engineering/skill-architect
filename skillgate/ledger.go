@@ -26,6 +26,9 @@ type FileContent struct {
 	Entry LedgerEntry
 	Text  string // empty when the file was skipped
 	Lines []int  // 1-based byte offset of each line start
+	// views is the raw view plus every registered normalised view, built
+	// once by BuildLedger. Read through Views(), never directly.
+	views []*View
 }
 
 // Ledger is the G1 coverage ledger: every file under the bundle root gets a
@@ -140,6 +143,9 @@ func BuildLedger(root string) (*Ledger, error) {
 		return l, err
 	}
 	sort.Slice(l.Files, func(i, j int) bool { return l.Files[i].Entry.Path < l.Files[j].Entry.Path })
+	// After the file list is final: views hold pointers into it, and checks
+	// run concurrently over a ledger they treat as read-only.
+	l.buildViews()
 	return l, nil
 }
 

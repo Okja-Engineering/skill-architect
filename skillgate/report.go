@@ -41,13 +41,19 @@ const (
 
 // Finding is one rule firing on the target bundle.
 type Finding struct {
-	RuleID         string `json:"rule_id"`
-	Severity       string `json:"severity"`
-	Quality        string `json:"quality"` // security | reliability | maintainability
-	Message        string `json:"message"`
-	File           string `json:"file,omitempty"`
-	Line           int    `json:"line,omitempty"`
-	Evidence       string `json:"evidence,omitempty"`
+	RuleID   string `json:"rule_id"`
+	Severity string `json:"severity"`
+	Quality  string `json:"quality"` // security | reliability | maintainability
+	Message  string `json:"message"`
+	File     string `json:"file,omitempty"`
+	Line     int    `json:"line,omitempty"`
+	Evidence string `json:"evidence,omitempty"`
+	// View names the normalised rendering the rule matched on, when it was
+	// not the raw text — e.g. "skeleton" for a payload spelled in fullwidth
+	// or confusable characters. File, Line and Evidence are always the raw
+	// source, whatever View says, so a reader can find the text in the file.
+	// Empty for a raw hit, which keeps every pre-view finding unchanged.
+	View           string `json:"view,omitempty"`
 	EffortMinutes  int    `json:"effort_minutes"`
 	Source         string `json:"source"` // skillgate | skillspector | agnix
 	Fingerprint    string `json:"fingerprint"`

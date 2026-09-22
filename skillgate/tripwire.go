@@ -26,13 +26,35 @@ type rule struct {
 	quality string
 	effort  int
 	msg     string
-	// scan inspects one file's text and returns evidence snippets.
-	scan func(f *FileContent) []string
+	// scan inspects one view of one file and returns evidence snippets.
+	// It receives a View rather than a FileContent because a view is what a
+	// lexical rule scans: the same rule runs over the raw text and over each
+	// normalised rendering of it, and run() maps whatever it finds back to
+	// the raw source.
+	scan func(v *View) []string
+	// rawOnly, when non-empty, is the written reason this rule must not run
+	// on normalised views — it runs on raw text alone. Empty, the default,
+	// means the rule runs on every registered view, so a view added later
+	// covers it with no edit here and a rule added later is view-covered by
+	// construction. ViewCoverage() derives the published list from this
+	// field; the reason is the whole justification, so there is no way to
+	// opt out silently.
+	rawOnly string
 	// scanBundle inspects cross-file state (e.g. config files, symlinks).
 	scanBundle func(l *Ledger) []Finding
 	// files limits which bundle paths the scan applies to (empty = all
 	// inspected text files).
 	files func(path string) bool
+}
+
+// views returns the views this rule scans for a file: every view, or the raw
+// one alone when the rule has opted out with a reason.
+func (r rule) views(f *FileContent) []*View {
+	all := f.Views()
+	if r.rawOnly == "" {
+		return all
+	}
+	return all[:1] // the raw view is always first
 }
 
 func (r rule) run(l *Ledger) []Finding {
@@ -51,25 +73,71 @@ func (r rule) run(l *Ledger) []Finding {
 		if r.files != nil && !r.files(f.Entry.Path) {
 			continue
 		}
-		for _, ev := range r.scan(f) {
-			line := 0
-			if off := strings.Index(f.Text, ev); off >= 0 {
-				line = f.LineNumber(off)
+		// Dedup is *between* views, raw first and raw wins: a derived view
+		// rediscovering a raw hit is the same finding wearing a different
+		// spelling, and reporting it twice would double every existing
+		// finding the day a view was added. Within one view nothing is
+		// dropped, so a rule that reports two unlocatable hits in the same
+		// file still reports both, exactly as it did before views existed.
+		reported := map[int]bool{}
+		for _, v := range r.views(f) {
+			var batch []Finding
+			for _, ev := range r.scan(v) {
+				line, evidence, ok := locate(f, v, ev)
+				if !ok || reported[line] {
+					continue
+				}
+				batch = append(batch, Finding{
+					RuleID:        r.id,
+					Severity:      r.sev,
+					Quality:       r.quality,
+					Message:       r.msg,
+					File:          f.Entry.Path,
+					Line:          line,
+					Evidence:      truncate(evidence, 160),
+					View:          v.Tag(),
+					EffortMinutes: r.effort,
+					Source:        "skillgate",
+				})
 			}
-			out = append(out, Finding{
-				RuleID:        r.id,
-				Severity:      r.sev,
-				Quality:       r.quality,
-				Message:       r.msg,
-				File:          f.Entry.Path,
-				Line:          line,
-				Evidence:      truncate(ev, 160),
-				EffortMinutes: r.effort,
-				Source:        "skillgate",
-			})
+			for _, fd := range batch {
+				reported[fd.Line] = true
+			}
+			out = append(out, batch...)
 		}
 	}
 	return out
+}
+
+// locate turns evidence a rule found in a view into a raw source position and
+// raw evidence.
+//
+// On the raw view this is the behaviour the gate has always had, including
+// the case where a rule synthesises evidence that is not a substring of the
+// file (T005 and T009 report a pair of lines): those report at line 0 and
+// carry their synthesised text, unchanged.
+//
+// On a derived view that case cannot be reported at all — evidence that is
+// nowhere in the view cannot be mapped back to raw, and a finding at line 0
+// citing text that is in no file is not a report, it is noise. Such a hit is
+// dropped; the raw view still finds it. This is the only coverage a view
+// loses and docs/skillgate-spec.md states it.
+func locate(f *FileContent, v *View, ev string) (line int, evidence string, ok bool) {
+	off := strings.Index(v.Text, ev)
+	if v.IsRaw() {
+		if off < 0 {
+			return 0, ev, true
+		}
+		return f.LineNumber(off), ev, true
+	}
+	if off < 0 {
+		return 0, "", false
+	}
+	start, end := v.SourceOffset(off), v.SourceEnd(off+len(ev))
+	if start > end || end > len(f.Text) {
+		return 0, "", false
+	}
+	return f.LineNumber(start), strings.TrimSpace(f.Text[start:end]), true
 }
 
 func tripwireChecks() []Check {
@@ -119,8 +187,8 @@ var rePathRef = regexp.MustCompile(`[\w.\-/\\]*\.\.([\\/][\w.\-/\\]*)?`)
 var ruleT019 = rule{
 	id: "SK-T019", sev: SeverityBlocker, quality: "security", effort: 15,
 	msg: "path escape: reference resolves outside the bundle root",
-	scan: func(f *FileContent) []string {
-		dir := f.Entry.Path
+	scan: func(v *View) []string {
+		dir := v.Path
 		if i := strings.LastIndex(dir, "/"); i >= 0 {
 			dir = dir[:i]
 		} else {
@@ -128,13 +196,13 @@ var ruleT019 = rule{
 		}
 		var ev []string
 		seen := map[string]bool{}
-		for _, m := range rePathRef.FindAllStringIndex(f.Text, -1) {
-			ref := strings.ReplaceAll(f.Text[m[0]:m[1]], "\\", "/")
+		for _, m := range rePathRef.FindAllStringIndex(v.Text, -1) {
+			ref := strings.ReplaceAll(v.Text[m[0]:m[1]], "\\", "/")
 			joined := path.Join(dir, ref)
 			if joined != ".." && !strings.HasPrefix(joined, "../") {
 				continue // resolves inside the bundle — legal
 			}
-			line := lineAt(f.Text, m[0])
+			line := lineAt(v.Text, m[0])
 			if !seen[line] {
 				seen[line] = true
 				ev = append(ev, line)

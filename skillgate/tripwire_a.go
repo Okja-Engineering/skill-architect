@@ -110,9 +110,9 @@ var ruleT001 = rule{
 	id: "SK-T001", sev: SeverityBlocker, quality: "security", effort: 10,
 	msg:   "invisible or bidi control characters in loaded text (hidden-instruction channel)",
 	files: isLoadedText,
-	scan: func(f *FileContent) []string {
+	scan: func(v *View) []string {
 		var out []string
-		for i, line := range strings.Split(f.Text, "\n") {
+		for i, line := range strings.Split(v.Text, "\n") {
 			for _, r := range line {
 				bad := (r >= 0x200B && r <= 0x200F) || // ZWSP…RLM
 					(r >= 0x202A && r <= 0x202E) || // bidi embeds/overrides
@@ -136,7 +136,7 @@ var ruleT002 = rule{
 	id: "SK-T002", sev: SeverityBlocker, quality: "security", effort: 15,
 	msg:   "instruction-override phrasing in skill text",
 	files: isLoadedText,
-	scan:  func(f *FileContent) []string { return lineMatches(f.Text, reOverride...) },
+	scan:  func(v *View) []string { return lineMatches(v.Text, reOverride...) },
 }
 
 // T003 — homoglyph / mixed-script in description, name, or MCP tool name.
@@ -144,8 +144,8 @@ var ruleT003 = rule{
 	id: "SK-T003", sev: SeverityBlocker, quality: "security", effort: 20,
 	msg:   "confusable non-Latin characters mixed into a name or description",
 	files: isLoadedText,
-	scan: func(f *FileContent) []string {
-		fm := ParseFrontmatter(f.Text)
+	scan: func(v *View) []string {
+		fm := ParseFrontmatter(v.Text)
 		var out []string
 		for _, key := range []string{"name", "description", "when_to_use"} {
 			if v := fm.Keys[key]; v != "" {
@@ -188,8 +188,8 @@ var ruleT004 = rule{
 	id: "SK-T004", sev: SeverityBlocker, quality: "security", effort: 20,
 	msg:   "bundled script transmits to a literal remote host",
 	files: isScript,
-	scan: func(f *FileContent) []string {
-		return lineMatches(reLoopbackURL.ReplaceAllString(f.Text, "LOOPBACK"), reNetCmd, reDevTCP, rePyNet)
+	scan: func(v *View) []string {
+		return lineMatches(reLoopbackURL.ReplaceAllString(v.Text, "LOOPBACK"), reNetCmd, reDevTCP, rePyNet)
 	},
 }
 
@@ -202,8 +202,8 @@ var ruleT005 = rule{
 	// monorepo): an env read *anywhere* plus any URL/sink token *anywhere*
 	// fired. Require proximity — a wholesale env dump within 10 lines of a
 	// sink is the exfil shape; a distant co-occurrence is ordinary code.
-	scan: func(f *FileContent) []string {
-		lines := strings.Split(f.Text, "\n")
+	scan: func(v *View) []string {
+		lines := strings.Split(v.Text, "\n")
 		var dumps, sinks []int
 		for i, line := range lines {
 			if reEnvDump.MatchString(line) {
@@ -237,9 +237,9 @@ var ruleT005 = rule{
 var ruleT006 = rule{
 	id: "SK-T006", sev: SeverityBlocker, quality: "security", effort: 15,
 	msg: "credential-shaped literal in a bundled file",
-	scan: func(f *FileContent) []string {
+	scan: func(v *View) []string {
 		var out []string
-		for _, line := range strings.Split(f.Text, "\n") {
+		for _, line := range strings.Split(v.Text, "\n") {
 			for _, re := range reCreds {
 				if re.MatchString(line) {
 					masked := re.ReplaceAllString(strings.TrimSpace(line), "***")
@@ -256,8 +256,8 @@ var ruleT006 = rule{
 var ruleT007 = rule{
 	id: "SK-T007", sev: SeverityBlocker, quality: "security", effort: 30,
 	msg: "network output piped to a shell or interpreter",
-	scan: func(f *FileContent) []string {
-		return lineMatches(f.Text, rePipeToShell, rePipeToShell2, reIEX)
+	scan: func(v *View) []string {
+		return lineMatches(v.Text, rePipeToShell, rePipeToShell2, reIEX)
 	},
 }
 
@@ -266,8 +266,8 @@ var ruleT008 = rule{
 	id: "SK-T008", sev: SeverityBlocker, quality: "security", effort: 10,
 	msg:   "remote fetch or install without a pinned version",
 	files: isScript,
-	scan: func(f *FileContent) []string {
-		return lineMatches(f.Text, reUnpinned...)
+	scan: func(v *View) []string {
+		return lineMatches(v.Text, reUnpinned...)
 	},
 }
 
@@ -279,8 +279,8 @@ var ruleT009 = rule{
 	// File-level co-occurrence was the FP amplifier (JWT `atob` + `re.exec`
 	// anywhere in an auth file fired). Same-line, or decode within 10 lines
 	// of exec — the decode-then-execute payload shape.
-	scan: func(f *FileContent) []string {
-		lines := strings.Split(f.Text, "\n")
+	scan: func(v *View) []string {
+		lines := strings.Split(v.Text, "\n")
 		var dec, ex []int
 		for i, line := range lines {
 			if reDecode.MatchString(line) {
