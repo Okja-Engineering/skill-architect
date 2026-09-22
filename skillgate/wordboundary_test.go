@@ -225,6 +225,24 @@ var midWordQuiet = []struct {
 	{"SK-T009", "`subprocess` inside `TestEverySubprocess` is not an exec", map[string]string{
 		"scripts/a.py": "import base64\np = base64.b64decode(s)\n# see TestEverySubprocess for why\n",
 	}},
+
+	// The trailing end, for the two legs whose vocabulary is a command word.
+	// `sh` is a program; `shadow`, `should`, `show` are not it.
+	{"SK-T005", "`| sh` inside `|| showhelp` is not a pipe to a shell", map[string]string{
+		"scripts/a.sh": "#!/bin/sh\nd=$(printenv)\n[ -z \"$d\" ] || showhelp\n",
+	}},
+	{"SK-T005", "`| sh` inside a shell `|| shadow_code=`", map[string]string{
+		"scripts/a.sh": "#!/bin/sh\nd=$(printenv)\nx=$(a) || shadow_code=1\n",
+	}},
+	{"SK-T005", "`|bash` inside `bashrc|bash_profile`", map[string]string{
+		"scripts/a.sh": "#!/bin/sh\nd=$(printenv)\ncase $f in bashrc|bash_profile) ;; esac\n",
+	}},
+	{"SK-T005", "`|sh` inside another regex's alternation in a bundled script", map[string]string{
+		"scripts/a.py": "import os\nd = os.environ.copy()\nr = re.compile(r'(?:can|may|should)')\n",
+	}},
+	{"SK-T009", "`subprocess` inside `subprocessEnv` is a variable, not the module", map[string]string{
+		"scripts/a.py": "import base64\np = base64.b64decode(s)\nsubprocessEnv = {}\n",
+	}},
 }
 
 // midWordStillFires: the verb really is a word here, in every shape a leading
@@ -292,6 +310,97 @@ var midWordStillFires = []struct {
 	{"SK-T009", "eval of a decoded payload", map[string]string{
 		"scripts/o.sh": "eval $(echo aGVsbG8= | base64 -d)\n",
 	}},
+
+	// The trailing end's true positives — every shape of a real pipe-to-shell
+	// sink a trailing anchor could plausibly have broken, plus the four
+	// shells this leg never covered and now does.
+	{"SK-T005", "pipe to sh", map[string]string{
+		"scripts/a.sh": "#!/bin/sh\nd=$(printenv)\necho \"$d\" | sh\n",
+	}},
+	{"SK-T005", "pipe to bash with a flag", map[string]string{
+		"scripts/a.sh": "#!/bin/sh\nd=$(printenv)\necho \"$d\" | bash -s\n",
+	}},
+	{"SK-T005", "pipe to sh -c", map[string]string{
+		"scripts/a.sh": "#!/bin/sh\nd=$(printenv)\necho \"$d\" | sh -c 'cat'\n",
+	}},
+	{"SK-T005", "pipe to base64", map[string]string{
+		"scripts/a.sh": "#!/bin/sh\nd=$(printenv)\necho \"$d\" | base64 -d\n",
+	}},
+	{"SK-T005", "pipe to zsh — never covered before", map[string]string{
+		"scripts/a.sh": "#!/bin/sh\nd=$(printenv)\necho \"$d\" | zsh\n",
+	}},
+	{"SK-T005", "pipe to dash — never covered before", map[string]string{
+		"scripts/a.sh": "#!/bin/sh\nd=$(printenv)\necho \"$d\" | dash\n",
+	}},
+	{"SK-T005", "pipe to sudo sh — never covered before", map[string]string{
+		"scripts/a.sh": "#!/bin/sh\nd=$(printenv)\necho \"$d\" | sudo sh\n",
+	}},
+	{"SK-T009", "the subprocess module through its attributes", map[string]string{
+		"scripts/a.py": "import base64, subprocess\np = base64.b64decode(s)\nsubprocess.check_output(p)\n",
+	}},
+	{"SK-T009", "a bare `import subprocess` still counts as exec vocabulary", map[string]string{
+		"scripts/a.py": "import base64\nimport subprocess\np = base64.b64decode(s)\nsubprocess.run(p)\n",
+	}},
+}
+
+// --- the trailing end ------------------------------------------------------
+//
+// The leading anchors went in as a class: a blanket invariant over the whole
+// repository, no allow-list, 326 violations to zero. **The trailing end is
+// not symmetric and cannot carry the same blanket rule**, and the reason is
+// worth stating because it is the thing a reader will otherwise re-derive:
+//
+//	a word's meaning survives suffixing but not prefixing.
+//
+// Identifiers compound head-first. `cursorAuth`, `cursorDir`, `CursorVersion`
+// and `CURSOR_API_KEY` are all *about* Cursor; `writeFileSync` is a
+// `writeFile`. But `func` is not about `nc` and `guarantee` is not about
+// `tee`. So a leading anchor is nearly always right and a trailing one is
+// right only where the leg's vocabulary is a **command word** — a token an
+// interpreter resolves as a program or keyword, which cannot be extended and
+// remain the same command. `sh` extended is `shadow`: a different word.
+//
+// Measured on all five patterns that had trailing mid-word matches; the
+// discriminator decided each, and only two legs qualified. The three that
+// did not are recorded in trailingMustStayLoose below and in the spec's
+// stated limits, with what anchoring them would have cost.
+
+// trailingMustStayLoose is the negative result, kept as a test so the
+// measurement cannot rot into a guess. Each entry is a leg whose vocabulary
+// is a *name*, and a spelling that a trailing anchor would have silently
+// dropped. These must keep matching.
+var trailingMustStayLoose = []struct {
+	pattern *regexp.Regexp
+	name    string
+	sample  string
+	why     string
+}{
+	{reCursorCtx, "reCursorCtx `cursor`", "cursorAuth",
+		"the Cursor credential-store key itself — anchoring blinds SK-T012's context gate to the very thing it gates"},
+	{reCursorCtx, "reCursorCtx `cursor`", "cursorDir := filepath.Join(home)",
+		"an identifier naming Cursor's directory is Cursor context"},
+	{reCursorCtx, "reCursorCtx `cursor`", "ev.CursorVersion",
+		"camelCase compounds are head-first: this is about Cursor"},
+	{reCursorCtx, "reCursorCtx `cursor`", `"cursor_version": 1`,
+		"snake_case compounds likewise"},
+	{reCursorCtx, "reCursorCtx `cursor`", "CURSOR_API_KEY",
+		"SCREAMING_SNAKE likewise"},
+	{reProgWrite, "reProgWrite `writeFile`", "fs.writeFileSync(a, b)",
+		"`writeFileSync` is the commonest real spelling of the thing this classifies"},
+	{reProgWrite, "reProgWrite `appendFile`", "appendFileSync(a, b)",
+		"same"},
+	{reSink, "reSink `urllib`", "import urllib3",
+		"urllib3 is a real library and a real sink — a trailing anchor would drop it"},
+	{rePersistVerb, "rePersistVerb `tee`", "tee -a ~/.zshrc",
+		"this leg ends on `\\S`, the first character of the *filename* — a deliberate partial match, not vocabulary"},
+}
+
+func TestLegsWhoseVocabularyIsANameStayLoose(t *testing.T) {
+	for _, row := range trailingMustStayLoose {
+		if !row.pattern.MatchString(row.sample) {
+			t.Errorf("%s stopped matching %q — %s", row.name, row.sample, row.why)
+		}
+	}
 }
 
 func TestMidWordVocabularyDoesNotFire(t *testing.T) {
