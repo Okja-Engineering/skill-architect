@@ -45,7 +45,14 @@ var (
 	// bound to an env-named option or variable is child-env plumbing, not a
 	// payload. Only fires to suppress when the dump IS the env value.
 	reEnvAssign = regexp.MustCompile(`(?i)\b\w*env\w*\s*[:=]`)
-	reSink      = regexp.MustCompile(`(?i)(curl|wget|nc\b|ncat|socat|/dev/tcp|requests\.post|urllib|fetch\(|https?://|>\s*[/~]|\|\s*(base64|sh|bash)|scp\b|rsync\b)`)
+	// Every command leg is `\b`-anchored: these are words, and unanchored the
+	// shortest of them matched inside ordinary identifiers. Measured — `nc`
+	// matched inside `func` and `sync`, `ncat` inside `concat` and
+	// `truncat`, so a Python file with `os.environ.copy()` and a `def
+	// func(x)` three lines later produced a **blocker** SK-T005 for dumping
+	// the environment to a network sink. 326 mid-word matches in this
+	// repository's own text before the anchors.
+	reSink = regexp.MustCompile(`(?i)(\bcurl|\bwget|\bnc\b|\bncat|\bsocat|/dev/tcp|\brequests\.post|\burllib|\bfetch\(|\bhttps?://|>\s*[/~]|\|\s*(base64|sh|bash)|\bscp\b|\brsync\b)`)
 
 	// T006 — credential-shaped literals. Evidence is masked before it lands
 	// in a finding — the gate never re-publishes a secret.
@@ -88,7 +95,12 @@ var (
 	// calls (`re.exec(str)` is a regex match, not an interpreter); qualified
 	// exec sinks (child_process.exec, execSync/execFile) stay.
 	reDecode = regexp.MustCompile(`(?i)(base64\s+(-d|--decode|-D)|b64decode|atob\(|xxd\s+-r|hex\.decode|fromhex|(\\x[0-9a-fA-F]{2}){4,})`)
-	reExec   = regexp.MustCompile(`(?i)(^|[^\w.])(eval|exec)\b|child_process\.exec|\.exec(Sync|File|FileSync)\s*\(|os\.system|subprocess|popen|Invoke-Expression|\biex\s*\(|\|\s*(ba|z|fi)?sh\b`)
+	// Anchored for the same reason as reSink. `eval`/`exec` already carried a
+	// leading guard; `subprocess` and `popen` did not, so `TestEverySubprocess`
+	// in a comment supplied the exec half of the decode→exec pair. `popen`
+	// stays leading-anchored only, so `subprocess.Popen(` still matches — a
+	// `.` is no more a word character than a space.
+	reExec = regexp.MustCompile(`(?i)(^|[^\w.])(eval|exec)\b|\bchild_process\.exec|\.exec(Sync|File|FileSync)\s*\(|\bos\.system|\bsubprocess|\bpopen|\bInvoke-Expression|\biex\s*\(|\|\s*(ba|z|fi)?sh\b`)
 )
 
 // lineMatches returns each line matching any of the patterns.
