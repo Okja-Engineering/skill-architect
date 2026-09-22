@@ -1,0 +1,14 @@
+{
+  "entries": [
+    {
+      "rule_id": "SK-T019",
+      "fingerprint": "b67263aaa9798f9b2cea60643ade0d4a68a5c2c4df8386c7971325e84187c2a3",
+      "reason": "reviewed and accepted: skill-rewrite is deliberately not a self-contained bundle. Its own SKILL.md says so in the shipped release — 'This skill is not self-contained ... A pruner who removes the guard as an unused file, or who installs this skill alone, gets no draft at all. Install or prune the two skills together.' — and README.md, RELEASE_NOTES.md and CHANGELOG.md each repeat it. The four plugin manifests declare ./skills/ as the installed unit, under which this reference resolves inside. The finding is true of the sub-unit the gate was pointed at, and the rule is right to report it to anyone who installs this directory alone."
+    },
+    {
+      "rule_id": "SK-T019",
+      "fingerprint": "ad15704e077c8d5d14e255ac174f58c297e554a657c4f0fdb7ebee52c42bbec6",
+      "reason": "reviewed and accepted: the same accepted dependency as the entry above, named a second time by the shellcheck directive that tells the linter where the sourced guard lives. Accepted for the same reason and on the same terms — if either line changes, both fingerprints miss and the blocker returns."
+    }
+  ]
+}
