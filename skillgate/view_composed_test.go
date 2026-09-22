@@ -202,6 +202,39 @@ func TestComposedStageOrderIsMarkupThenCompaction(t *testing.T) {
 	}
 }
 
+// TestComposedViewIsScannedLastSoItCannotTakeAnEarlierViewsPlace pins the
+// registry-order property that makes "adding a view can only add findings"
+// true of this view in particular.
+//
+// Dedup is raw-first and keyed on (rule, file, line), so the *first* view to
+// reach a place is the one whose name the finding carries. The composed view
+// is a superset transform of two views that are already registered: were it
+// scanned before either of them, every finding they own would start arriving
+// tagged `markupCompact` instead, which is a silent relabelling of existing
+// output rather than an addition to it. Last is what keeps that from
+// happening, and the whole-repository differential's empty REMOVED set is the
+// measurement that agrees.
+func TestComposedViewIsScannedLastSoItCannotTakeAnEarlierViewsPlace(t *testing.T) {
+	names := ViewNames()
+	if got := names[len(names)-1]; got != viewMarkupCompact {
+		t.Errorf("the last view scanned is %q, want %q — a composed view scanned before its "+
+			"own stages' views would relabel their findings rather than add any", got, viewMarkupCompact)
+	}
+	// Non-vacuity: both views it composes really are scanned before it.
+	for _, earlier := range []string{viewCompactLetter, viewMarkup} {
+		at := -1
+		for i, n := range names {
+			if n == earlier {
+				at = i
+			}
+		}
+		if at < 0 {
+			t.Errorf("%s is not registered: this ordering claim is about a view that does not exist",
+				earlier)
+		}
+	}
+}
+
 // TestComposedViewMissesMarkupCharacterSeparators states the limit rather than
 // hiding it: when the letter-spacing separator is *itself* an inline-markup
 // delimiter, the markup stage reads the run's own separators as delimiters,
@@ -474,9 +507,14 @@ func TestComposedPipelineStaysLinearOnHostileLines(t *testing.T) {
 		{"fold rewrites and markup deletes together", strings.Repeat("**Ｘ**", n/9)},
 		{"all three stages on every character", strings.Repeat("*Ｘ* ", n/8)},
 	}
-	composed := viewBuilders[len(viewBuilders)-1]
-	if composed.name != viewMarkupCompact {
-		t.Fatalf("the composed view is not the last registry entry: got %q", composed.name)
+	composed, found := viewBuilder{}, false
+	for _, b := range viewBuilders {
+		if b.name == viewMarkupCompact {
+			composed, found = b, true
+		}
+	}
+	if !found {
+		t.Fatalf("no %s view is registered", viewMarkupCompact)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
