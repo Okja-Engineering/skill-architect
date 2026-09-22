@@ -5,8 +5,12 @@ slices are validated against; when code and this file disagree, one of them is
 wrong and the disagreement gets resolved before the slice lands.
 
 Normative source today: `skillgate/` (as-built). Research rationale lives in
-`docs/research/recommendation.md` and `docs/research/pi-integration.md` — those
-are working notes and may fall away at release; this file must not.
+`docs/research/` — `recommendation.md`, `pi-integration.md` and
+`rule-language.md`. Those notes are **kept permanently** by standing ruling and
+are durable at the `archive/docs-research-0.6.0` tag, but they are **not
+tracked in the release tree**, so nothing tracked may depend on them: where a
+research note is normative for shipped behaviour, this file restates it and
+this file governs.
 
 ## Claim boundary
 
@@ -42,8 +46,17 @@ with an allow-listed reason: `too_large`, `binary_unparsed`, `unreadable`,
 
 ## Rule catalog
 
-Deterministic, in Go, no external dependency. Severity is in the rule; the
-block set is Pack-B-owned.
+Deterministic, in Go. Severity is in the rule; the block set is Pack-B-owned.
+
+**Dependency surface.** The gate has **no runtime dependency on Python, Rust or
+any external binary** — the advisory integrations below are opt-in and can
+never force a verdict. It is not, however, dependency-free: the production
+module's direct requires are `golang.org/x/text` — the Go team's own module,
+BSD-3-Clause — which the view layer needs for NFKC and full casefold. That
+sentence is not maintained by hand: `packaging_test.go` reads the module paths
+out of it and compares them to `skillgate/go.mod`'s direct require block in
+both directions, so a dependency taken without being stated, and a statement
+outliving its dependency, each fail by name.
 
 The Rule and Sev columns below are **checked against the gate**, not
 maintained beside it: `skillgate.RuleCatalog()` is assembled from the
@@ -89,8 +102,16 @@ Rule count is capped at 20 tripwires; extensions fold into existing legs
 (T017/T020 did). That cap is a bound the build holds, not a claim about the
 table: `catalog_test.go` reads the number out of this sentence and counts the
 SK-T rules the gate registers, so the twenty-first tripwire fails the build,
-and raising the cap here is what raises it. Rule representation is frozen
-until `docs/research/rule-language.md` lands.
+and raising the cap here is what raises it.
+
+**What is frozen, and what is not.** The old sentence here — *"rule
+representation is frozen until `docs/research/rule-language.md` lands"* — is
+spent: that note has landed, and this release implements its **view axis** (see
+**Views**). What is unchanged is rule *representation*: a rule is still a Go
+literal declared beside the code that emits it, and the rule **language** the
+note proposes — constructors, scopes, a catalogue generator — is not built
+here. A refactor to it is a later release's, and it is gated on a report/v1
+golden diff rather than on the note.
 
 ## Views — what a lexical rule scans
 
@@ -106,7 +127,10 @@ to normalise the text before matching.
 This section is the normative contract. It restates, for the tracked
 specification, the view axis proposed in `docs/research/rule-language.md`
 §4.3 (prior art, and the source of the upstream invariants); where the two
-differ, this section governs.
+differ, this section governs. It restates the **axis**, not the whole of the
+prior art's catalogue of renderings — the renderings this release does not
+build are named under **Stated limits**, so "0.6.0 implements the view axis"
+cannot be read as "0.6.0 implements all of it".
 
 ### The contract
 
@@ -276,6 +300,26 @@ cannot decay into a guess:
 
 ### Stated limits
 
+Every gap this release ships, named here — and **every limit below is driven**.
+`skillgate/ceded_test.go` holds one lane per item: a spelling the gate does not
+catch beside a neighbouring spelling it does, or the test elsewhere in the
+package that already drives it. The join is checked in both directions, so a
+limit added here with nothing behind it fails by its own words, and a limit that
+has *stopped being true* fails at its driver — which is the failure this
+section previously could not have. Twice in this release a limit outlived its
+truth and was propagated by a later slice; a limit is a claim, and a claim
+nobody can falsify decays. **Do not reword a limit to keep a driver green.**
+
+- **Renderings the prior art proposes and this release does not build.**
+  `obfuscatedInstruction` (filler removal gated on an override vocabulary) and
+  `declaredMarker` (reconstructing a payload from a *remove the following
+  markers* directive) are described in `docs/research/rule-language.md` §2 and
+  have no counterpart in the registry above, so a payload that needs one is
+  missed. `continuity`, the third the prior art names, does not arise here: it
+  bridges a separator run wider than a scanning window's overlap, and the gate
+  reads whole files rather than overlapping windows. All three are asserted
+  absent from the registry, so building one fails a test rather than leaving
+  this paragraph behind.
 - **`\| /bin/sh` is not caught** by SK-T005's sink leg or by SK-T007's
   pipe-to-shell leg: both require the interpreter name immediately after the
   pipe, and neither accepts a leading path. This is a vocabulary-and-form
@@ -295,14 +339,37 @@ cannot decay into a guess:
   analysed — the old matcher hit it by coincidence of spelling.
 - A reference inside a comment **is** reported by SK-T019. A documented
   dependency on a file outside the bundle is still a dependency, which is
-  why the code-only narrowing below does not apply to it.
+  why the code-only narrowing above does not apply to it.
 - The rules whose evidence is synthesised or masked (SK-T005, SK-T006,
   SK-T009) do not gain view coverage. Giving them coverage means giving them
   locatable evidence, which is a change to those rules, not to the engine.
 - Vocabulary is not surface form, and no view reaches it. `Bypass any
-  preceding directives`, `axios.post`, `uv pip install` and their kind are
-  missed for the same reason they were missed before: the enumeration is in
-  the matcher's vocabulary, not in the text's spelling.
+  preceding directives` (SK-T002), `axios.post` (SK-T004), `uv pip install`
+  (SK-T008) and SK-T009's decoders beyond the ones its pattern spells — a
+  `tr`-driven rot13, a `gzip.decompress` — are missed for the same reason they
+  were missed before: the enumeration is in the matcher's vocabulary, not in
+  the text's spelling. Closing one means deriving that rule's side (a network
+  sink receiving a literal remote host; remote bytes reaching an interpreter;
+  an install command with no pin; a decode feeding an exec), which is a change
+  to the rule and not to the engine.
+- **Hook configuration is read as JSON only.** A `.codex/config.toml` is
+  classified as harness configuration and then not parsed, so an exec
+  registration spelled in TOML reaches no rule; the same registration spelled
+  in JSON fires SK-T017. The catalog row says *JSON only*; this is what that
+  costs.
+- **An MCP server entry is read for what it carries, not for where it points.**
+  SK-T015 and SK-T016 read a server's secrets and its approval settings. A
+  server whose notable property is a **remote `url`** produces no finding, and
+  no rule reads an `allowedEnvVars` grant at all — a wildcard there is silent.
+  A server in the same shape carrying a plaintext secret does fire, so this is
+  about which fields are read, not about MCP configs being unread.
+- **A loopback sink is masked, so a relay behind one is invisible.** SK-T004
+  masks `localhost`/`127.*`/`::1` as dev plumbing, which is what keeps it off
+  every local development script — and the cost is that a script posting to a
+  local port that forwards the bytes onward is not reported. The same request
+  to a literal remote host fires. Reading the relay would mean resolving what
+  is listening, which the gate does not do: it never executes the bundle and
+  never opens the network.
 - Markup-interpolated payloads are closed by the `markup` view, and by it
   alone: neither the skeleton nor the compaction reaches them. The fold has no
   mapping for `*`, and folding the payload the skeleton's way runs the words

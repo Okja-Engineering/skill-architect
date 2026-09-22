@@ -76,6 +76,24 @@ type enumerationSubject struct {
 	artifact string
 	// documented is where the prose side came from, in words.
 	documented string
+	// orphanHint is the instruction given when the documented side has an
+	// entry the artifact does not. It is a field because the cause differs by
+	// subject and the wrong instruction sends the reader the wrong way: a
+	// catalog row with no rule really is a row that outlived its rule, while a
+	// stated limit with no lane is one nobody has driven yet. Empty means the
+	// default below.
+	orphanHint string
+}
+
+// defaultOrphanHint is what an extra documented entry usually means: the thing
+// it describes was removed or renamed and the entry did not follow.
+const defaultOrphanHint = "it was removed or renamed, and the entry outlived it"
+
+func (s enumerationSubject) orphan() string {
+	if s.orphanHint == "" {
+		return defaultOrphanHint
+	}
+	return s.orphanHint
 }
 
 var ruleCatalogSubject = enumerationSubject{
@@ -107,8 +125,8 @@ func enumerationDivergences(sub enumerationSubject, artifact, documented map[str
 	for _, id := range sortedKeys(documented) {
 		if _, ok := artifact[id]; !ok {
 			out = append(out, fmt.Sprintf(
-				"%s has an entry for %s %s (%s %q) and %s holds no such %s — it was removed or renamed, and the entry outlived it",
-				sub.documented, sub.noun, id, sub.claim, documented[id], sub.artifact, sub.noun))
+				"%s has an entry for %s %s (%s %q) and %s holds no such %s — %s",
+				sub.documented, sub.noun, id, sub.claim, documented[id], sub.artifact, sub.noun, sub.orphan()))
 		}
 	}
 	return out
@@ -155,13 +173,22 @@ var specCatalogTable = publishedTable{
 	validKey:  reRuleID.MatchString,
 }
 
-// parse reads the first table under the section into key → second column.
+// specLine is one line of a spec section, carrying the line number it came
+// from so a diagnostic can point at the file rather than quote it.
+type specLine struct {
+	n    int // 1-based line number in specPath
+	text string
+}
+
+// specSection returns the lines under a heading, up to the next heading of any
+// level.
 //
-// The prose side, and it is read as prose: the section heading is located, the
-// first table under it is the one meant, and every row of it must be readable.
-// A row this parser cannot read is an error rather than a skip — a silently
-// dropped row is a row the comparison never sees.
-func (pt publishedTable) parse(t *testing.T) map[string]string {
+// One reader for every section-scoped check in the package: the tables here and
+// in view_test.go, and the limit lists in ceded_test.go. Stopping at any `#`
+// rather than at `## ` matters — the view tables are `###` siblings, and a
+// reader that only stopped at `## ` ran into the next subsection and was saved
+// only by the table happening to end first.
+func specSection(t *testing.T, heading string) []specLine {
 	t.Helper()
 	data, err := os.ReadFile(specPath)
 	if err != nil {
@@ -171,22 +198,37 @@ func (pt publishedTable) parse(t *testing.T) map[string]string {
 
 	start := -1
 	for i, line := range lines {
-		if strings.TrimSpace(line) == pt.heading {
+		if strings.TrimSpace(line) == heading {
 			start = i + 1
 			break
 		}
 	}
 	if start < 0 {
-		t.Fatalf("%s has no %q section: without it the comparison below holds over nothing", specPath, pt.heading)
+		t.Fatalf("%s has no %q section: without it the comparison below holds over nothing", specPath, heading)
 	}
 
+	var out []specLine
+	for i := start; i < len(lines); i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "#") {
+			break
+		}
+		out = append(out, specLine{n: i + 1, text: lines[i]})
+	}
+	return out
+}
+
+// parse reads the first table under the section into key → second column.
+//
+// The prose side, and it is read as prose: the section heading is located, the
+// first table under it is the one meant, and every row of it must be readable.
+// A row this parser cannot read is an error rather than a skip — a silently
+// dropped row is a row the comparison never sees.
+func (pt publishedTable) parse(t *testing.T) map[string]string {
+	t.Helper()
 	out := map[string]string{}
 	inTable := false
-	for i := start; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(line, "## ") {
-			break // the next section: the table was the one above
-		}
+	for _, sl := range specSection(t, pt.heading) {
+		line := strings.TrimSpace(sl.text)
 		if !strings.HasPrefix(line, "|") {
 			if inTable {
 				break // the table ended
@@ -197,7 +239,7 @@ func (pt publishedTable) parse(t *testing.T) map[string]string {
 		cells := tableCells(line)
 		if len(cells) < 2 {
 			t.Errorf("%s:%d is a table row with %d cells: the %q table is %s",
-				specPath, i+1, len(cells), pt.heading, pt.shape)
+				specPath, sl.n, len(cells), pt.heading, pt.shape)
 			continue
 		}
 		if cells[0] == pt.headerKey || isRuleSeparator(cells[0]) {
@@ -207,7 +249,7 @@ func (pt publishedTable) parse(t *testing.T) map[string]string {
 		if !pt.validKey(key) {
 			t.Errorf("%s:%d: %q is in the %q column of the %q table and is not a %s — a row this "+
 				"parser cannot read is a row the check never compares",
-				specPath, i+1, key, pt.headerKey, pt.heading, pt.keyNoun)
+				specPath, sl.n, key, pt.headerKey, pt.heading, pt.keyNoun)
 			continue
 		}
 		if prev, dup := out[key]; dup {
