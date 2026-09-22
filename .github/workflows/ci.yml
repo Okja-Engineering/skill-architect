@@ -143,6 +143,12 @@ jobs:
         run: tests/test_f01.sh
       - name: Run F02 unified audit report tests
         run: tests/test_f02.sh
+      # Builds the gate from the source skills/skill-gate/SKILL.md declares, so
+      # it needs the toolchain installed at the top of this job — the same
+      # reason test_skill.sh needs it, and the reason setup-go sits above the
+      # suites rather than beside the Go steps below.
+      - name: Run skillgate CLI contract tests
+        run: tests/test_gate.sh
 
       # The same commands the release checklist runs locally. A diff that adds
       # a parser and claims vet, gofmt and the race detector were run has to be
