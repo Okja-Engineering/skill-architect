@@ -136,6 +136,25 @@ that points at the wrong line is worse than no report. So:
 |---|---|
 | raw | The file's bytes, unchanged. Always present, always scanned first. |
 | skeleton | Per-character NFKC, then the UTS #39 ASCII confusable skeleton, then removal of `Cf`, the non-whitespace `Cc` and `Other_Default_Ignorable_Code_Point`. Three Unicode classes and one generated table — not a list of spellings. NFKC is applied per character so one character maps to one span, which is what makes the offset map exact; the cost is that a combining sequence spelled base + mark is not composed. |
+| compactLetter | The skeleton fold, then the separators inside letter-spacing runs removed. A **letter-spacing run** is six or more isolated letters in a row, each separated from the next by a non-empty gap holding no letter and no digit. Within a run the narrowest gap is the letter separator and is deleted; a wider gap is where the words divide and becomes one space. Derived from the run's shape, so every separator closes at once — space, NBSP, `.`, `-`, `_`, `*`, a non-ASCII Z-separator, U+FFFD and the filler nobody has thought of yet are all simply "not a letter". |
+
+A view is an ordered pipeline of stages, and `compactLetter` **is** `skeleton`
+plus one more stage: each stage is written against the text the stage before
+it produced, and the offset maps are composed, so a view anchors back to raw
+however many stages made it.
+
+Two bounds on the compaction are part of the contract, not implementation
+detail:
+
+- **It never crosses a line break**, so a view has the same lines as the
+  file and view line *i* is raw line *i*. Every rule cuts its evidence on
+  lines; a compaction that swallowed a newline would move every finding after
+  it and would let two lines' text form a match that is in neither.
+- **It only ever brings letters together.** Gaps are removed or become one
+  space, and text outside a run is untouched, so — unlike a fold — the
+  compaction cannot manufacture syntax out of prose. That is the failure mode
+  the skeleton view measured, where NFKC turned a bare `‥` into `..` and fired
+  a path-traversal blocker.
 
 `skillgate.ViewNames()` returns this list from the registry that builds them,
 and `view_test.go` compares the two: a view with no row here, and a row here
@@ -171,9 +190,21 @@ compares the set to this table in both directions.
   preceding directives`, `axios.post`, `uv pip install` and their kind are
   missed for the same reason they were missed before: the enumeration is in
   the matcher's vocabulary, not in the text's spelling.
-- Letter-spaced and markup-interpolated payloads (`i g n o r e …`,
-  `Ignore **all previous** instructions`) need their own views; the skeleton
-  does not close them.
+- Markup-interpolated payloads (`Ignore **all previous** instructions`) need
+  their own view; neither the skeleton nor the compaction closes them.
+- A letter-spaced payload whose **word boundaries are also invisible** — a
+  zero-width character between every letter *and* between every word — is not
+  reached by any view. The skeleton strips the invisible characters before
+  the compaction is asked to look, which is what closes the ordinary
+  invisible-separator spelling, but it leaves one unbroken word, and every
+  phrase rule is written with whitespace between its words. Spelled the
+  readable way, with the word boundaries visible, the fold closes it on its
+  own.
+- Compaction takes a run's narrowest gap as its letter separator, so a run
+  that is entirely one word and a run whose every gap is the same width
+  compact to one word — which is correct — but a payload that spaces its
+  words *narrower* than its letters is not reconstructed. That spelling is
+  not readable as the instruction it is imitating.
 
 ## Reference reachability (SK-G003)
 
