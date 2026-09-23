@@ -4,6 +4,11 @@ A plugin of Agent Skills for auditing and improving Agent Skills. It codifies th
 
 Read the research and rationale at [`PRINCIPLES.md`](PRINCIPLES.md).
 
+**Delivery.** The two skills below ship as a plugin. `profiler` and `skillgate` are
+local binaries: a tool that tells you whether a skill is safe to install cannot require
+you to install it as a skill. [`RUNBOOK.md`](RUNBOOK.md) covers the plugin route only —
+the binary release route is not designed yet.
+
 ## Why
 
 Skills are instructions read by an LLM. That runtime is unreliable. A broken skill usually fails quietly:

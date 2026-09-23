@@ -1,7 +1,35 @@
 # Runbook — cutting a release
 
-How `skill-architect` gets from trunk to the people who install it, and the one
-ordering rule that must not be broken.
+**TL;DR** — `main` is trunk and moves freely. The default branch is the publish
+pointer: an unpinned install gets whatever it points at. To cut a release: bump
+the five version files on `main`, **tag that commit**, then merge `main` into
+`release`. Tag before the branch moves, never after. `tests/test_release.sh`
+enforces the order.
+
+## Scope — read this before using it
+
+This runbook covers **the two skills**, which reach users as a plugin.
+
+It does **not** cover `skillgate` or `profiler`. Those ship as local binaries,
+and a binary is released by building and tagging an executable — not by moving a
+branch that users clone. **That route is not designed yet.** Nothing below
+should be read as covering it.
+
+### What ships as what
+
+| Artifact | Ships as | Released how |
+|---|---|---|
+| `skill-audit`, `skill-rewrite` | skills, inside the plugin | this runbook |
+| `profiler` | local binary | **not yet designed** |
+| `skillgate` | local binary | **not yet designed**, and not on `main` yet |
+
+Why the split: a tool that tells you whether a skill is safe to install cannot
+require you to install it as a skill. The static gate must run before you trust
+the ecosystem it checks.
+
+This supersedes the earlier assumption that the product form is fixed as an
+installable plugin. The plugin stays the route for the two skills, and the
+mechanics below are unchanged for them.
 
 ## The problem this solves
 
