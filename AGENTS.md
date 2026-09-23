@@ -15,6 +15,13 @@ Before building a custom solution, check whether an existing, maintained tool al
 ## Git
 - Do not add Co-Authored-By or "Generated with" trailers to commits.
 
+## Documents
+- **Lead with a TL;DR.** State the conclusion first, in a sentence or two. A reader who stops there should still have the answer.
+- **Unslop.** Cut throat-clearing, restatement, and stacked hedges. Say an uncertain thing plainly once rather than qualifying it three times.
+- **Prefer a table or a short list to a paragraph** whenever the content is structured.
+- **Say what a document does not cover**, near the top, when its scope is narrower than its title suggests.
+- These rules apply to runbooks, specs, reports, and PR bodies — not just user-facing docs.
+
 ## Evidence labels
 - Specification — from the Agent Skills spec or official docs
 - External evidence — from third-party tools or benchmarks
