@@ -823,6 +823,24 @@ There is no `codex plugin install`. `codex plugin --help` lists `add`, `list`, `
 and `remove`, and installing takes the same two steps as Claude Code: register a
 marketplace, then add the plugin from it.
 
+**`.claude-plugin/marketplace.json` is read by two agents, not one.** Codex has no
+catalogue file of its own: it reads Claude Code's. `codex plugin list` prints the path
+it read, and it is `.claude-plugin/marketplace.json` — verified live against
+`codex-cli 0.156.1`. So an edit to that file changes what two agents install, and a
+change that suits one can break the other. Treat it as a shared surface:
+`tests/test_release.sh` holds its entries to the version the plugin actually installs,
+and any change to the *shape* of the `source` field needs checking against both CLIs
+rather than one. (Devin's manifest precedence is `.devin-plugin/plugin.json` >
+`.claude-plugin/plugin.json` > root `plugin.json`, so it falls back to Claude's
+*plugin* manifest too — this repository ships `.devin-plugin/plugin.json`, so the
+fallback is not reached today.)
+
+The command above names no branch, and neither does any other route here, so every one
+of them serves whatever the repository's **default branch** holds. That branch is the
+release pointer: `main` is trunk and moves freely, and the default branch moves only
+when a release is cut. [`RUNBOOK.md`](RUNBOOK.md) is how a release is cut and what the
+ordering rule is.
+
 All native plugins use the same namespace:
 
 ```text
@@ -981,6 +999,7 @@ tests/test_walk.sh
 tests/test_rewrite.sh
 tests/test_f01.sh
 tests/test_f02.sh
+tests/test_release.sh
 
 # Profiler tests (Go)
 cd profiler && go test ./...
