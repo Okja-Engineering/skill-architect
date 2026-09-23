@@ -1,7 +1,6 @@
 package skillgate
 
 import (
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -395,29 +394,7 @@ func TestComposedViewOffsetMapIsLoadBearing(t *testing.T) {
 // Both halves bite: a hit outside the hostile corpus is that failure, and
 // zero hits anywhere would mean the sweep had gone vacuous.
 func TestComposedViewFiresOnlyOnHostileFixtures(t *testing.T) {
-	if _, err := os.Stat("../README.md"); err != nil {
-		t.Skip("not running inside the repository")
-	}
-	rep, err := NewEngine().Gate("..", optsForTest())
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostile := 0
-	for _, f := range rep.Findings {
-		if f.View != viewMarkupCompact {
-			continue
-		}
-		if strings.Contains(f.File, "testdata/hostile/") {
-			hostile++
-			continue
-		}
-		t.Errorf("the composed view produced %s at %s:%d — %q",
-			f.RuleID, f.File, f.Line, f.Evidence)
-	}
-	if hostile == 0 {
-		t.Error("the composed view found nothing anywhere in the repository, not even in the " +
-			"hostile fixtures: this sweep is proving nothing")
-	}
+	assertViewFiresOnlyOnHostileFixtures(t, viewMarkupCompact, "composed")
 }
 
 // TestComposedViewManufacturesNoLettersOrPunctuation pins what the composition

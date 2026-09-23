@@ -199,6 +199,19 @@ jobs:
       # Every module is attempted before the step fails: "profiler is green and
       # skillgate is red" is information that a loop stopping at the first
       # failure would have thrown away.
+      # -timeout: `go test`'s default is 10 minutes *per package*, and under
+      # -race on a three-core macOS runner the skillgate package has come
+      # within reach of it. A package that times out reports the test that
+      # happened to be running, not the tests that consumed the budget — so
+      # the failure gets attributed to whoever added the last test rather
+      # than to the cost that was already there. That misattribution has
+      # already happened once in this release.
+      #
+      # This is the cheap half of the guard and it is deliberately generous;
+      # the real half is keeping the package's cost down, which is why the
+      # whole-repository view sweep is gated once and shared rather than run
+      # per view. A budget this size failing is a genuine runaway, not a slow
+      # runner.
       - name: Race-test every module in the workspace
         run: |
           modules="$(go list -m -f '{{.Dir}}')"
@@ -206,6 +219,6 @@ jobs:
           status=0
           while IFS= read -r dir; do
             echo "== $dir"
-            ( cd "$dir" && go test -race -count=1 ./... ) || status=1
+            ( cd "$dir" && go test -race -count=1 -timeout 30m ./... ) || status=1
           done <<< "$modules"
           exit $status

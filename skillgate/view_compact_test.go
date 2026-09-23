@@ -574,29 +574,7 @@ func TestCompactionRemovesOnlySeparators(t *testing.T) {
 //
 // If it fails on a real document that is a *result*, not a test to relax.
 func TestCompactLetterViewFiresOnlyOnHostileFixtures(t *testing.T) {
-	if _, err := os.Stat("../README.md"); err != nil {
-		t.Skip("not running inside the repository")
-	}
-	rep, err := NewEngine().Gate("..", optsForTest())
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostile := 0
-	for _, f := range rep.Findings {
-		if f.View != viewCompactLetter {
-			continue
-		}
-		if strings.Contains(f.File, "testdata/hostile/") {
-			hostile++
-			continue
-		}
-		t.Errorf("the compact view produced %s at %s:%d — %q",
-			f.RuleID, f.File, f.Line, f.Evidence)
-	}
-	if hostile == 0 {
-		t.Error("the compact view found nothing anywhere in the repository, not even in the " +
-			"hostile fixtures: this sweep is proving nothing")
-	}
+	assertViewFiresOnlyOnHostileFixtures(t, viewCompactLetter, "compact")
 }
 
 // --- the composed offset map ----------------------------------------------
