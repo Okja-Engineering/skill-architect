@@ -2,7 +2,6 @@ package skillgate
 
 import (
 	"context"
-	"encoding/json"
 	"os/exec"
 	"strconv"
 	"time"
@@ -46,17 +45,14 @@ func runSkillValidator(l *Ledger, t *Target) ([]Finding, *TokenBudget, *SkippedC
 	ctx, cancel := context.WithTimeout(context.Background(), skillValidatorTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "check", "-o", "json", l.Root)
-	out, err := cmd.Output()
-	if err != nil {
-		reason := "check failed: " + err.Error()
-		if ctx.Err() == context.DeadlineExceeded {
-			reason = "check timed out after " + skillValidatorTimeout.String()
-		}
-		return nil, nil, &SkippedCheck{Check: "skill-validator", Reason: reason}
-	}
+	// Output() returns what the tool printed whatever the exit status, and
+	// skill-validator reports conformance errors *by exiting 1* — so the
+	// run error is carried to externalOutcome as evidence rather than used
+	// as the decision. See external.go.
+	out, runErr := cmd.Output()
 	var rep svReport
-	if err := json.Unmarshal(out, &rep); err != nil {
-		return nil, nil, &SkippedCheck{Check: "skill-validator", Reason: "report unparseable: " + err.Error()}
+	if skip := externalOutcome(ctx, "skill-validator", "check", skillValidatorTimeout, runErr, out, &rep); skip != nil {
+		return nil, nil, skip
 	}
 
 	var findings []Finding

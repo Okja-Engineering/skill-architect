@@ -255,6 +255,18 @@ interpreter run it. A file whose language the gate does not know has no
 commentary and the rule keeps its full reach, so losing reach requires
 positively identifying the grammar.
 
+**`scriptLangs` knows one comment form per language — the line comment — and
+no block form.** A Python docstring opens with `"""` and a JSDoc continuation
+line with `*`, so neither is recognised as commentary and both are scanned as
+live code. The failure direction is over-firing, which is the safe one, but
+say plainly what this is: it is a matcher listing one spelling where the
+vocabulary is grammar, which is the defect class this release exists to close,
+still live inside the repair the release shipped for it. It was invisible to
+this repository because its scripts are shell and its programs are Go; S14
+measured four `SK-T010` findings of exactly this shape on a corpus of Python
+and JavaScript. Closing it needs multi-line comment state, which is a change
+to the projection rather than to the table, and it is **not** in 0.6.0.
+
 | Rule | Why it is code-only |
 |---|---|
 | SK-T010 | Its verb is *touches* — the finding claims the script reaches into another harness's config directory, and a comment reaches into nothing. Measured: it flagged `skills/skill-rewrite/scripts/draft-rewrite.sh` six times, on six comments describing the containment bound that script enforces, and never on the live line naming all five protected directories. |
