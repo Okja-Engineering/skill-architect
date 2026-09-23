@@ -260,3 +260,116 @@ func TestG003CleanOnOwnSkills(t *testing.T) {
 		t.Skip("own skills not present")
 	}
 }
+
+// SK-G001 carries a line number.
+//
+// It did not, and it is 81–94% of everything the gate reports on bundles
+// this project did not write (S14, measured across three estates), so the
+// large majority of an operator's report could not be navigated to. Every
+// other rule carried a line; this one carried `file` and nothing else.
+//
+// The property that made the repair safe is the one asserted hardest below:
+// it changes *what a finding says*, never *which findings fire*. The
+// reference is still deduped on (file, reference) alone — adding the offset
+// to that key would turn one dangling reference mentioned three times into
+// three findings, which is a change to the report, not to its addressing.
+func TestG001CarriesTheLineTheReferenceIsOn(t *testing.T) {
+	root := writeBundle(t, map[string]string{
+		"SKILL.md": "---\nname: demo\ndescription: d\n---\n" +
+			"# demo\n" +
+			"\n" +
+			"Intro paragraph with no references at all.\n" +
+			"\n" +
+			"See [the guide](references/missing-guide.md) for details.\n" +
+			"\n" +
+			"And `scripts/absent.sh` runs it.\n",
+	})
+	rep, err := NewEngine().Gate(root, optsForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int{
+		"references/missing-guide.md": 9,
+		"scripts/absent.sh":           11,
+	}
+	got := map[string]int{}
+	for _, f := range rep.Findings {
+		if f.RuleID != "SK-G001" {
+			continue
+		}
+		if f.Line == 0 {
+			t.Errorf("SK-G001 on %q carries no line — the finding cannot be navigated to", f.Evidence)
+		}
+		got[f.Evidence] = f.Line
+	}
+	for ev, line := range want {
+		if got[ev] != line {
+			t.Errorf("SK-G001 for %q reported line %d, want %d", ev, got[ev], line)
+		}
+	}
+}
+
+// TestG001ReportsOneFindingPerReferenceNotPerMention is the guard on the
+// property above: the offset rides on the finding, never on its identity.
+func TestG001ReportsOneFindingPerReferenceNotPerMention(t *testing.T) {
+	root := writeBundle(t, map[string]string{
+		"SKILL.md": "---\nname: demo\ndescription: d\n---\n" +
+			"First mention of `scripts/absent.sh`.\n" +
+			"Second mention of `scripts/absent.sh`.\n" +
+			"Third mention of `scripts/absent.sh`.\n",
+	})
+	rep, err := NewEngine().Gate(root, optsForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n, line int
+	for _, f := range rep.Findings {
+		if f.RuleID == "SK-G001" && f.Evidence == "scripts/absent.sh" {
+			n++
+			line = f.Line
+		}
+	}
+	if n != 1 {
+		t.Fatalf("one dangling reference mentioned three times produced %d findings, want 1", n)
+	}
+	// The earliest mention, because refTokens is sorted by offset — a report
+	// that cited the third mention would send the reader to the wrong place
+	// first.
+	if line != 5 {
+		t.Errorf("reported line %d, want 5 — the first mention in the file", line)
+	}
+}
+
+// TestG001CitesTheEarliestMentionAcrossExtractors is what makes the offset
+// sort load-bearing rather than decorative.
+//
+// refTokens runs three patterns over the whole text in turn — markdown
+// links, then backticks, then bare payload paths — so their results
+// interleave and the raw append order is "whichever pattern ran first",
+// not "whichever came first in the file". The function's doc comment has
+// always claimed source order; the sort is what makes that true.
+//
+// Here the *bare* mention is on line 5 and the *backticked* one on line 6,
+// and the bare-path pattern runs last. Unsorted, the reader is sent to
+// line 6 while line 5 is sitting above it.
+func TestG001CitesTheEarliestMentionAcrossExtractors(t *testing.T) {
+	root := writeBundle(t, map[string]string{
+		"SKILL.md": "---\nname: demo\ndescription: d\n---\n" +
+			"Run scripts/absent.sh first.\n" +
+			"Then `scripts/absent.sh` again.\n",
+	})
+	rep, err := NewEngine().Gate(root, optsForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range rep.Findings {
+		if f.RuleID == "SK-G001" && f.Evidence == "scripts/absent.sh" {
+			if f.Line != 5 {
+				t.Fatalf("cited line %d, want 5 — the earliest mention, which a "+
+					"later-running extractor found", f.Line)
+			}
+			return
+		}
+	}
+	t.Fatal("no SK-G001 for scripts/absent.sh")
+}
