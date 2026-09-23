@@ -1,16 +1,39 @@
 name: CI
 
+# `main` is trunk. `release` is what users install: it is the branch an
+# unpinned clone lands on, so it is covered here as well as trunk.
+#
+# A merge into `release` re-runs the whole suite rather than trusting the trunk
+# run that preceded it. Three reasons, and none of them is caution:
+#
+#   - the repository ruleset requires the status check named `test` on the
+#     default branch, and the default branch is to become `release`. A required
+#     check that never runs on the branch it is required for is not a check
+#     being trusted, it is a merge that can never go green.
+#   - `tests/test_release.sh` has a half that only executes on `release` — that
+#     the version the manifests declare is one some tag names. A trunk run
+#     cannot assert it, because on trunk it is deliberately false.
+#   - the merge result is a tree, and if `release` has ever diverged from the
+#     commit trunk tested, it is a tree no run has seen.
 on:
   push:
-    branches: [main]
+    branches: [main, release]
   pull_request:
-    branches: [main]
+    branches: [main, release]
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tags, in full. tests/test_release.sh decides whether `release`
+          # carries a released version by asking whether a tag names this
+          # commit; under the default shallow, tagless checkout it would read
+          # "not fetched" as "never released" and fail every release merge. The
+          # suite refuses to reach a verdict without tags rather than guessing,
+          # so this is what keeps that precondition true.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -44,6 +67,13 @@ jobs:
         run: tests/test_f01.sh
       - name: Run F02 unified audit report tests
         run: tests/test_f02.sh
+      # The release pointer: that every manifest agrees on the version, that no
+      # marketplace entry advertises or pins something the plugin does not
+      # install, and — on `release` only — that the version it carries is one a
+      # tag names. Nothing in CI validated a manifest before this step, and the
+      # drift it refuses is invisible to `claude plugin validate --strict`.
+      - name: Run release-pointer tests
+        run: tests/test_release.sh
       - uses: actions/setup-go@v5
         with:
           go-version-file: profiler/go.mod
