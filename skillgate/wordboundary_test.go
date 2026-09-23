@@ -6,7 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -68,6 +71,22 @@ func ruleRegexes() map[string]*regexp.Regexp {
 	return out
 }
 
+// contextAround renders a violation's surroundings without letting the
+// snippet run past the line it was found on.
+func contextAround(text string, start, end int) string {
+	lo := start - 16
+	if lo < 0 {
+		lo = 0
+	}
+	if nl := strings.LastIndexByte(text[lo:start], '\n'); nl >= 0 {
+		lo += nl + 1
+	}
+	if nl := strings.IndexByte(text[start:end], '\n'); nl >= 0 {
+		end = start + nl
+	}
+	return strings.TrimSpace(text[lo:end])
+}
+
 func isWordByte(b byte) bool {
 	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_'
 }
@@ -87,8 +106,7 @@ func TestRuleVocabularyIsWordsNotSubstrings(t *testing.T) {
 	type hit struct {
 		file, context string
 	}
-	var violations []hit
-	var files int
+	var paths []string
 	err := filepath.Walk("../", func(p string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return nil
@@ -102,34 +120,84 @@ func TestRuleVocabularyIsWordsNotSubstrings(t *testing.T) {
 		if fi.Size() > 1<<20 {
 			return nil
 		}
-		b, err := os.ReadFile(p)
-		if err != nil || bytes.IndexByte(b, 0) >= 0 {
-			return nil
-		}
-		files++
-		for _, line := range strings.Split(string(b), "\n") {
-			for name, re := range res {
-				for _, m := range re.FindAllStringIndex(line, -1) {
-					if m[0] == 0 || !isWordByte(line[m[0]-1]) || !isWordByte(line[m[0]]) {
-						continue
-					}
-					lo := m[0] - 16
-					if lo < 0 {
-						lo = 0
-					}
-					violations = append(violations, hit{p, name + ": …" + strings.TrimSpace(line[lo:m[1]])})
-				}
-			}
-		}
+		paths = append(paths, p)
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// Scanned in parallel, and the corpus is deliberately *not* pruned to
+	// make it fast. This is 3.2 MB of real text against 50 patterns; the
+	// first spelling of it ran them over every line rather than every file
+	// and took 87s under `-race`, which blew the 600s package budget on a
+	// macOS runner — a cost that grew with the repository, so it passed
+	// twice and then stopped. Shrinking the corpus would have bought speed
+	// by weakening the denominator, which is the one thing this check has.
+	//
+	// Whole file per pattern is equivalent to line by line here: a match
+	// beginning mid-word needs a word byte immediately before it, and a
+	// `^`-anchored leg always starts at a line or text boundary where the
+	// preceding byte is a newline or nothing. The legs whose behaviour
+	// differs between the two framings are exactly the legs that can never
+	// produce a violation.
+	var (
+		mu         sync.Mutex
+		violations []hit
+		files      int
+		work       = make(chan string)
+		wg         sync.WaitGroup
+	)
+	workers := runtime.GOMAXPROCS(0)
+	if workers > 8 {
+		workers = 8
+	}
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range work {
+				b, err := os.ReadFile(p)
+				if err != nil || bytes.IndexByte(b, 0) >= 0 {
+					continue
+				}
+				text := string(b)
+				var local []hit
+				for name, re := range res {
+					for _, m := range re.FindAllStringIndex(text, -1) {
+						if m[0] == 0 || !isWordByte(text[m[0]-1]) || !isWordByte(text[m[0]]) {
+							continue
+						}
+						local = append(local, hit{p, name + ": …" + contextAround(text, m[0], m[1])})
+					}
+				}
+				mu.Lock()
+				files++
+				violations = append(violations, local...)
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, p := range paths {
+		work <- p
+	}
+	close(work)
+	wg.Wait()
+
 	if files < 100 {
 		t.Fatalf("walked only %d files — the corpus is not the repository and this check "+
 			"is asserting nothing", files)
 	}
+	// Sorted before reporting: the scan is concurrent and the pattern set is
+	// a map, so both the order violations arrive in and which file wins the
+	// dedup would otherwise vary run to run. A failure message that changes
+	// between identical runs is a failure nobody can diff.
+	sort.Slice(violations, func(i, j int) bool {
+		if violations[i].file != violations[j].file {
+			return violations[i].file < violations[j].file
+		}
+		return violations[i].context < violations[j].context
+	})
 	seen := map[string]bool{}
 	for _, v := range violations {
 		if seen[v.context] {
