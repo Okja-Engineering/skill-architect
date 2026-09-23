@@ -26,6 +26,54 @@ this file governs.
   never claimed closed. Consequence: **`CAUTION` is the reachable ceiling**;
   `APPROVE` is unreachable until a harness closes that leg.
 
+### Measured accuracy on bundles this project did not write
+
+`AGENTS.md:28` makes dogfooding a release gate, and 0.6.0 passes it: the gate
+was run against this repository's own three skills, 29 installed skills, 31
+third-party marketplace bundles and a 300-document corpus. **Stating what that
+found is part of passing it.** A gate that reports its verdict without
+reporting its own measured error rate is making an accuracy claim its evidence
+does not support.
+
+On foreign bundles the gate **over-fires in five known shapes**, none of them
+fixed in 0.6.0, all of them reproduced and located:
+
+| Shape | Effect | Example |
+|---|---|---|
+| Emoji ZWJ sequences | `SK-T001`, **blocker** | `👨‍💻` is a grapheme joiner (UTS #51), not a hidden-instruction channel |
+| The canonical placeholder secret | `SK-T006`, **blocker** | `export API_KEY="your-api-key-here"` — and the evidence is *masked*, so a reviewer cannot tell it is a placeholder without opening the file |
+| Path *templates* | `SK-T019` **blocker**, `SK-G001` medium | `{outputs_dir}/../grading.json`, `output/[slug]-[type].md` — a path with an unresolved placeholder segment cannot name a file, by construction |
+| Plugin-packaged skills | `SK-T019`, **blocker** | `../hook-development/` between sibling skills *inside one plugin*: the install unit is the plugin, the gate's bundle root is the skill directory, so every intra-plugin reference reads as an escape |
+| Documents that warn about prompt injection | `SK-T002`, **blocker** | prose quoting `"ignore previous instructions"` in order to refuse it — the documents doing the right thing are the ones accused |
+
+And one rule dominates the output:
+
+| estate | `SK-G001` share of all findings |
+|---|---|
+| 300-document corpus | 296 of 335 — **88%** |
+| third-party bundles | 208 of 256 — **81%** |
+| installed skills | 15 of 16 — **94%** |
+
+Essentially all of the sampled ones are prose in a planning document naming a
+path in another repository. **An operator gating a bundle they did not write
+should expect roughly four in five findings to be `SK-G001`, and should read
+the other fifth first.** Those findings now carry line numbers; before 0.6.0
+they did not.
+
+Two of the five shapes are blocked on rulings this release has not made: the
+template class wants an `unverified` disposition the gate does not have —
+though `skills/skill-audit`'s own `check-paths.sh` has had exactly that class
+for longer than the gate has existed — and the plugin-root class wants the
+gate to be pointable at the *installed* unit rather than a subdirectory of it.
+A maintainer can record an accepted finding in a baseline; **an operator
+gating somebody else's plugin cannot**, which is why that one needs a real
+answer rather than a recorded acceptance.
+
+Two things the dogfood confirmed the gate gets **right** on the same corpora,
+recorded because a disclosure that only lists failures is not a measurement:
+`SK-T007` on `curl -fsSL … | bash` in two plugin READMEs, and `SK-T013` on
+seven bundles shipping executables with no declared tool boundary.
+
 ## Audited unit and inputs
 
 - The audited unit is the **package** — a skill directory or a plugin/package

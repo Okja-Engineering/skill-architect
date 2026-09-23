@@ -34,6 +34,9 @@ var fileRefExts = []string{".md", ".mdc", ".sh", ".bash", ".py", ".js", ".mjs", 
 // as pointing at a file or at a directory.
 type refToken struct {
 	text string
+	// at is the byte offset in the file's text where the token was found,
+	// so a finding about it can name the line the author has to open.
+	at int
 	// explicit marks a markdown link target — the one form where a bare
 	// filename is a reference rather than a concept.
 	explicit bool
@@ -47,7 +50,7 @@ type refToken struct {
 // only the terminal question (file or directory?) differs between them.
 func refTokens(f *FileContent) []refToken {
 	var out []refToken
-	add := func(s string, explicit bool) {
+	add := func(s string, at int, explicit bool) {
 		s = strings.TrimSpace(s)
 		s = strings.Trim(s, `'"`)
 		s = strings.TrimRight(s, ".,;:)]}>")
@@ -65,17 +68,24 @@ func refTokens(f *FileContent) []refToken {
 		if strings.ContainsAny(s, "$<>*{}") || strings.HasPrefix(s, "-") {
 			return
 		}
-		out = append(out, refToken{text: s, explicit: explicit})
+		out = append(out, refToken{text: s, at: at, explicit: explicit})
 	}
-	for _, m := range reMdLink.FindAllStringSubmatch(f.Text, -1) {
-		add(m[1], true)
+	// The Index variants, so every token carries where it was found. The
+	// three extractors each sweep the whole text, so their results interleave
+	// rather than arrive in source order — the sort below makes the order
+	// this function has always documented actually true, which is what lets
+	// a finding cite the *first* place a reference appears rather than
+	// whichever pattern happened to run first.
+	for _, m := range reMdLink.FindAllStringSubmatchIndex(f.Text, -1) {
+		add(f.Text[m[2]:m[3]], m[2], true)
 	}
-	for _, m := range reBacktick.FindAllStringSubmatch(f.Text, -1) {
-		add(m[1], false)
+	for _, m := range reBacktick.FindAllStringSubmatchIndex(f.Text, -1) {
+		add(f.Text[m[2]:m[3]], m[2], false)
 	}
-	for _, m := range reBarePath.FindAllString(f.Text, -1) {
-		add(m, false)
+	for _, m := range reBarePath.FindAllStringIndex(f.Text, -1) {
+		add(f.Text[m[0]:m[1]], m[0], false)
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].at < out[j].at })
 	return out
 }
 
@@ -96,11 +106,11 @@ func isFileRef(s string) bool {
 // and end in a file extension qualify. Directory mentions, placeholders,
 // and command strings are prose — flagging them is the AE1 noise class this
 // graph exists to avoid.
-func extractRefs(f *FileContent) []string {
-	var refs []string
+func extractRefs(f *FileContent) []refToken {
+	var refs []refToken
 	for _, tok := range refTokens(f) {
 		if isFileRef(tok.text) {
-			refs = append(refs, tok.text)
+			refs = append(refs, tok)
 		}
 	}
 	return refs
@@ -194,7 +204,7 @@ func anyInspected(string) bool { return true }
 // walkRefs calls fn for every reference extracted from every inspected file
 // whose path satisfies include, with that file's resolution candidates in
 // precedence order. One traversal; each rule asks its own question of it.
-func walkRefs(l *Ledger, include func(string) bool, fn func(f *FileContent, ref string, targets []string)) {
+func walkRefs(l *Ledger, include func(string) bool, fn func(f *FileContent, ref refToken, targets []string)) {
 	for i := range l.Files {
 		f := &l.Files[i]
 		if f.Entry.Outcome != "inspected" || !include(f.Entry.Path) {
@@ -202,7 +212,7 @@ func walkRefs(l *Ledger, include func(string) bool, fn func(f *FileContent, ref 
 		}
 		dir := refDir(f.Entry.Path)
 		for _, ref := range extractRefs(f) {
-			fn(f, ref, refTargets(dir, ref))
+			fn(f, ref, refTargets(dir, ref.text))
 		}
 	}
 }
@@ -213,7 +223,7 @@ func walkRefs(l *Ledger, include func(string) bool, fn func(f *FileContent, ref 
 // points at its own file contributes none.
 func resolveEdges(l *Ledger, include func(string) bool) map[string][]string {
 	graph := map[string][]string{}
-	walkRefs(l, include, func(f *FileContent, _ string, targets []string) {
+	walkRefs(l, include, func(f *FileContent, _ refToken, targets []string) {
 		for _, t := range targets {
 			if l.Get(t) != nil && t != f.Entry.Path {
 				graph[f.Entry.Path] = append(graph[f.Entry.Path], t)
@@ -278,8 +288,14 @@ var ruleG001 = rule{
 	scanBundle: func(l *Ledger) []Finding {
 		var out []Finding
 		seen := map[string]bool{}
-		walkRefs(l, isLoadedText, func(f *FileContent, ref string, targets []string) {
-			key := f.Entry.Path + "\x00" + ref
+		walkRefs(l, isLoadedText, func(f *FileContent, ref refToken, targets []string) {
+			// Deduped on (file, reference) and nothing else, deliberately.
+			// Adding the offset to this key would turn one dangling
+			// reference mentioned three times into three findings, which
+			// would be a change to *what the gate reports* rather than to
+			// where it points. The first occurrence wins, and refTokens is
+			// sorted by offset, so that is the earliest one in the file.
+			key := f.Entry.Path + "\x00" + ref.text
 			if len(targets) == 0 || seen[key] {
 				return
 			}
@@ -292,7 +308,8 @@ var ruleG001 = rule{
 			out = append(out, Finding{
 				RuleID: "SK-G001", Severity: SeverityMedium, Quality: "reliability",
 				Message: "dangling reference: path resolves inside the bundle but no file exists",
-				File:    f.Entry.Path, Evidence: ref, EffortMinutes: 10, Source: "skillgate",
+				File:    f.Entry.Path, Line: f.LineNumber(ref.at),
+				Evidence: ref.text, EffortMinutes: 10, Source: "skillgate",
 			})
 		})
 		return out
