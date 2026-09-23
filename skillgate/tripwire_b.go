@@ -60,6 +60,10 @@ var (
 
 	// T015 — wildcard HTTP binding.
 	reWildcardBind = regexp.MustCompile(`(?i)"(url|host|bind|listen)"\s*:\s*"[^"]*(0\.0\.0\.0|http://\*|::/0)|0\.0\.0\.0:\d+`)
+
+	// reDevNull is the output sink T020 masks out: `2>/dev/null` discards
+	// what it is given and persists nothing.
+	reDevNull = regexp.MustCompile(`/dev/null`)
 )
 
 // isHarnessConfig reports whether a bundled path is harness configuration:
@@ -104,20 +108,31 @@ func suppressSameDirRefs(line, own string) string {
 	return strings.ReplaceAll(l, home, "~/"+own)
 }
 
-// harnessPathFindings runs a harness-path regex over a file's lines,
-// suppressing same-dotdir self-references.
-func harnessPathFindings(v *View, re *regexp.Regexp) []string {
+// harnessPathHits runs a harness-path regex over a file's lines, suppressing
+// same-dotdir self-references.
+//
+// Both readings are offset-preserving *where it matters*: normPathSep rewrites
+// `\` to `/`, one byte for one byte, so the text the pattern reads has the
+// view's own offsets and a matching line is a span of the view. The
+// self-reference suppression is not length-preserving and does not need to be
+// — it decides only *whether* the line fires, and never supplies the span.
+//
+// The rules used to return `strings.TrimSpace(line)` cut from the separator-
+// normalised copy, which is a different string from the view's line whenever
+// the line contains a backslash. The engine could not find it, so a derived
+// hit was dropped and a raw hit landed at line 0 quoting a line with the
+// backslash already rewritten.
+func harnessPathHits(v *View, re *regexp.Regexp) []hit {
 	own := ownHarnessDir(v.Path)
-	var out []string
-	for _, line := range strings.Split(normPathSep(v.Text), "\n") {
-		l := line
+	var out []hit
+	eachLine(normPathSep(v.Text), func(start, end int, line string) {
 		if own != "" {
-			l = suppressSameDirRefs(l, own)
+			line = suppressSameDirRefs(line, own)
 		}
-		if re.MatchString(l) {
-			out = append(out, strings.TrimSpace(line))
+		if re.MatchString(line) {
+			out = append(out, found(start, end))
 		}
-	}
+	})
 	return out
 }
 
@@ -133,7 +148,7 @@ var ruleT010 = rule{
 		"containment bound and never on the live line that names all five directories. " +
 		"A payload hidden in a comment still has to be assembled and run by live code, " +
 		"which is SK-T009's subject and is not elided here",
-	scan: func(v *View) []string { return harnessPathFindings(v, reClaudePaths) },
+	scan: func(v *View) []hit { return harnessPathHits(v, reClaudePaths) },
 }
 
 // T011 — reads of Cursor config paths.
@@ -144,7 +159,7 @@ var ruleT011 = rule{
 	codeOnly: "its verb is *reads*, and a comment reads nothing. Same subject and same " +
 		"reasoning as SK-T010: a skill that documents the Cursor paths it stays out of " +
 		"is describing the boundary, not crossing it",
-	scan: func(v *View) []string { return harnessPathFindings(v, reCursorPaths) },
+	scan: func(v *View) []hit { return harnessPathHits(v, reCursorPaths) },
 }
 
 // T012 — reads of the Cursor credential store. `state.vscdb`, `cursorAuth`,
@@ -155,10 +170,10 @@ var ruleT012 = rule{
 	id: "SK-T012", sev: SeverityBlocker, quality: "security", effort: 10,
 	msg:   "references the Cursor credential store (state.vscdb / cursorAuth / accessToken)",
 	files: nil,
-	scan: func(v *View) []string {
-		out := lineMatches(v.Text, reCursorCreds)
+	scan: func(v *View) []hit {
+		out := lineHits(v.Text, reCursorCreds)
 		if reCursorCtx.MatchString(v.Text) {
-			out = append(out, lineMatches(v.Text, reAccessToken)...)
+			out = append(out, lineHits(v.Text, reAccessToken)...)
 		}
 		return out
 	},
@@ -297,12 +312,11 @@ var ruleT015 = rule{
 	id: "SK-T015", sev: SeverityBlocker, quality: "security", effort: 15,
 	msg:   "MCP config carries a plaintext secret or wildcard HTTP binding",
 	files: isHarnessConfig,
-	scan: func(v *View) []string {
+	scan: func(v *View) []hit {
 		if !strings.Contains(v.Path, "mcp") {
 			return nil
 		}
-		var out []string
-		out = append(out, lineMatches(v.Text, reWildcardBind)...)
+		out := lineHits(v.Text, reWildcardBind)
 		var doc map[string]any
 		if json.Unmarshal([]byte(v.Text), &doc) != nil {
 			return out
@@ -314,15 +328,39 @@ var ruleT015 = rule{
 		for _, name := range sortedKeys(servers) {
 			env, _ := servers[name].(map[string]any)["env"].(map[string]any)
 			for _, k := range sortedKeys(env) {
-				v := env[k]
-				val, _ := v.(string)
-				if isSecretKey(k) && isPlaintextLiteral(val) {
-					out = append(out, "mcp server "+name+": env "+k+" is a plaintext literal")
+				val, _ := env[k].(string)
+				if !isSecretKey(k) || !isPlaintextLiteral(val) {
+					continue
 				}
+				// The evidence is a statement about the parsed document —
+				// quoting the line would republish the secret — but the key
+				// is in the text, so the finding anchors to the line that
+				// carries it instead of being unlocatable. Unlocatable was
+				// not a cosmetic difference: it cost this rule every derived
+				// view, on a rule published as view-covered.
+				out = append(out, jsonKeyHit(v.Text, k,
+					"mcp server "+name+": env "+k+" is a plaintext literal"))
 			}
 		}
 		return out
 	},
+}
+
+// jsonKeyHit anchors a statement about a parsed JSON document to the line
+// where the key it is about is written.
+//
+// The document was parsed *out of this text*, so the key is in it; the
+// fallback exists only for a key spelled with JSON escapes, where the parsed
+// name and the written name differ. Such a hit carries no position and is
+// therefore dropped on a derived view — the same cost the three ceded rules
+// pay, and here it applies to one exotic spelling rather than to every line.
+func jsonKeyHit(text, key, evidence string) hit {
+	at := strings.Index(text, `"`+key+`"`)
+	if at < 0 {
+		return synthesised(evidence)
+	}
+	start, end := lineSpanAt(text, at)
+	return foundAs(start, end, evidence)
 }
 
 func isSecretKey(k string) bool {
@@ -341,7 +379,7 @@ var ruleT016 = rule{
 	id: "SK-T016", sev: SeverityBlocker, quality: "security", effort: 10,
 	msg:   "MCP tool auto-approved without user consent",
 	files: isHarnessConfig,
-	scan:  func(v *View) []string { return lineMatches(v.Text, reAutoApprove) },
+	scan:  func(v *View) []hit { return lineHits(v.Text, reAutoApprove) },
 }
 
 // T017/T018 — a hook config inside the bundle that executes bundled content.
@@ -564,15 +602,23 @@ var ruleT020 = rule{
 	id: "SK-T020", sev: SeverityBlocker, quality: "security", effort: 20,
 	msg:   "writes to a persistence or self-modification surface (shell rc, .claude/.cursor config, crontab, LaunchAgents)",
 	files: isScript,
-	scan: func(v *View) []string {
-		var out []string
+	scan: func(v *View) []hit {
+		var out []hit
 		// Normalize Windows separators (.cursor\hooks.json evasion) and mask
 		// /dev/null — `2>/dev/null` discards output; it isn't persistence.
-		text := normPathSep(strings.ReplaceAll(v.Text, "/dev/null", "DEVNULL"))
-		for _, line := range strings.Split(text, "\n") {
+		//
+		// Both readings are written over the text **in place**: one byte per
+		// byte, so every offset still means what it meant and a matching line
+		// is a span of the view. Masking by substitution was shorter than
+		// what it replaced, so the line this rule then cut was not a line of
+		// the view — which cost the blocker every derived view whenever the
+		// line held a `\` or a `/dev/null`, and made the raw finding report
+		// at line 0 quoting a line that said `DEVNULL`.
+		text := normPathSep(maskSpans(v.Text, reDevNull))
+		eachLine(text, func(start, end int, line string) {
 			ploc := rePersistPath.FindStringIndex(line)
 			if ploc == nil {
-				continue
+				return
 			}
 			verb := false
 			if vloc := rePersistVerb.FindStringIndex(line); vloc != nil {
@@ -593,9 +639,9 @@ var ruleT020 = rule{
 			}
 			if verb || strings.Contains(line, "crontab") || strings.Contains(line, "launchctl") ||
 				strings.Contains(line, "systemctl") || strings.Contains(line, "defaults") {
-				out = append(out, strings.TrimSpace(line))
+				out = append(out, found(start, end))
 			}
-		}
+		})
 		return out
 	},
 }

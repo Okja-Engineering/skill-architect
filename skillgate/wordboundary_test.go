@@ -43,6 +43,7 @@ func ruleRegexes() map[string]*regexp.Regexp {
 		"reProgWrite":    reProgWrite,
 		"reAutoApprove":  reAutoApprove,
 		"reWildcardBind": reWildcardBind,
+		"reDevNull":      reDevNull,
 		// Pack A — tripwire_a.go
 		"reNetCmd":       reNetCmd,
 		"reDevTCP":       reDevTCP,

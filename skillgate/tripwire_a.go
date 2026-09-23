@@ -124,7 +124,9 @@ var (
 	reExec = regexp.MustCompile(`(?i)(^|[^\w.])(eval|exec)\b|\bchild_process\.exec|\.exec(Sync|File|FileSync)\s*\(|\bos\.system|\bsubprocess\b|\bpopen|\bInvoke-Expression|\biex\s*\(|\|\s*(ba|z|fi)?sh\b`)
 )
 
-// lineMatches returns each line matching any of the patterns.
+// lineMatches returns each line matching any of the patterns. It is for the
+// bundle-level scans, which read a file's raw text directly and have no view
+// to report a span into.
 func lineMatches(text string, res ...*regexp.Regexp) []string {
 	var out []string
 	for _, line := range strings.Split(text, "\n") {
@@ -138,6 +140,26 @@ func lineMatches(text string, res ...*regexp.Regexp) []string {
 	return out
 }
 
+// lineHits returns a hit spanning each line of `read` that any pattern
+// matches.
+//
+// `read` is the text the rule matches against, and its offsets must be the
+// view's own — either the view's text or an in-place mask of it. That is the
+// anchoring contract in one parameter: a rule may change how it *reads* the
+// line and may not change where the line *is*.
+func lineHits(read string, res ...*regexp.Regexp) []hit {
+	var out []hit
+	eachLine(read, func(start, end int, line string) {
+		for _, re := range res {
+			if re.MatchString(line) {
+				out = append(out, found(start, end))
+				return
+			}
+		}
+	})
+	return out
+}
+
 // T001 — zero-width / bidi / tag characters in loaded text.
 var ruleT001 = rule{
 	id: "SK-T001", sev: SeverityBlocker, quality: "security", effort: 10,
@@ -147,9 +169,11 @@ var ruleT001 = rule{
 		"by construction — the Skeleton view strips Cf, the non-whitespace Cc and the " +
 		"default-ignorables, which is exactly this rule's set, so a derived view can " +
 		"never contain what it looks for",
-	scan: func(v *View) []string {
-		var out []string
-		for i, line := range strings.Split(v.Text, "\n") {
+	scan: func(v *View) []hit {
+		var out []hit
+		i := -1
+		eachLine(v.Text, func(start, end int, line string) {
+			i++
 			for _, r := range line {
 				bad := (r >= 0x200B && r <= 0x200F) || // ZWSP…RLM
 					(r >= 0x202A && r <= 0x202E) || // bidi embeds/overrides
@@ -159,11 +183,18 @@ var ruleT001 = rule{
 					r == 0x00AD || r == 0x115F || r == 0x1160 || r == 0xFFA0 ||
 					(r == 0xFEFF && i+1 > 0) // BOM mid-file
 				if bad {
-					out = append(out, fmt.Sprintf("line %d: contains U+%04X", i+1, r))
+					// The evidence names the character rather than quoting
+					// the line — an invisible character quoted is invisible —
+					// but the hit still carries the line's span, so the
+					// finding lands on the line the character is on. It used
+					// to report at line 0 and leave the reader to parse the
+					// position back out of the message.
+					out = append(out, foundAs(start, end,
+						fmt.Sprintf("line %d: contains U+%04X", i+1, r)))
 					break
 				}
 			}
-		}
+		})
 		return out
 	},
 }
@@ -173,7 +204,7 @@ var ruleT002 = rule{
 	id: "SK-T002", sev: SeverityBlocker, quality: "security", effort: 15,
 	msg:   "instruction-override phrasing in skill text",
 	files: isLoadedText,
-	scan:  func(v *View) []string { return lineMatches(v.Text, reOverride...) },
+	scan:  func(v *View) []hit { return lineHits(v.Text, reOverride...) },
 }
 
 // T003 — homoglyph / mixed-script in description, name, or MCP tool name.
@@ -184,15 +215,27 @@ var ruleT003 = rule{
 	rawOnly: "its subject is the confusable code points the Skeleton view folds onto " +
 		"their ASCII prototypes, so the mixed-script condition it tests for cannot " +
 		"survive into a derived view — the fold is what makes the text unmixed",
-	scan: func(v *View) []string {
+	scan: func(v *View) []hit {
 		fm := ParseFrontmatter(v.Text)
-		var out []string
+		var out []hit
 		for _, key := range []string{"name", "description", "when_to_use"} {
-			if v := fm.Keys[key]; v != "" {
-				if tok := mixedScriptToken(v); tok != "" {
-					out = append(out, key+": "+tok)
-				}
+			val := fm.Keys[key]
+			if val == "" {
+				continue
 			}
+			tok := mixedScriptToken(val)
+			if tok == "" {
+				continue
+			}
+			// The evidence names the key and the token rather than quoting
+			// the whole line, but the token is in the text, so the finding
+			// gets the frontmatter line it is on instead of line 0.
+			if at := strings.Index(v.Text, tok); at >= 0 {
+				start, end := lineSpanAt(v.Text, at)
+				out = append(out, foundAs(start, end, key+": "+tok))
+				continue
+			}
+			out = append(out, synthesised(key+": "+tok))
 		}
 		return out
 	},
@@ -228,8 +271,14 @@ var ruleT004 = rule{
 	id: "SK-T004", sev: SeverityBlocker, quality: "security", effort: 20,
 	msg:   "bundled script transmits to a literal remote host",
 	files: isScript,
-	scan: func(v *View) []string {
-		return lineMatches(reLoopbackURL.ReplaceAllString(v.Text, "LOOPBACK"), reNetCmd, reDevTCP, rePyNet)
+	scan: func(v *View) []hit {
+		// The loopback mask is written over the text in place: same bytes,
+		// same offsets. Substituting a shorter token moved every offset after
+		// it, so the line this rule cut was not a line of the view — one
+		// `http://localhost` anywhere on the line disabled the rule on every
+		// derived view and made the raw finding report at line 0 quoting a
+		// line that said `LOOPBACK`.
+		return lineHits(maskSpans(v.Text, reLoopbackURL), reNetCmd, reDevTCP, rePyNet)
 	},
 }
 
@@ -245,7 +294,7 @@ var ruleT005 = rule{
 	// monorepo): an env read *anywhere* plus any URL/sink token *anywhere*
 	// fired. Require proximity — a wholesale env dump within 10 lines of a
 	// sink is the exfil shape; a distant co-occurrence is ordinary code.
-	scan: func(v *View) []string {
+	scan: func(v *View) []hit {
 		lines := strings.Split(v.Text, "\n")
 		var dumps, sinks []int
 		for i, line := range lines {
@@ -266,9 +315,9 @@ var ruleT005 = rule{
 			}
 			for _, s := range sinks {
 				if d == s || absInt(d-s) <= 10 {
-					return []string{fmt.Sprintf("line %d env dump: %s | line %d sink: %s",
+					return []hit{synthesised(fmt.Sprintf("line %d env dump: %s | line %d sink: %s",
 						d+1, truncate(strings.TrimSpace(lines[d]), 60),
-						s+1, truncate(strings.TrimSpace(lines[s]), 60))}
+						s+1, truncate(strings.TrimSpace(lines[s]), 60)))}
 				}
 			}
 		}
@@ -283,13 +332,13 @@ var ruleT006 = rule{
 	rawOnly: "its evidence is masked before it leaves the rule — the gate never " +
 		"republishes a secret — so it is never a substring of the text it scanned and a " +
 		"hit found on a derived view has no offset to map back to the raw source",
-	scan: func(v *View) []string {
-		var out []string
+	scan: func(v *View) []hit {
+		var out []hit
 		for _, line := range strings.Split(v.Text, "\n") {
 			for _, re := range reCreds {
 				if re.MatchString(line) {
 					masked := re.ReplaceAllString(strings.TrimSpace(line), "***")
-					out = append(out, masked)
+					out = append(out, synthesised(masked))
 					break
 				}
 			}
@@ -302,8 +351,8 @@ var ruleT006 = rule{
 var ruleT007 = rule{
 	id: "SK-T007", sev: SeverityBlocker, quality: "security", effort: 30,
 	msg: "network output piped to a shell or interpreter",
-	scan: func(v *View) []string {
-		return lineMatches(v.Text, rePipeToShell, rePipeToShell2, reIEX)
+	scan: func(v *View) []hit {
+		return lineHits(v.Text, rePipeToShell, rePipeToShell2, reIEX)
 	},
 }
 
@@ -312,8 +361,8 @@ var ruleT008 = rule{
 	id: "SK-T008", sev: SeverityBlocker, quality: "security", effort: 10,
 	msg:   "remote fetch or install without a pinned version",
 	files: isScript,
-	scan: func(v *View) []string {
-		return lineMatches(v.Text, reUnpinned...)
+	scan: func(v *View) []hit {
+		return lineHits(v.Text, reUnpinned...)
 	},
 }
 
@@ -328,7 +377,7 @@ var ruleT009 = rule{
 	// File-level co-occurrence was the FP amplifier (JWT `atob` + `re.exec`
 	// anywhere in an auth file fired). Same-line, or decode within 10 lines
 	// of exec — the decode-then-execute payload shape.
-	scan: func(v *View) []string {
+	scan: func(v *View) []hit {
 		lines := strings.Split(v.Text, "\n")
 		var dec, ex []int
 		for i, line := range lines {
@@ -342,8 +391,8 @@ var ruleT009 = rule{
 		for _, d := range dec {
 			for _, e := range ex {
 				if absInt(d-e) <= 10 {
-					return []string{fmt.Sprintf("line %d decode near line %d exec: %s",
-						d+1, e+1, truncate(strings.TrimSpace(lines[d]), 90))}
+					return []hit{synthesised(fmt.Sprintf("line %d decode near line %d exec: %s",
+						d+1, e+1, truncate(strings.TrimSpace(lines[d]), 90)))}
 				}
 			}
 		}

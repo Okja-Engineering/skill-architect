@@ -287,11 +287,11 @@ func TestRawOnlyRulesDoNotRunOnViews(t *testing.T) {
 	if got := len(f.Views()); got != len(ViewNames()) {
 		t.Fatalf("the file has %d views, the registry names %d", got, len(ViewNames()))
 	}
-	covered := rule{id: "probe-covered", scan: func(*View) []string { return nil }}
+	covered := rule{id: "probe-covered", scan: func(*View) []hit { return nil }}
 	if got := len(covered.views(f)); got != len(f.Views()) {
 		t.Errorf("a rule with no reason got %d of %d views", got, len(f.Views()))
 	}
-	optedOut := rule{id: "probe-raw", rawOnly: "because", scan: func(*View) []string { return nil }}
+	optedOut := rule{id: "probe-raw", rawOnly: "because", scan: func(*View) []hit { return nil }}
 	got := optedOut.views(f)
 	if len(got) != 1 || !got[0].IsRaw() {
 		t.Errorf("a rule carrying a reason got %d views, want the raw view alone", len(got))

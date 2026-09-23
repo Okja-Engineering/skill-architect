@@ -25,12 +25,14 @@ type rule struct {
 	quality string
 	effort  int
 	msg     string
-	// scan inspects one view of one file and returns evidence snippets.
+	// scan inspects one view of one file and returns what it found, each as
+	// a span of the view's own text.
+	//
 	// It receives a View rather than a FileContent because a view is what a
 	// lexical rule scans: the same rule runs over the raw text and over each
 	// normalised rendering of it, and run() maps whatever it finds back to
 	// the raw source.
-	scan func(v *View) []string
+	scan func(v *View) []hit
 	// rawOnly, when non-empty, is the written reason this rule must not run
 	// on normalised views — it runs on raw text alone. Empty, the default,
 	// means the rule runs on every registered view, so a view added later
@@ -97,8 +99,8 @@ func (r rule) run(l *Ledger) []Finding {
 				v = v.code()
 			}
 			var batch []Finding
-			for _, ev := range r.scan(v) {
-				line, evidence, ok := locate(f, v, ev)
+			for _, h := range r.scan(v) {
+				line, evidence, ok := locate(f, v, h)
 				if !ok || reported[line] {
 					continue
 				}
@@ -124,35 +126,144 @@ func (r rule) run(l *Ledger) []Finding {
 	return out
 }
 
-// locate turns evidence a rule found in a view into a raw source position and
-// raw evidence.
+// hit is one thing a rule found in the view it was handed.
 //
-// On the raw view this is the behaviour the gate has always had, including
-// the case where a rule synthesises evidence that is not a substring of the
-// file (T005 and T009 report a pair of lines): those report at line 0 and
-// carry their synthesised text, unchanged.
+// A hit is a **span of the view's own text**, and that is the whole contract:
+// a span is what run() can map back to the raw source, so a hit reports the
+// line of the file it came from and evidence cut from the file as it is
+// written on disk.
 //
-// On a derived view that case cannot be reported at all — evidence that is
-// nowhere in the view cannot be mapped back to raw, and a finding at line 0
-// citing text that is in no file is not a report, it is noise. Such a hit is
-// dropped; the raw view still finds it. This is the only coverage a view
-// loses and docs/skillgate-spec.md states it.
-func locate(f *FileContent, v *View, ev string) (line int, evidence string, ok bool) {
-	off := strings.Index(v.Text, ev)
-	if v.IsRaw() {
-		if off < 0 {
-			return 0, ev, true
+// Rules used to return evidence *strings*, and run() anchored one by searching
+// the view for it. That works only while a rule matches against the exact text
+// it was given — and five rules did not. A rule that needed a separator-
+// normalised line, or one with `/dev/null` or a loopback URL masked out, built
+// its own copy, matched that, and returned a slice **of the copy**. The copy's
+// bytes are not in the view, so the search failed: on a derived view the hit
+// was dropped and the rule silently lost the coverage it published, and on the
+// raw view it was reported at line 0 carrying text that appears in no file.
+// One backslash, one `2>/dev/null`, turned a blocker off.
+//
+// A span cannot fail that way. A rule may still read a different rendering of
+// its line — it just may not *move the bytes* while doing so, because the
+// offsets are what it reports. Masking is done in place, at equal length, and
+// the reading is used for the match while the span comes from the view.
+type hit struct {
+	// at, end are the half-open byte span of View.Text the rule matched.
+	// at < 0 means the rule has no span: see synthesised.
+	at, end int
+	// text, when non-empty, is the evidence to publish in place of the raw
+	// bytes the span covers. A rule composes evidence when the raw text is
+	// the wrong thing to print — a masked credential, or a statement about a
+	// parsed structure rather than a quotation of it. The span still decides
+	// *where* the finding is, which is what keeps the rule view-covered.
+	text string
+}
+
+// found reports a hit at a span of the view's text, with the raw text of that
+// span as its evidence.
+func found(at, end int) hit { return hit{at: at, end: end} }
+
+// foundAs reports a hit at a span of the view's text, publishing composed
+// evidence instead of quoting the span.
+func foundAs(at, end int, text string) hit { return hit{at: at, end: end, text: text} }
+
+// synthesised reports a hit with no position at all: evidence the rule
+// composed out of text that is nowhere contiguous in the file — T005's and
+// T009's pair of distant lines, T006's masked secret.
+//
+// It is the one shape that cannot be anchored, and it is exactly the shape
+// docs/skillgate-spec.md cedes: those three rules are raw-only *because* of
+// it, and they report at line 0. A rule that is not raw-only must never
+// return one — that is how view coverage is lost silently, and
+// anchor_test.go fails on a fourth rule appearing at line 0.
+func synthesised(text string) hit { return hit{at: -1, text: text} }
+
+// locate turns a hit into a raw source position and the evidence to publish.
+//
+// The raw view and a derived view take the same path, because a raw view's
+// offset map is the identity: a span is a span. The only branch is the
+// positionless hit, which the raw view reports at line 0 with its composed
+// text — the behaviour the gate has always had for the three rules that
+// produce one — and which a derived view drops, because a finding at line 0
+// citing text that is in no file is not a report, it is noise.
+func locate(f *FileContent, v *View, h hit) (line int, evidence string, ok bool) {
+	if h.at < 0 {
+		if v.IsRaw() {
+			return 0, h.text, true
 		}
-		return f.LineNumber(off), ev, true
-	}
-	if off < 0 {
 		return 0, "", false
 	}
-	start, end := v.SourceOffset(off), v.SourceEnd(off+len(ev))
+	start, end := v.SourceOffset(h.at), v.SourceEnd(h.end)
 	if start > end || end > len(f.Text) {
 		return 0, "", false
 	}
+	if h.text != "" {
+		return f.LineNumber(start), h.text, true
+	}
 	return f.LineNumber(start), strings.TrimSpace(f.Text[start:end]), true
+}
+
+// eachLine calls fn for every line of text with its half-open byte span,
+// excluding the line terminator. It yields exactly the pieces
+// strings.Split(text, "\n") does, with the offset each piece came from — which
+// is the whole reason it exists: a rule that reports a span cannot cut its
+// lines out of a copy that has forgotten where they were.
+func eachLine(text string, fn func(start, end int, line string)) {
+	start := 0
+	for {
+		i := strings.IndexByte(text[start:], '\n')
+		if i < 0 {
+			fn(start, len(text), text[start:])
+			return
+		}
+		fn(start, start+i, text[start:start+i])
+		start += i + 1
+	}
+}
+
+// lineSpanAt returns the half-open span of the line containing offset.
+func lineSpanAt(text string, offset int) (int, int) {
+	start := strings.LastIndexByte(text[:offset], '\n') + 1
+	end := strings.IndexByte(text[offset:], '\n')
+	if end < 0 {
+		end = len(text)
+	} else {
+		end += offset
+	}
+	return start, end
+}
+
+// maskByte is what a mask writes over a token a rule has decided is not its
+// subject.
+//
+// It is one byte per byte, so masking preserves every offset in the text and
+// a hit found in the masked reading is still a span of the view. And it is a
+// *word* character, so masking can neither create nor destroy a word boundary
+// at the token's edges — a mask that blanked to spaces would introduce a `\b`
+// in the middle of an identifier and could manufacture a match that the
+// unmasked line does not contain.
+const maskByte = 'X'
+
+// maskSpans returns text with every match of re overwritten by maskByte,
+// leaving every other byte and every offset exactly where it was.
+//
+// This is how a rule says "this token is not my subject" — a loopback URL is
+// not a remote host; `2>/dev/null` discards output rather than persisting to
+// it. Saying it by *substitution* was the defect: the replacement had a
+// different length, so the line the rule then cut was not a line of the view
+// and could not be anchored.
+func maskSpans(text string, re *regexp.Regexp) string {
+	locs := re.FindAllStringIndex(text, -1)
+	if locs == nil {
+		return text
+	}
+	b := []byte(text)
+	for _, m := range locs {
+		for i := m[0]; i < m[1]; i++ {
+			b[i] = maskByte
+		}
+	}
+	return string(b)
 }
 
 func tripwireChecks() []Check {
@@ -263,14 +374,17 @@ func pathRefs(text string) []struct {
 var ruleT019 = rule{
 	id: "SK-T019", sev: SeverityBlocker, quality: "security", effort: 15,
 	msg: "path escape: reference resolves outside the bundle root",
-	scan: func(v *View) []string {
+	scan: func(v *View) []hit {
 		dir := v.Path
 		if i := strings.LastIndex(dir, "/"); i >= 0 {
 			dir = dir[:i]
 		} else {
 			dir = ""
 		}
-		var ev []string
+		var ev []hit
+		// Deduped on the line's *text*, not its position, which is what this
+		// rule has always done: the same escaping line written twice is one
+		// reference reported once, at its first occurrence.
 		seen := map[string]bool{}
 		for _, r := range pathRefs(v.Text) {
 			// resolveRef, not a second copy of it. The gate had two
@@ -287,10 +401,10 @@ var ruleT019 = rule{
 			if _, escaped := resolveRef(dir, r.ref); !escaped {
 				continue // resolves inside the bundle — legal
 			}
-			line := lineAt(v.Text, r.at)
-			if !seen[line] {
+			start, end := lineSpanAt(v.Text, r.at)
+			if line := strings.TrimSpace(v.Text[start:end]); !seen[line] {
 				seen[line] = true
-				ev = append(ev, line)
+				ev = append(ev, found(start, end))
 			}
 		}
 		return ev

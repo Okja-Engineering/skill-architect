@@ -280,11 +280,22 @@ func reachabilityEdges(l *Ledger) map[string][]string {
 // ruleG001 — dangling reference: a bundle-internal path that resolves inside
 // the root but names no ledger file. Medium: broken progressive disclosure,
 // not a security hole.
+// It has **no view axis at all**, and says so by having no `scan`. Its
+// question is not "what does this line spell" but "does this reference name a
+// file the ledger holds", which is cross-file by construction and is answered
+// in scanBundle over the raw text.
+//
+// It used to declare `scan: func(*View) []string { return nil }` — a no-op —
+// and `ViewCoverage()` selects on `scan != nil`, so the gate published this
+// rule as reaching every view with no reason given for giving anything up. It
+// reached none of them. That falsifies the mechanism's central claim, which is
+// that *a rule that gives up reach cannot do so silently*: the published table
+// is derived from the registry precisely so nobody has to maintain it, and a
+// no-op scan is how a rule lies to it. A rule with no view axis is absent from
+// the table, which is the honest answer and the one the field already encodes.
 var ruleG001 = rule{
 	id: "SK-G001", sev: SeverityMedium, quality: "reliability", effort: 10,
-	msg:   "dangling reference: path resolves inside the bundle but no file exists",
-	files: isLoadedText,
-	scan:  func(v *View) []string { return nil }, // filled by scanBundle below
+	msg: "dangling reference: path resolves inside the bundle but no file exists",
 	scanBundle: func(l *Ledger) []Finding {
 		var out []Finding
 		seen := map[string]bool{}
